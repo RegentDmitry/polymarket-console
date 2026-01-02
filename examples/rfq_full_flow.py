@@ -34,11 +34,11 @@ import time
 
 from dotenv import load_dotenv
 
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import ApiCreds
-from py_clob_client.rfq import RfqUserRequest, RfqUserQuote, AcceptQuoteParams, ApproveOrderParams
-from py_clob_client.order_builder.constants import BUY, SELL
-from py_clob_client.constants import AMOY
+from polymarket_console.client import ClobClient
+from polymarket_console.clob_types import ApiCreds
+from polymarket_console.rfq import RfqUserRequest, RfqUserQuote, AcceptQuoteParams, ApproveOrderParams
+from polymarket_console.order_builder.constants import BUY, SELL
+from polymarket_console.constants import AMOY
 
 load_dotenv()
 

@@ -1,18 +1,18 @@
 from unittest import TestCase
 
-from py_clob_client.clob_types import (
+from polymarket_console.clob_types import (
     OrderArgs,
     MarketOrderArgs,
     CreateOrderOptions,
     OrderSummary,
     OrderType,
 )
-from py_clob_client.constants import AMOY
-from py_clob_client.order_builder.constants import BUY, SELL
+from polymarket_console.constants import AMOY
+from polymarket_console.order_builder.constants import BUY, SELL
 
-from py_clob_client.signer import Signer
-from py_clob_client.order_builder.builder import OrderBuilder, ROUNDING_CONFIG
-from py_clob_client.order_builder.helpers import decimal_places, round_normal
+from polymarket_console.signer import Signer
+from polymarket_console.order_builder.builder import OrderBuilder, ROUNDING_CONFIG
+from polymarket_console.order_builder.helpers import decimal_places, round_normal
 from py_order_utils.model import (
     POLY_GNOSIS_SAFE,
     EOA,

@@ -3,7 +3,7 @@ import os
 import httpx
 from dotenv import load_dotenv
 
-from py_clob_client.endpoints import ORDERS
+from polymarket_console.endpoints import ORDERS
 
 
 load_dotenv()

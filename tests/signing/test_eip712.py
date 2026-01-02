@@ -1,8 +1,8 @@
 from unittest import TestCase
-from py_clob_client.constants import AMOY
+from polymarket_console.constants import AMOY
 
-from py_clob_client.signer import Signer
-from py_clob_client.signing.eip712 import sign_clob_auth_message
+from polymarket_console.signer import Signer
+from polymarket_console.signing.eip712 import sign_clob_auth_message
 
 # publicly known private key
 private_key = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"

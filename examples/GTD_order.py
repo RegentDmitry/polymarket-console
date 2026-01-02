@@ -1,11 +1,11 @@
 import os
 
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import ApiCreds, OrderArgs, OrderType
+from polymarket_console.client import ClobClient
+from polymarket_console.clob_types import ApiCreds, OrderArgs, OrderType
 from dotenv import load_dotenv
-from py_clob_client.constants import AMOY
+from polymarket_console.constants import AMOY
 
-from py_clob_client.order_builder.constants import BUY
+from polymarket_console.order_builder.constants import BUY
 
 
 load_dotenv()

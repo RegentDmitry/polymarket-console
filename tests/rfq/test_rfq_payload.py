@@ -1,8 +1,8 @@
 from unittest import TestCase
 
-from py_clob_client.rfq.rfq_client import RfqClient
-from py_clob_client.rfq.rfq_types import MatchType
-from py_clob_client.order_builder.constants import BUY, SELL
+from polymarket_console.rfq.rfq_client import RfqClient
+from polymarket_console.rfq.rfq_types import MatchType
+from polymarket_console.order_builder.constants import BUY, SELL
 
 class TestCreateAcceptQuotePayload(TestCase):
     

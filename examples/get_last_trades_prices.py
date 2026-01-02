@@ -1,11 +1,11 @@
 import os
 
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import BookParams
+from polymarket_console.client import ClobClient
+from polymarket_console.clob_types import BookParams
 from dotenv import load_dotenv
 from pprint import pprint
 
-from py_clob_client.constants import AMOY
+from polymarket_console.constants import AMOY
 
 
 load_dotenv()

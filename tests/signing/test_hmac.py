@@ -1,7 +1,7 @@
 from unittest import TestCase
 import binascii
 
-from py_clob_client.signing.hmac import build_hmac_signature
+from polymarket_console.signing.hmac import build_hmac_signature
 
 
 class TestHMAC(TestCase):

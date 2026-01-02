@@ -1,4 +1,4 @@
-from py_clob_client.client import ClobClient
+from polymarket_console.client import ClobClient
 
 
 def main():

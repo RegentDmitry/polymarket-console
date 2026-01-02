@@ -1,5 +1,5 @@
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import BookParams
+from polymarket_console.client import ClobClient
+from polymarket_console.clob_types import BookParams
 
 
 def main():

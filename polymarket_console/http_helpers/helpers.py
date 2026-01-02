@@ -1,6 +1,6 @@
 import httpx
 
-from py_clob_client.clob_types import (
+from polymarket_console.clob_types import (
     DropNotificationParams,
     BalanceAllowanceParams,
     OrderScoringParams,
@@ -22,7 +22,7 @@ _http_client = httpx.Client(http2=True)
 def overloadHeaders(method: str, headers: dict) -> dict:
     if headers is None:
         headers = dict()
-    headers["User-Agent"] = "py_clob_client"
+    headers["User-Agent"] = "polymarket_console"
 
     headers["Accept"] = "*/*"
     headers["Connection"] = "keep-alive"

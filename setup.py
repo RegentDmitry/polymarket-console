@@ -4,7 +4,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setuptools.setup(
-    name="py_clob_client",
+    name="polymarket-console",
     version="0.34.2",
     author="Polymarket Engineering",
     author_email="engineering@polymarket.com",
@@ -13,7 +13,7 @@ setuptools.setup(
     description="Python client for the Polymarket CLOB",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/Polymarket/py-clob-client",
+    url="https://github.com/RegentDmitry/polymarket-console",
     install_requires=[
         "eth-account>=0.13.0",
         "eth-utils>=4.1.1",
@@ -24,7 +24,7 @@ setuptools.setup(
         "httpx[http2]>=0.27.0",
     ],
     project_urls={
-        "Bug Tracker": "https://github.com/Polymarket/py-clob-client/issues",
+        "Bug Tracker": "https://github.com/RegentDmitry/polymarket-console/issues",
     },
     classifiers=[
         "Programming Language :: Python :: 3",

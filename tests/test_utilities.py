@@ -1,15 +1,15 @@
 from unittest import TestCase
 
-from py_clob_client.clob_types import (
+from polymarket_console.clob_types import (
     OrderArgs,
     OrderType,
     CreateOrderOptions,
 )
-from py_clob_client.constants import AMOY
-from py_clob_client.order_builder.constants import BUY, SELL
-from py_clob_client.signer import Signer
-from py_clob_client.order_builder.builder import OrderBuilder
-from py_clob_client.utilities import (
+from polymarket_console.constants import AMOY
+from polymarket_console.order_builder.constants import BUY, SELL
+from polymarket_console.signer import Signer
+from polymarket_console.order_builder.builder import OrderBuilder
+from polymarket_console.utilities import (
     parse_raw_orderbook_summary,
     generate_orderbook_summary_hash,
     order_to_json,

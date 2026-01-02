@@ -1,5 +1,5 @@
 from unittest import TestCase
-from py_clob_client.clob_types import (
+from polymarket_console.clob_types import (
     TradeParams,
     OpenOrderParams,
     DropNotificationParams,
@@ -9,7 +9,7 @@ from py_clob_client.clob_types import (
     OrdersScoringParams,
 )
 
-from py_clob_client.http_helpers.helpers import (
+from polymarket_console.http_helpers.helpers import (
     build_query_params,
     add_query_trade_params,
     add_query_open_orders_params,

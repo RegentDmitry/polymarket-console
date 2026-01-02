@@ -27,7 +27,7 @@ The examples below are short and copy‑pasteable.
 ### Quickstart (read‑only)
 
 ```python
-from py_clob_client.client import ClobClient
+from polymarket_console.client import ClobClient
 
 client = ClobClient("https://clob.polymarket.com")  # Level 0 (no auth)
 
@@ -41,7 +41,7 @@ print(ok, time)
 **Note**: If using MetaMask or hardware wallet, you must first set token allowances. See [Token Allowances section](#important-token-allowances-for-metamaskeoa-users) below.
 
 ```python
-from py_clob_client.client import ClobClient
+from polymarket_console.client import ClobClient
 
 HOST = "https://clob.polymarket.com"
 CHAIN_ID = 137
@@ -72,7 +72,7 @@ The **signature_type** parameter tells the system how to verify your signatures:
 - `signature_type=2`: Browser wallet proxy signatures (when using a proxy contract, not direct wallet connections)
 
 ```python
-from py_clob_client.client import ClobClient
+from polymarket_console.client import ClobClient
 
 HOST = "https://clob.polymarket.com"
 CHAIN_ID = 137
@@ -92,8 +92,8 @@ client.set_api_creds(client.create_or_derive_api_creds())
 ### Find markets, prices, and orderbooks
 
 ```python
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import BookParams
+from polymarket_console.client import ClobClient
+from polymarket_console.clob_types import BookParams
 
 client = ClobClient("https://clob.polymarket.com")  # read-only
 
@@ -111,9 +111,9 @@ print(mid, price, book.market, len(books))
 **Note**: EOA/MetaMask users must set token allowances before trading. See [Token Allowances section](#important-token-allowances-for-metamaskeoa-users) below.
 
 ```python
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import MarketOrderArgs, OrderType
-from py_clob_client.order_builder.constants import BUY
+from polymarket_console.client import ClobClient
+from polymarket_console.clob_types import MarketOrderArgs, OrderType
+from polymarket_console.order_builder.constants import BUY
 
 HOST = "https://clob.polymarket.com"
 CHAIN_ID = 137
@@ -140,9 +140,9 @@ print(resp)
 **Note**: EOA/MetaMask users must set token allowances before trading. See [Token Allowances section](#important-token-allowances-for-metamaskeoa-users) below.
 
 ```python
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import OrderArgs, OrderType
-from py_clob_client.order_builder.constants import BUY
+from polymarket_console.client import ClobClient
+from polymarket_console.clob_types import OrderArgs, OrderType
+from polymarket_console.order_builder.constants import BUY
 
 HOST = "https://clob.polymarket.com"
 CHAIN_ID = 137
@@ -169,8 +169,8 @@ print(resp)
 **Note**: EOA/MetaMask users must set token allowances before trading. See [Token Allowances section](#important-token-allowances-for-metamaskeoa-users) below.
 
 ```python
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import OpenOrderParams
+from polymarket_console.client import ClobClient
+from polymarket_console.clob_types import OpenOrderParams
 
 HOST = "https://clob.polymarket.com"
 CHAIN_ID = 137
@@ -198,7 +198,7 @@ client.cancel_all()
 ### Markets (read‑only)
 
 ```python
-from py_clob_client.client import ClobClient
+from polymarket_console.client import ClobClient
 
 client = ClobClient("https://clob.polymarket.com")
 markets = client.get_simplified_markets()
@@ -210,7 +210,7 @@ print(markets["data"][:1])
 **Note**: EOA/MetaMask users must set token allowances before trading. See [Token Allowances section](#important-token-allowances-for-metamaskeoa-users) below.
 
 ```python
-from py_clob_client.client import ClobClient
+from polymarket_console.client import ClobClient
 
 HOST = "https://clob.polymarket.com"
 CHAIN_ID = 137
