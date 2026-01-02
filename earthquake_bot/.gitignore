@@ -1,0 +1,16 @@
+# Secrets - NEVER commit!
+.env
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
