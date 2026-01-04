@@ -342,10 +342,9 @@ def download_all_usgs():
 DUNE_API = "https://api.dune.com/api/v1"
 
 # Готовые запросы для earthquake markets
-# Можно создать свой запрос на dune.com и использовать его ID
+# Создай свой запрос на dune.com и добавь его ID сюда
 DUNE_QUERIES = {
-    # Пример: история сделок по всем polymarket рынкам
-    "polymarket_trades": 3145285,  # Замени на актуальный query_id
+    # "polymarket_trades": ТВОЙ_QUERY_ID,  # Раскомментируй после создания
 }
 
 
@@ -441,7 +440,7 @@ def create_earthquake_trades_query() -> str:
     """
 
 
-def download_dune_trades():
+def download_dune_trades(query_id: int = None):
     """Скачать историю сделок через Dune Analytics."""
     print("\n" + "=" * 60)
     print("СКАЧИВАНИЕ ИСТОРИИ СДЕЛОК (Dune Analytics)")
@@ -454,57 +453,87 @@ def download_dune_trades():
         print("  2. Перейди в Settings → API")
         print("  3. Создай API key")
         print("  4. Добавь в .env: DUNE_API_KEY=твой_ключ")
-        print("\nАльтернатива - ручной экспорт CSV:")
-        print("  → https://dune.com/polymarket")
-        print("  → Найди нужный запрос → Export → CSV")
+        return []
+
+    # Если query_id не передан, показываем инструкции
+    if not query_id:
+        query_id = DUNE_QUERIES.get("polymarket_trades")
+
+    if not query_id:
+        print("\n⚠️  Нужен query_id для скачивания данных")
+        print("\nКак создать запрос на Dune:")
+        print("  1. Перейди на https://dune.com/queries")
+        print("  2. Нажми 'New Query'")
+        print("  3. Вставь SQL:")
+        print("""
+    SELECT
+        block_time,
+        tx_hash,
+        maker as trader,
+        taker,
+        side,
+        size,
+        price,
+        fee_rate_bps,
+        asset_id as token_id
+    FROM polymarket_polygon.CTFExchange_evt_OrderFilled
+    ORDER BY block_time DESC
+    LIMIT 50000
+        """)
+        print("  4. Run Query → Save")
+        print("  5. Скопируй query_id из URL")
+        print("  6. Запусти: python history_downloader.py --dune --query-id ТВОЙ_ID")
         return []
 
     TRADES_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Используем готовый запрос или создаём свой
-    # Примечание: для своего запроса нужно сначала создать его на dune.com
-
-    print("\n📊 Запрашиваем данные...")
-
-    # Попробуем получить результаты последнего выполнения (быстрее)
-    query_id = DUNE_QUERIES.get("polymarket_trades")
+    print(f"\n📊 Запрашиваем данные (query_id: {query_id})...")
 
     try:
-        headers = {"X-Dune-API-Key": DUNE_API_KEY}
+        headers = {"x-dune-api-key": DUNE_API_KEY}
         r = httpx.get(
             f"{DUNE_API}/query/{query_id}/results",
             headers=headers,
-            timeout=60,
+            params={"limit": 50000},
+            timeout=120,
         )
 
         if r.status_code == 200:
             data = r.json()
             rows = data.get("result", {}).get("rows", [])
 
-            # Фильтруем только earthquake
-            earthquake_trades = [
-                row for row in rows
-                if any(kw in str(row.get('market_slug', '')).lower()
-                       for kw in ['earthquake', 'megaquake', '7pt0', '8pt0', '9pt0', '10pt0'])
-            ]
+            print(f"  Получено {len(rows)} записей")
 
-            if earthquake_trades:
-                filepath = TRADES_DIR / "dune_earthquake_trades.json"
+            if rows:
+                # Сохраняем все данные
+                filepath = TRADES_DIR / f"dune_trades_{query_id}.json"
                 with open(filepath, 'w') as f:
                     json.dump({
                         "source": "dune_analytics",
                         "query_id": query_id,
                         "downloaded_at": datetime.now(timezone.utc).isoformat(),
-                        "count": len(earthquake_trades),
-                        "trades": earthquake_trades,
+                        "count": len(rows),
+                        "columns": list(rows[0].keys()) if rows else [],
+                        "trades": rows,
                     }, f, indent=2)
 
-                print(f"  ✅ Сохранено {len(earthquake_trades)} сделок")
-                return earthquake_trades
+                print(f"  ✅ Сохранено: {filepath}")
+
+                # Показываем пример данных
+                if rows:
+                    print(f"\n  Пример записи:")
+                    for k, v in list(rows[0].items())[:5]:
+                        print(f"    {k}: {v}")
+
+                return rows
             else:
-                print("  ⚠️  Нет earthquake сделок в результатах")
+                print("  ⚠️  Нет данных. Возможно запрос ещё не выполнялся.")
+                print("  → Запусти запрос на dune.com, затем повтори скачивание")
+        elif r.status_code == 404:
+            print(f"  ❌ Query {query_id} не найден или приватный")
+            print("  → Убедись что query сохранён и публичный")
         else:
-            print(f"  ⚠️  HTTP {r.status_code}: {r.text[:200]}")
+            print(f"  ⚠️  HTTP {r.status_code}: {r.text[:300]}")
 
     except Exception as e:
         print(f"  ❌ Ошибка: {e}")
@@ -522,9 +551,10 @@ def main():
     parser.add_argument("--trades", action="store_true", help="Только сделки (Dune)")
     parser.add_argument("--usgs", action="store_true", help="Только USGS")
     parser.add_argument("--dune", action="store_true", help="Только Dune Analytics")
+    parser.add_argument("--query-id", type=int, help="Dune query ID для скачивания")
     args = parser.parse_args()
 
-    # Если ничего не указано - скачиваем всё
+    # Если ничего не указано - скачиваем всё (кроме Dune без query-id)
     download_all = not (args.metadata or args.trades or args.usgs or args.dune)
 
     print("=" * 60)
@@ -536,8 +566,8 @@ def main():
     if download_all or args.metadata:
         download_all_metadata()
 
-    if download_all or args.trades or args.dune:
-        download_dune_trades()
+    if args.trades or args.dune or args.query_id:
+        download_dune_trades(args.query_id)
 
     if download_all or args.usgs:
         download_all_usgs()
