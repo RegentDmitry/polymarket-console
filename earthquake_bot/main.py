@@ -14,6 +14,7 @@ import math
 import sys
 from datetime import datetime, timezone
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from usgs_client import USGSClient
@@ -664,27 +665,90 @@ def allocate_portfolio(opportunities: list[Opportunity], bankroll: float) -> lis
     return allocations
 
 
-def print_opportunities(opportunities: list[Opportunity], bankroll: float):
-    """Вывести возможности с распределением банкролла."""
+def get_orderbook_tiers(poly: 'PolymarketClient', token_id: str, fair_price: float, remaining_days: float) -> list[dict]:
+    """
+    Получить уровни из ордербука с расчётом APY для каждого.
+
+    Returns:
+        Список словарей с полями:
+        - price: цена покупки
+        - size_usd: сколько можно купить на этом уровне (в USD)
+        - cumulative_usd: сколько можно купить до этого уровня включительно
+        - roi: ROI на этом уровне
+        - apy: APY на этом уровне
+    """
+    import httpx
+
+    try:
+        response = httpx.get(
+            f"{poly.host}/book",
+            params={"token_id": token_id},
+            timeout=30,
+        )
+        if response.status_code != 200:
+            return []
+
+        ob = response.json()
+        asks = ob.get("asks", [])
+
+        if not asks:
+            return []
+
+        # Сортируем по цене (от лучшей к худшей)
+        asks = sorted(asks, key=lambda x: float(x.get("price", 1.0)))
+
+        tiers = []
+        cumulative = 0.0
+
+        for ask in asks:
+            price = float(ask.get("price", 0))
+            size = float(ask.get("size", 0))
+
+            if price <= 0 or price >= 1 or size <= 0:
+                continue
+
+            size_usd = price * size
+            cumulative += size_usd
+
+            # ROI и APY для этой цены
+            roi = fair_price / price - 1 if price > 0 else 0
+            apy = roi * (365 / remaining_days) if remaining_days > 0 else 0
+
+            tiers.append({
+                "price": price,
+                "size_usd": size_usd,
+                "cumulative_usd": cumulative,
+                "roi": roi,
+                "apy": apy,
+            })
+
+        return tiers
+    except Exception:
+        return []
+
+
+def print_opportunities(opportunities: list[Opportunity], bankroll: float, poly: 'PolymarketClient' = None):
+    """Вывести возможности с информацией о доступных инвестициях."""
     print("\n" + "=" * 75)
-    print("ПОРТФЕЛЬ (банкролл распределён по лучшим возможностям)")
+    print("ТОРГОВЫЕ ВОЗМОЖНОСТИ")
     print("=" * 75)
 
     if not opportunities:
         print(f"\nНет возможностей с edge > {MIN_EDGE:.0%} и APY > {MIN_ANNUAL_RETURN:.0%}")
         return
 
-    # Получаем аллокацию
-    allocations = allocate_portfolio(opportunities, bankroll)
+    # Группируем по событию, выбираем лучший по APY
+    best_per_event: dict[str, Opportunity] = {}
+    for opp in opportunities:
+        if opp.event not in best_per_event or opp.annual_return > best_per_event[opp.event].annual_return:
+            best_per_event[opp.event] = opp
 
-    if not allocations:
-        print("\nНе удалось распределить банкролл")
-        return
+    selected = list(best_per_event.values())
 
-    total_invested = sum(amt for _, amt in allocations)
+    # Сортируем по APY, потом по ROI
+    selected.sort(key=lambda x: (x.annual_return, x.expected_return), reverse=True)
 
-    for i, (opp, bet_size) in enumerate(allocations, 1):
-        pct_of_bankroll = bet_size / bankroll * 100
+    for i, opp in enumerate(selected, 1):
         prob_win = opp.fair_price
         prob_lose = 1 - prob_win
 
@@ -694,49 +758,136 @@ def print_opportunities(opportunities: list[Opportunity], bankroll: float):
         print(f"   Модель: {opp.fair_price*100:.1f}%  |  Рынок: {opp.market_price*100:.1f}%  |  Edge: {opp.edge*100:+.1f}%")
         print(f"   Выигрыш: {prob_win*100:.1f}%  |  Проигрыш: {prob_lose*100:.1f}%  |  Дней: {opp.remaining_days:.0f}")
         print(f"   ROI: {opp.expected_return*100:+.1f}%  |  APY: {opp.annual_return*100:+.0f}%")
-        print(f"   → СТАВКА: ${bet_size:.2f} ({pct_of_bankroll:.0f}% банкролла)")
 
-        # Ликвидность
-        if opp.liquidity_usd is not None:
-            liq_pct = bet_size / opp.liquidity_usd * 100 if opp.liquidity_usd > 0 else 0
-            print(f"   Ликвидность: ${opp.liquidity_usd:,.0f} (используем {liq_pct:.1f}%)")
+        # Показываем уровни из ордербука
+        if poly and opp.token_id:
+            tiers = get_orderbook_tiers(poly, opp.token_id, opp.fair_price, opp.remaining_days)
+            if tiers:
+                print(f"   Инвестиции по уровням:")
 
-    # Итого
+                # Группируем по APY (округляем до целых %)
+                apy_groups = {}
+                for tier in tiers:
+                    apy_rounded = int(tier["apy"] * 100)
+                    if apy_rounded not in apy_groups:
+                        apy_groups[apy_rounded] = 0
+                    apy_groups[apy_rounded] = tier["cumulative_usd"]
+
+                # Показываем только значимые уровни (с положительным APY)
+                shown = 0
+                prev_cumulative = 0
+                for apy_pct in sorted(apy_groups.keys(), reverse=True):
+                    if apy_pct < MIN_ANNUAL_RETURN * 100:
+                        break
+                    cumulative = apy_groups[apy_pct]
+                    if cumulative > prev_cumulative + 10:  # Показываем если добавляется хотя бы $10
+                        print(f"     → ${cumulative:,.0f} с APY {apy_pct}%+")
+                        prev_cumulative = cumulative
+                        shown += 1
+                        if shown >= 5:  # Максимум 5 уровней
+                            break
+
+                # Общая доступная сумма (только если min APY >= порога)
+                if tiers:
+                    total_available = tiers[-1]["cumulative_usd"]
+                    min_apy = tiers[-1]["apy"]
+                    if total_available > prev_cumulative and min_apy >= MIN_ANNUAL_RETURN:
+                        print(f"     → ${total_available:,.0f} всего (мин APY {int(min_apy * 100)}%)")
+
     print(f"\n" + "-" * 75)
-    print(f"ИТОГО: ${total_invested:.2f} из ${bankroll:.2f} ({total_invested/bankroll*100:.0f}%)")
+    print(f"Всего {len(selected)} возможностей")
 
-    # Ожидаемая прибыль и дисперсия
-    expected_profit = 0.0
-    total_variance = 0.0
+    return selected  # Возвращаем для сохранения в файл
 
-    for opp, bet in allocations:
-        prob_win = opp.fair_price
-        prob_lose = 1 - prob_win
 
-        # Выигрыш: получаем bet/price, чистая прибыль = bet/price - bet = bet*(1/price - 1)
-        profit_if_win = bet * (1 / opp.market_price - 1) if opp.market_price > 0 else 0
-        # Проигрыш: теряем ставку
-        profit_if_lose = -bet
+def save_report_to_markdown(
+    opportunities: list[Opportunity],
+    poly: 'PolymarketClient',
+    output_dir: Path = None,
+) -> Path:
+    """Сохранить отчёт в markdown файл."""
+    if output_dir is None:
+        output_dir = Path(__file__).parent / "output"
 
-        # E[profit] для этой ставки
-        exp_profit = prob_win * profit_if_win + prob_lose * profit_if_lose
-        expected_profit += exp_profit
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Var[profit] = E[X^2] - E[X]^2
-        exp_profit_sq = prob_win * (profit_if_win ** 2) + prob_lose * (profit_if_lose ** 2)
-        variance = exp_profit_sq - (exp_profit ** 2)
-        total_variance += variance
+    now = datetime.now(timezone.utc)
+    filename = now.strftime("%Y-%m-%d_%H-%M") + "_UTC.md"
+    filepath = output_dir / filename
 
-    # Стандартное отклонение
-    std_dev = math.sqrt(total_variance) if total_variance > 0 else 0
+    lines = []
+    lines.append(f"# Earthquake Bot Report")
+    lines.append(f"")
+    lines.append(f"**Время:** {now.strftime('%Y-%m-%d %H:%M UTC')}")
+    lines.append(f"")
+    lines.append(f"---")
+    lines.append(f"")
+    lines.append(f"## Торговые возможности")
+    lines.append(f"")
 
-    expected_apy = expected_profit / bankroll  # APY на весь банкролл
-    avg_days = sum(opp.remaining_days * amt for opp, amt in allocations) / total_invested if total_invested > 0 else 365
+    if not opportunities:
+        lines.append(f"Нет возможностей с edge > {MIN_EDGE:.0%} и APY > {MIN_ANNUAL_RETURN:.0%}")
+    else:
+        for i, opp in enumerate(opportunities, 1):
+            prob_win = opp.fair_price
+            prob_lose = 1 - prob_win
 
-    print(f"Ожидаемая прибыль: ${expected_profit:.2f} ± ${std_dev:.2f}")
-    print(f"Диапазон (1σ): ${expected_profit - std_dev:.2f} ... ${expected_profit + std_dev:.2f}")
-    print(f"APY на банкролл: {expected_apy*100:.1f}%")
-    print(f"Средний срок: {avg_days:.0f} дней")
+            lines.append(f"### {i}. {opp.event}")
+            lines.append(f"")
+            lines.append(f"**Ссылка:** https://polymarket.com/event/{opp.event}")
+            lines.append(f"")
+            lines.append(f"| Параметр | Значение |")
+            lines.append(f"|----------|----------|")
+            lines.append(f"| Позиция | BUY {opp.side} на '{opp.outcome}' |")
+            lines.append(f"| Модель | {opp.fair_price*100:.1f}% |")
+            lines.append(f"| Рынок | {opp.market_price*100:.1f}% |")
+            lines.append(f"| Edge | {opp.edge*100:+.1f}% |")
+            lines.append(f"| Выигрыш | {prob_win*100:.1f}% |")
+            lines.append(f"| Проигрыш | {prob_lose*100:.1f}% |")
+            lines.append(f"| Дней до резолюции | {opp.remaining_days:.0f} |")
+            lines.append(f"| ROI | {opp.expected_return*100:+.1f}% |")
+            lines.append(f"| APY | {opp.annual_return*100:+.0f}% |")
+            lines.append(f"")
+
+            # Уровни из ордербука
+            if poly and opp.token_id:
+                tiers = get_orderbook_tiers(poly, opp.token_id, opp.fair_price, opp.remaining_days)
+                if tiers:
+                    lines.append(f"**Инвестиции по уровням:**")
+                    lines.append(f"")
+                    lines.append(f"| Сумма | Мин APY |")
+                    lines.append(f"|-------|---------|")
+
+                    apy_groups = {}
+                    for tier in tiers:
+                        apy_rounded = int(tier["apy"] * 100)
+                        if apy_rounded not in apy_groups:
+                            apy_groups[apy_rounded] = 0
+                        apy_groups[apy_rounded] = tier["cumulative_usd"]
+
+                    shown = 0
+                    prev_cumulative = 0
+                    for apy_pct in sorted(apy_groups.keys(), reverse=True):
+                        if apy_pct < MIN_ANNUAL_RETURN * 100:
+                            break
+                        cumulative = apy_groups[apy_pct]
+                        if cumulative > prev_cumulative + 10:
+                            lines.append(f"| ${cumulative:,.0f} | {apy_pct}%+ |")
+                            prev_cumulative = cumulative
+                            shown += 1
+                            if shown >= 5:
+                                break
+
+                    lines.append(f"")
+
+    lines.append(f"---")
+    lines.append(f"")
+    lines.append(f"*Всего {len(opportunities)} возможностей*")
+
+    content = "\n".join(lines)
+    filepath.write_text(content, encoding="utf-8")
+
+    return filepath
 
 
 def execute_trade(
@@ -789,7 +940,6 @@ def main():
     print("=" * 75)
     print(f"Время: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     print(f"Режим: {'AUTO' if args.auto else ('DEBUG' if args.debug else 'ANALYSIS')}")
-    print(f"Банкролл: ${args.bankroll:.2f}")
     print(f"Min Edge: {MIN_EDGE*100:.0f}%  |  Min APY: {MIN_ANNUAL_RETURN*100:.0f}%")
 
     # Инициализация
@@ -800,8 +950,13 @@ def main():
     print("\nАнализирую рынки...")
     opportunities = run_analysis(poly, usgs)
 
-    # Вывод портфеля
-    print_opportunities(opportunities, args.bankroll)
+    # Вывод возможностей с уровнями из ордербука
+    selected = print_opportunities(opportunities, args.bankroll, poly)
+
+    # Сохраняем отчёт в markdown
+    if selected:
+        report_path = save_report_to_markdown(selected, poly)
+        print(f"\nОтчёт сохранён: {report_path}")
 
     # Торговля
     if (args.debug or args.auto) and opportunities:
