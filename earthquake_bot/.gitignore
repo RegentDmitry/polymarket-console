@@ -21,4 +21,6 @@ output/*.md
 # Historical data (downloaded from APIs)
 history/closed/*.json
 history/open/*.json
+history/trades/*.json
+history/usgs/*.json
 history/summary.json
