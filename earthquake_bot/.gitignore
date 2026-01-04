@@ -17,3 +17,8 @@ venv/
 
 # Output reports (generated)
 output/*.md
+
+# Historical data (downloaded from APIs)
+history/closed/*.json
+history/open/*.json
+history/summary.json
