@@ -1,0 +1,837 @@
+#!/usr/bin/env python3
+"""
+Earthquake Trading Bot с правилами выбора модели из бэктеста.
+
+Правила (на основе backtest_1980_2023_intervals.md):
+- M7.0+: Интегрированная модель (кроме интервалов <5, 14-16, 2, 7)
+- M8.0+: Смешанные правила по интервалам
+- M9.0+: Простая модель
+
+Учитывает уже произошедшие события при расчёте вероятностей.
+
+Использование:
+    python main_tested.py              # Режим анализа
+    python main_tested.py --debug      # Режим отладки
+    python main_tested.py --auto       # Автоматическая торговля
+"""
+
+import argparse
+import math
+import sys
+from datetime import datetime, timezone, timedelta
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+# Импортируем модели
+from main import (
+    MIN_EDGE, MIN_ANNUAL_RETURN, MIN_BET_USD, MAX_LIQUIDITY_PCT,
+    MARKET_CONFIGS, Opportunity, kelly_criterion,
+    get_orderbook_data, get_orderbook_tiers, allocate_portfolio,
+    execute_trade,
+)
+from main_integrated import IntegratedModel
+from markets import EARTHQUAKE_ANNUAL_RATES
+
+# Для USGS
+from usgs_client import USGSClient
+from polymarket_client import PolymarketClient
+
+
+# ============================================================================
+# ПРАВИЛА ВЫБОРА МОДЕЛИ (из бэктеста)
+# ============================================================================
+
+# Правила для M7.0+ годовых интервалов (365 дней)
+M7_YEAR_RULES = {
+    "<5": "simple",
+    "5-7": "integrated",
+    "8-10": "integrated",
+    "11-13": "integrated",
+    "14-16": "simple",      # Простая чуть лучше для центра
+    "17-19": "integrated",  # +5.5% улучшение!
+    "20+": "integrated",
+}
+
+# Правила для M7.0+ полугодовых интервалов (182 дня)
+M7_HALFYEAR_RULES = {
+    "2": "simple",
+    "3": "integrated",
+    "4": "integrated",
+    "5": "integrated",
+    "6": "integrated",
+    "7": "simple",
+    "8+": "integrated",     # +5.2% улучшение
+}
+
+# Правила для M7.0+ квартальных интервалов (91 день)
+M7_QUARTER_RULES = {
+    "0-1": "integrated",
+    "2-3": "integrated",
+    "4-5": "integrated",
+    "6+": "integrated",
+}
+
+# Правила для M7.0+ месячных интервалов (30 дней)
+M7_MONTH_RULES = {
+    "0": "integrated",
+    "1": "integrated",
+    "2": "integrated",
+    "3+": "integrated",
+}
+
+# Правила для M8.0+
+M8_RULES = {
+    # Годовые
+    "0": "integrated",      # +6% улучшение
+    "1": "consensus",       # +2.6% улучшение
+    "2": "integrated",
+    "3+": "simple",
+    # Полугодовые
+    # "1": "integrated",    # (переопределено выше)
+    # "2": "simple",
+    # "3+": "simple",
+    # Бинарные
+    "1+": "simple",
+    "2+": "simple",
+}
+
+# M9.0+ всегда простая модель
+M9_RULES = {
+    "1+": "simple",
+}
+
+
+def get_model_for_interval(
+    magnitude: float,
+    period_days: float,
+    interval_name: str,
+) -> str:
+    """
+    Определить какую модель использовать для данного интервала.
+
+    Returns:
+        "simple", "integrated", или "consensus"
+    """
+    if magnitude >= 9.0:
+        return "simple"  # M9.0+ всегда простая
+
+    if magnitude >= 8.0:
+        # M8.0+ — по правилам
+        if interval_name in M8_RULES:
+            return M8_RULES[interval_name]
+        # Для годовых интервалов M8.0+
+        if period_days > 300:
+            if interval_name == "0":
+                return "integrated"
+            elif interval_name == "1":
+                return "consensus"
+            elif interval_name == "2":
+                return "integrated"
+            else:
+                return "simple"
+        return "simple"  # По умолчанию простая для M8.0+
+
+    # M7.0+
+    if period_days > 300:
+        # Годовые интервалы
+        return M7_YEAR_RULES.get(interval_name, "integrated")
+    elif period_days > 150:
+        # Полугодовые
+        return M7_HALFYEAR_RULES.get(interval_name, "integrated")
+    elif period_days > 60:
+        # Квартальные
+        return M7_QUARTER_RULES.get(interval_name, "integrated")
+    else:
+        # Месячные и короче
+        return M7_MONTH_RULES.get(interval_name, "integrated")
+
+
+# ============================================================================
+# ПРОСТАЯ МОДЕЛЬ
+# ============================================================================
+
+class SimpleModel:
+    """Простая модель Пуассона."""
+
+    def __init__(self, magnitude: float):
+        self.magnitude = magnitude
+        self.annual_rate = EARTHQUAKE_ANNUAL_RATES.get(magnitude, 15.0)
+
+    def predict_range(
+        self,
+        min_count: int,
+        max_count: Optional[int],
+        period_days: float,
+        current_count: int = 0,
+        **kwargs,
+    ) -> float:
+        """
+        P(итого будет в [min_count, max_count]) с учётом current_count.
+
+        Логика:
+        - Если current_count > max_count — вероятность 0 (уже перебрали)
+        - Если current_count >= min_count и max_count is None — нужно >=0 ещё
+        - Иначе нужно ещё от (min_count - current_count) до (max_count - current_count)
+        """
+        lam = self.annual_rate * (period_days / 365.0)
+
+        # Уже перебрали верхнюю границу?
+        if max_count is not None and current_count > max_count:
+            return 0.0
+
+        # Сколько ещё нужно событий
+        min_additional = max(0, min_count - current_count)
+
+        if max_count is None:
+            # Интервал типа "20+" — нужно ещё min_additional или больше
+            if min_additional == 0:
+                return 1.0  # Уже достигли
+            return 1.0 - self._poisson_cdf(min_additional - 1, lam)
+
+        max_additional = max_count - current_count
+
+        if max_additional < 0:
+            return 0.0  # Уже перебрали
+
+        if max_additional < min_additional:
+            return 0.0  # Невозможный диапазон
+
+        # P(min_additional <= X <= max_additional)
+        prob = self._poisson_cdf(max_additional, lam)
+        if min_additional > 0:
+            prob -= self._poisson_cdf(min_additional - 1, lam)
+
+        return max(0.0, min(1.0, prob))
+
+    def _poisson_pmf(self, k: int, lam: float) -> float:
+        if k < 0 or lam <= 0:
+            return 0.0
+        return (lam ** k) * math.exp(-lam) / math.factorial(k)
+
+    def _poisson_cdf(self, k: int, lam: float) -> float:
+        return sum(self._poisson_pmf(i, lam) for i in range(k + 1))
+
+
+# ============================================================================
+# КОНСЕНСУСНАЯ МОДЕЛЬ
+# ============================================================================
+
+class ConsensusModel:
+    """Консенсусная модель — среднее между простой и интегрированной."""
+
+    def __init__(self, magnitude: float):
+        self.simple = SimpleModel(magnitude)
+        self.integrated = IntegratedModel(magnitude)
+
+    def predict_range(
+        self,
+        min_count: int,
+        max_count: Optional[int],
+        period_days: float,
+        current_count: int = 0,
+        now: datetime = None,
+        recent_events: list = None,
+        **kwargs,
+    ) -> float:
+        simple_prob = self.simple.predict_range(
+            min_count, max_count, period_days, current_count
+        )
+        integrated_prob = self.integrated.probability_count(
+            min_count, max_count, period_days, current_count,
+            now=now,
+            recent_events=recent_events or [],
+        )
+
+        # Взвешенное среднее (интегрированная чуть важнее)
+        return 0.4 * simple_prob + 0.6 * integrated_prob
+
+
+# ============================================================================
+# ТЕСТИРОВАННАЯ МОДЕЛЬ (выбор по правилам)
+# ============================================================================
+
+class TestedModel:
+    """
+    Модель, выбирающая алгоритм на основе бэктеста.
+
+    Для каждого интервала выбирает лучшую модель по результатам бэктеста.
+    """
+
+    def __init__(self, magnitude: float):
+        self.magnitude = magnitude
+        self.simple = SimpleModel(magnitude)
+        self.integrated = IntegratedModel(magnitude)
+        self.consensus = ConsensusModel(magnitude)
+
+    def predict_range(
+        self,
+        min_count: int,
+        max_count: Optional[int],
+        period_days: float,
+        current_count: int = 0,
+        interval_name: str = "",
+        **kwargs,
+    ) -> tuple[float, str]:
+        """
+        Предсказать вероятность с автоматическим выбором модели.
+
+        Returns:
+            (probability, model_used)
+        """
+        # Определяем какую модель использовать
+        model_type = get_model_for_interval(
+            self.magnitude, period_days, interval_name
+        )
+
+        if model_type == "simple":
+            prob = self.simple.predict_range(
+                min_count, max_count, period_days, current_count
+            )
+        elif model_type == "consensus":
+            prob = self.consensus.predict_range(
+                min_count, max_count, period_days, current_count, **kwargs
+            )
+        else:  # integrated
+            prob = self.integrated.probability_count(
+                min_count, max_count, period_days, current_count,
+                now=kwargs.get('forecast_date'),
+                recent_events=kwargs.get('recent_events', []),
+            )
+
+        return prob, model_type
+
+
+# ============================================================================
+# АНАЛИЗ РЫНКОВ
+# ============================================================================
+
+@dataclass
+class TestedOpportunity(Opportunity):
+    """Расширенная возможность с информацией о выборе модели."""
+    model_used: str = ""
+    simple_prob: float = 0.0
+    integrated_prob: float = 0.0
+
+
+def analyze_market_tested(
+    event_slug: str,
+    config: dict,
+    usgs: USGSClient,
+    market_prices: dict[str, float],
+    poly: PolymarketClient = None,
+) -> list[TestedOpportunity]:
+    """Анализировать рынок с тестированной моделью."""
+    opportunities = []
+    now = datetime.now(timezone.utc)
+
+    magnitude = config["magnitude"]
+    start = config["start"]
+    end = config["end"]
+
+    # Получаем текущее количество событий
+    earthquakes = usgs.get_earthquakes(start, now, magnitude)
+    current_count = len(earthquakes)
+
+    # Оставшиеся дни
+    remaining_days = max(0, (end - now).total_seconds() / 86400)
+
+    if remaining_days <= 0:
+        return []  # Рынок уже завершён
+
+    # Полная длительность рынка (для выбора правил)
+    total_days = (end - start).total_seconds() / 86400
+
+    # Создаём модели
+    tested_model = TestedModel(magnitude)
+    simple_model = SimpleModel(magnitude)
+    integrated_model = IntegratedModel(magnitude)
+
+    # Получаем недавние события для ETAS (конвертируем в словари)
+    recent_start = now - timedelta(days=30)
+    recent_eq_objects = usgs.get_earthquakes(recent_start, now, magnitude - 0.5)
+    recent_earthquakes = [
+        {'time': eq.time, 'magnitude': eq.magnitude}
+        for eq in recent_eq_objects
+    ]
+
+    if config["type"] == "count":
+        for outcome_name, min_k, max_k in config["outcomes"]:
+            if outcome_name not in market_prices:
+                continue
+
+            # Проверяем, возможен ли ещё этот интервал
+            if max_k is not None and current_count > max_k:
+                # Уже перебрали — вероятность 0
+                fair_yes = 0.0
+                model_used = "impossible"
+            elif min_k is not None and current_count >= min_k and max_k is None:
+                # Интервал типа "20+" и уже достигли — нужно не провалиться ниже
+                # Но "20+" означает 20 или больше в конце, так что если уже 20+, вероятность = 1
+                fair_yes = 1.0
+                model_used = "certain"
+            else:
+                # Используем тестированную модель
+                fair_yes, model_used = tested_model.predict_range(
+                    min_k, max_k, remaining_days, current_count,
+                    interval_name=outcome_name,
+                    forecast_date=now,
+                    recent_events=recent_earthquakes,
+                )
+
+            # Также считаем простую и интегрированную для сравнения
+            simple_prob = simple_model.predict_range(
+                min_k, max_k, remaining_days, current_count
+            )
+            integrated_prob = integrated_model.probability_count(
+                min_k, max_k, remaining_days, current_count,
+                recent_events=recent_earthquakes,
+                now=now,
+            )
+
+            mkt_yes = market_prices[outcome_name]
+            mkt_no = 1 - mkt_yes
+
+            # Edge для YES
+            edge_yes = fair_yes - mkt_yes
+            if edge_yes > MIN_EDGE:
+                odds = (1 - mkt_yes) / mkt_yes if mkt_yes > 0 else 0
+                opp = TestedOpportunity(
+                    event=event_slug,
+                    outcome=outcome_name,
+                    side="YES",
+                    token_id="",
+                    fair_price=fair_yes,
+                    market_price=mkt_yes,
+                    edge=edge_yes,
+                    kelly=kelly_criterion(fair_yes, odds),
+                    current_count=current_count,
+                    lambda_used=remaining_days,
+                    remaining_days=remaining_days,
+                    model_used=model_used,
+                    simple_prob=simple_prob,
+                    integrated_prob=integrated_prob,
+                )
+                opportunities.append(opp)
+
+            # Edge для NO
+            fair_no = 1 - fair_yes
+            edge_no = fair_no - mkt_no
+            if edge_no > MIN_EDGE:
+                odds = (1 - mkt_no) / mkt_no if mkt_no > 0 else 0
+                opp = TestedOpportunity(
+                    event=event_slug,
+                    outcome=outcome_name,
+                    side="NO",
+                    token_id="",
+                    fair_price=fair_no,
+                    market_price=mkt_no,
+                    edge=edge_no,
+                    kelly=kelly_criterion(fair_no, odds),
+                    current_count=current_count,
+                    lambda_used=remaining_days,
+                    remaining_days=remaining_days,
+                    model_used=model_used,
+                    simple_prob=1 - simple_prob,
+                    integrated_prob=1 - integrated_prob,
+                )
+                opportunities.append(opp)
+
+    elif config["type"] == "binary":
+        # Бинарный рынок (будет/не будет хотя бы одно событие)
+        if current_count > 0:
+            fair_yes = 1.0
+            model_used = "certain"
+        else:
+            fair_yes, model_used = tested_model.predict_range(
+                1, None, remaining_days, current_count,
+                interval_name="1+",
+                forecast_date=now,
+                recent_events=recent_earthquakes,
+            )
+
+        simple_prob = simple_model.predict_range(1, None, remaining_days, current_count)
+        integrated_prob = integrated_model.probability_count(
+            1, None, remaining_days, current_count,
+            now=now,
+            recent_events=recent_earthquakes,
+        )
+
+        for outcome_name in ["Yes", "YES"]:
+            if outcome_name in market_prices:
+                mkt_yes = market_prices[outcome_name]
+                mkt_no = 1 - mkt_yes
+
+                edge_yes = fair_yes - mkt_yes
+                if edge_yes > MIN_EDGE:
+                    odds = (1 - mkt_yes) / mkt_yes if mkt_yes > 0 else 0
+                    opp = TestedOpportunity(
+                        event=event_slug,
+                        outcome="Yes",
+                        side="YES",
+                        token_id="",
+                        fair_price=fair_yes,
+                        market_price=mkt_yes,
+                        edge=edge_yes,
+                        kelly=kelly_criterion(fair_yes, odds),
+                        current_count=current_count,
+                        lambda_used=remaining_days,
+                        remaining_days=remaining_days,
+                        model_used=model_used,
+                        simple_prob=simple_prob,
+                        integrated_prob=integrated_prob,
+                    )
+                    opportunities.append(opp)
+
+                fair_no = 1 - fair_yes
+                edge_no = fair_no - mkt_no
+                if edge_no > MIN_EDGE:
+                    odds = (1 - mkt_no) / mkt_no if mkt_no > 0 else 0
+                    opp = TestedOpportunity(
+                        event=event_slug,
+                        outcome="No",
+                        side="NO",
+                        token_id="",
+                        fair_price=fair_no,
+                        market_price=mkt_no,
+                        edge=edge_no,
+                        kelly=kelly_criterion(fair_no, odds),
+                        current_count=current_count,
+                        lambda_used=remaining_days,
+                        remaining_days=remaining_days,
+                        model_used=model_used,
+                        simple_prob=1 - simple_prob,
+                        integrated_prob=1 - integrated_prob,
+                    )
+                    opportunities.append(opp)
+
+    return opportunities
+
+
+def run_analysis(poly: PolymarketClient, usgs: USGSClient) -> list[TestedOpportunity]:
+    """Запустить анализ всех рынков."""
+    all_opportunities = []
+
+    # Получаем данные с Polymarket
+    all_prices = poly.get_all_earthquake_prices()
+
+    for event_slug, markets in all_prices.items():
+        if event_slug not in MARKET_CONFIGS:
+            continue
+
+        config = MARKET_CONFIGS[event_slug]
+
+        # Собираем рыночные цены и condition_ids
+        market_prices = {}
+        token_ids = {}
+        condition_ids = {}
+
+        for market in markets:
+            if not market.active:
+                continue
+
+            yes_outcome = None
+            no_outcome = None
+            for outcome in market.outcomes:
+                if outcome.outcome_name == "Yes":
+                    yes_outcome = outcome
+                elif outcome.outcome_name == "No":
+                    no_outcome = outcome
+
+            if yes_outcome is None or yes_outcome.closed:
+                continue
+
+            q = market.question.lower()
+
+            import re
+            for name, _, _ in config.get("outcomes", []):
+                matched = False
+
+                if name.endswith("+"):
+                    num = name[:-1]
+                    matched = bool(re.search(rf'\b{num}\s+or\s+more\b', q))
+                elif "-" in name and name[0].isdigit():
+                    parts = name.split("-")
+                    if len(parts) == 2:
+                        matched = bool(re.search(rf'between\s+{parts[0]}\s+and\s+{parts[1]}', q))
+                elif name.startswith("<"):
+                    num = name[1:]
+                    matched = bool(re.search(rf'fewer\s+than\s+{num}\b', q))
+                else:
+                    matched = bool(re.search(rf'exactly\s+{name}\b', q))
+
+                if matched:
+                    market_prices[name] = yes_outcome.yes_price
+                    token_ids[(name, "YES")] = yes_outcome.token_id
+                    condition_ids[name] = market.condition_id
+                    if no_outcome:
+                        token_ids[(name, "NO")] = no_outcome.token_id
+                    break
+            else:
+                market_prices[yes_outcome.outcome_name] = yes_outcome.yes_price
+                token_ids[(yes_outcome.outcome_name, "YES")] = yes_outcome.token_id
+                condition_ids[yes_outcome.outcome_name] = market.condition_id
+                if no_outcome:
+                    token_ids[("No", "NO")] = no_outcome.token_id
+
+        # Анализируем
+        opps = analyze_market_tested(event_slug, config, usgs, market_prices, poly)
+
+        # Добавляем token_id и condition_id
+        for opp in opps:
+            key = (opp.outcome, opp.side)
+            opp.token_id = token_ids.get(key, "")
+
+            if opp.outcome in condition_ids:
+                opp.condition_id = condition_ids[opp.outcome]
+            elif "Yes" in condition_ids:
+                opp.condition_id = condition_ids["Yes"]
+
+        all_opportunities.extend(opps)
+
+    # Получаем реальные цены из ордербука
+    print("Проверяю ордербуки...")
+    updated_opportunities = []
+    for opp in all_opportunities:
+        if opp.condition_id:
+            outcome_to_check = "Yes" if opp.side == "YES" else "No"
+            best_ask, liquidity, token_id = get_orderbook_data(poly, opp.condition_id, outcome_to_check)
+
+            opp.liquidity_usd = liquidity
+            if token_id:
+                opp.token_id = token_id
+
+            if best_ask is not None and best_ask > 0:
+                opp.market_price = best_ask
+                opp.edge = opp.fair_price - opp.market_price
+
+                if opp.market_price > 0 and opp.market_price < 1:
+                    odds = (1 - opp.market_price) / opp.market_price
+                    opp.kelly = kelly_criterion(opp.fair_price, odds)
+                else:
+                    opp.kelly = 0
+
+        if opp.edge > MIN_EDGE:
+            updated_opportunities.append(opp)
+
+    all_opportunities = updated_opportunities
+
+    # Фильтруем по минимальной годовой доходности
+    all_opportunities = [
+        opp for opp in all_opportunities
+        if opp.annual_return >= MIN_ANNUAL_RETURN
+    ]
+
+    # Сортируем по годовой доходности
+    all_opportunities.sort(key=lambda x: x.annual_return, reverse=True)
+
+    return all_opportunities
+
+
+def print_opportunities(opportunities: list[TestedOpportunity], poly: PolymarketClient = None):
+    """Вывести возможности с информацией о модели."""
+    print("\n" + "=" * 80)
+    print("ТОРГОВЫЕ ВОЗМОЖНОСТИ (Тестированная модель)")
+    print("=" * 80)
+
+    if not opportunities:
+        print(f"\nНет возможностей с edge > {MIN_EDGE:.0%} и APY > {MIN_ANNUAL_RETURN:.0%}")
+        return
+
+    # Группируем по событию
+    best_per_event: dict[str, TestedOpportunity] = {}
+    for opp in opportunities:
+        if opp.event not in best_per_event or opp.annual_return > best_per_event[opp.event].annual_return:
+            best_per_event[opp.event] = opp
+
+    selected = list(best_per_event.values())
+    selected.sort(key=lambda x: (x.annual_return, x.expected_return), reverse=True)
+
+    for i, opp in enumerate(selected, 1):
+        url = f"https://polymarket.com/event/{opp.event}"
+        model_tag = opp.model_used.upper()
+
+        print(f"\n{i}. {url}")
+        print(f"   BUY {opp.side} на '{opp.outcome}'")
+        print(f"   Модель: {opp.fair_price*100:.1f}% ({model_tag})  |  Рынок: {opp.market_price*100:.1f}%  |  Edge: {opp.edge*100:+.1f}%")
+        print(f"   Событий: {opp.current_count}  |  Дней: {opp.remaining_days:.0f}  |  ROI: {opp.expected_return*100:+.1f}%  |  APY: {opp.annual_return*100:+.0f}%")
+
+        # Уровни из ордербука
+        if poly and opp.token_id:
+            tiers = get_orderbook_tiers(poly, opp.token_id, opp.fair_price, opp.remaining_days)
+            if tiers:
+                print(f"   Инвестиции по уровням:")
+                apy_groups = {}
+                for tier in tiers:
+                    apy_rounded = int(tier["apy"] * 100)
+                    if apy_rounded not in apy_groups:
+                        apy_groups[apy_rounded] = 0
+                    apy_groups[apy_rounded] = tier["cumulative_usd"]
+
+                shown = 0
+                prev_cumulative = 0
+                for apy_pct in sorted(apy_groups.keys(), reverse=True):
+                    if apy_pct < MIN_ANNUAL_RETURN * 100:
+                        break
+                    cumulative = apy_groups[apy_pct]
+                    if cumulative > prev_cumulative + 10:
+                        print(f"     → ${cumulative:,.0f} с APY {apy_pct}%+")
+                        prev_cumulative = cumulative
+                        shown += 1
+                        if shown >= 5:
+                            break
+
+    print(f"\n" + "-" * 80)
+    print(f"Всего {len(selected)} возможностей")
+
+    return selected
+
+
+def save_report_to_markdown(
+    opportunities: list[TestedOpportunity],
+    poly: PolymarketClient,
+    output_dir: Path = None,
+) -> Path:
+    """Сохранить отчёт в markdown файл."""
+    if output_dir is None:
+        output_dir = Path(__file__).parent / "output"
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    now = datetime.now(timezone.utc)
+    filename = now.strftime("%Y-%m-%d_%H-%M") + "_tested_UTC.md"
+    filepath = output_dir / filename
+
+    lines = []
+    lines.append(f"# Earthquake Bot Report (Tested Model)")
+    lines.append(f"")
+    lines.append(f"**Время:** {now.strftime('%Y-%m-%d %H:%M UTC')}")
+    lines.append(f"")
+    lines.append(f"## Правила выбора модели")
+    lines.append(f"")
+    lines.append(f"- **M7.0+**: Интегрированная (кроме интервалов <5, 14-16, 2, 7)")
+    lines.append(f"- **M8.0+**: Смешанные правила")
+    lines.append(f"- **M9.0+**: Простая")
+    lines.append(f"")
+    lines.append(f"---")
+    lines.append(f"")
+    lines.append(f"## Торговые возможности")
+    lines.append(f"")
+
+    if not opportunities:
+        lines.append(f"Нет возможностей с edge > {MIN_EDGE:.0%} и APY > {MIN_ANNUAL_RETURN:.0%}")
+    else:
+        for i, opp in enumerate(opportunities, 1):
+            lines.append(f"### {i}. {opp.event}")
+            lines.append(f"")
+            lines.append(f"**Ссылка:** https://polymarket.com/event/{opp.event}")
+            lines.append(f"")
+            lines.append(f"| Параметр | Значение |")
+            lines.append(f"|----------|----------|")
+            lines.append(f"| Позиция | BUY {opp.side} на '{opp.outcome}' |")
+            lines.append(f"| Модель | {opp.fair_price*100:.1f}% ({opp.model_used.upper()}) |")
+            lines.append(f"| Рынок | {opp.market_price*100:.1f}% |")
+            lines.append(f"| Edge | {opp.edge*100:+.1f}% |")
+            lines.append(f"| Событий | {opp.current_count} |")
+            lines.append(f"| Дней | {opp.remaining_days:.0f} |")
+            lines.append(f"| ROI | {opp.expected_return*100:+.1f}% |")
+            lines.append(f"| APY | {opp.annual_return*100:+.0f}% |")
+            lines.append(f"")
+
+            if poly and opp.token_id:
+                tiers = get_orderbook_tiers(poly, opp.token_id, opp.fair_price, opp.remaining_days)
+                if tiers:
+                    lines.append(f"**Инвестиции по уровням:**")
+                    lines.append(f"")
+                    lines.append(f"| Сумма | Мин APY |")
+                    lines.append(f"|-------|---------|")
+
+                    apy_groups = {}
+                    for tier in tiers:
+                        apy_rounded = int(tier["apy"] * 100)
+                        if apy_rounded not in apy_groups:
+                            apy_groups[apy_rounded] = 0
+                        apy_groups[apy_rounded] = tier["cumulative_usd"]
+
+                    shown = 0
+                    prev_cumulative = 0
+                    for apy_pct in sorted(apy_groups.keys(), reverse=True):
+                        if apy_pct < MIN_ANNUAL_RETURN * 100:
+                            break
+                        cumulative = apy_groups[apy_pct]
+                        if cumulative > prev_cumulative + 10:
+                            lines.append(f"| ${cumulative:,.0f} | {apy_pct}%+ |")
+                            prev_cumulative = cumulative
+                            shown += 1
+                            if shown >= 5:
+                                break
+
+                    lines.append(f"")
+
+    lines.append(f"---")
+    lines.append(f"")
+    lines.append(f"*Всего {len(opportunities)} возможностей*")
+
+    content = "\n".join(lines)
+    filepath.write_text(content, encoding="utf-8")
+
+    return filepath
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Earthquake Trading Bot (Tested Model)")
+    parser.add_argument("--debug", action="store_true", help="Режим отладки")
+    parser.add_argument("--auto", action="store_true", help="Автоматическая торговля")
+    parser.add_argument("--bankroll", type=float, default=230.0, help="Банкролл в USD")
+    args = parser.parse_args()
+
+    print("=" * 80)
+    print("EARTHQUAKE TRADING BOT — TESTED MODEL")
+    print("=" * 80)
+    print(f"Время: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    print(f"Режим: {'AUTO' if args.auto else ('DEBUG' if args.debug else 'ANALYSIS')}")
+    print(f"")
+    print(f"Правила выбора модели (из бэктеста):")
+    print(f"  M7.0+: Интегрированная (кроме <5, 14-16, 2, 7)")
+    print(f"  M8.0+: Смешанные правила по интервалам")
+    print(f"  M9.0+: Простая")
+    print(f"")
+    print(f"Min Edge: {MIN_EDGE*100:.0f}%  |  Min APY: {MIN_ANNUAL_RETURN*100:.0f}%")
+
+    # Инициализация
+    poly = PolymarketClient()
+    usgs = USGSClient()
+
+    # Анализ
+    print("\nАнализирую рынки...")
+    opportunities = run_analysis(poly, usgs)
+
+    # Вывод
+    selected = print_opportunities(opportunities, poly)
+
+    # Сохраняем отчёт
+    if selected:
+        report_path = save_report_to_markdown(selected, poly)
+        print(f"\nОтчёт сохранён: {report_path}")
+
+    # Торговля
+    if (args.debug or args.auto) and opportunities:
+        allocations = allocate_portfolio(opportunities, args.bankroll)
+
+        if allocations:
+            print("\n" + "=" * 80)
+            print("ТОРГОВЛЯ")
+            print("=" * 80)
+
+            for opp, bet_size in allocations:
+                if args.auto:
+                    execute_trade(poly, opp, bet_size, debug=False)
+                elif args.debug:
+                    execute_trade(poly, opp, bet_size, debug=True)
+
+    print("\n" + "=" * 80)
+    print("Готово!")
+
+
+if __name__ == "__main__":
+    main()

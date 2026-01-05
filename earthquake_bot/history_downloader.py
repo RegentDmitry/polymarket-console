@@ -3,14 +3,25 @@
 Модуль для скачивания исторических данных earthquake рынков.
 
 Скачивает:
-1. Метаданные событий из Gamma API
-2. Историю сделок из CLOB API
-3. Историю землетрясений из USGS
+1. Метаданные событий из Gamma API (--metadata)
+2. Историю землетрясений из USGS (--usgs)
+3. Историю сделок из блокчейна Polygon (--blockchain)
+4. Историю сделок из Dune Analytics (--dune --query-id ID)
 
 Использование:
-    python history_downloader.py              # Скачать всё
-    python history_downloader.py --trades     # Только сделки
-    python history_downloader.py --usgs       # Только USGS данные
+    python history_downloader.py                    # Скачать метаданные + USGS
+    python history_downloader.py --metadata         # Только метаданные
+    python history_downloader.py --usgs             # Только USGS данные
+    python history_downloader.py --blockchain       # Сделки из блокчейна (100k блоков)
+    python history_downloader.py --blockchain --blocks 500000  # Больше блоков
+    python history_downloader.py --dune --query-id 123456      # Сделки из Dune
+
+Данные сохраняются в history/:
+    - closed/*.json   - закрытые события
+    - open/*.json     - открытые события
+    - trades/*.json   - история сделок
+    - usgs/*.json     - данные о землетрясениях
+    - summary.json    - сводка
 """
 
 import argparse
@@ -39,6 +50,15 @@ USGS_DIR = HISTORY_DIR / "usgs"
 GAMMA_API = "https://gamma-api.polymarket.com"
 CLOB_API = os.getenv("CLOB_API_URL", "https://clob.polymarket.com")
 USGS_API = "https://earthquake.usgs.gov/fdsnws/event/1"
+
+# Polygon RPC (QuikNode поддерживает 2000 блоков за запрос)
+POLYGON_RPC = os.getenv("POLYGON_RPC", "https://polygon-mainnet.g.alchemy.com/v2/demo")
+
+# CTFExchange контракт (Polymarket)
+CTF_EXCHANGE = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+
+# OrderFilled event signature (из реальных логов контракта)
+ORDER_FILLED_TOPIC = "0xd0a08e8c493f9c94f29311604c9de1b4e8c8d4c06bd0c789af57f2d65bfec0f6"
 
 # CLOB credentials
 CLOB_API_KEY = os.getenv("CLOB_API_KEY", "")
@@ -542,6 +562,281 @@ def download_dune_trades(query_id: int = None):
 
 
 # ============================================================================
+# POLYGON RPC - История сделок из блокчейна
+# ============================================================================
+
+def load_earthquake_token_ids() -> tuple[set, dict]:
+    """Загрузить все token_ids earthquake рынков из сохранённых метаданных.
+
+    Returns:
+        tuple: (set of token_ids, dict mapping token_id -> market title)
+    """
+    token_ids = set()
+    token_to_market = {}
+
+    for dir_path in [CLOSED_DIR, OPEN_DIR]:
+        if not dir_path.exists():
+            continue
+
+        for filepath in dir_path.glob("*.json"):
+            try:
+                with open(filepath) as f:
+                    event = json.load(f)
+
+                title = event.get("title", filepath.stem)
+
+                for market in event.get("markets", []):
+                    clob_tokens = market.get("clobTokenIds", "[]")
+                    if isinstance(clob_tokens, str):
+                        clob_tokens = json.loads(clob_tokens)
+
+                    outcomes = market.get("outcomes", "[]")
+                    if isinstance(outcomes, str):
+                        outcomes = json.loads(outcomes)
+
+                    for i, token_id in enumerate(clob_tokens):
+                        token_ids.add(str(token_id))
+                        outcome = outcomes[i] if i < len(outcomes) else "?"
+                        token_to_market[str(token_id)] = f"{title} [{outcome}]"
+
+            except Exception as e:
+                print(f"  ⚠️  Ошибка загрузки {filepath}: {e}")
+
+    return token_ids, token_to_market
+
+
+def get_current_block() -> int:
+    """Получить текущий номер блока."""
+    try:
+        r = httpx.post(
+            POLYGON_RPC,
+            json={"jsonrpc": "2.0", "method": "eth_blockNumber", "params": [], "id": 1},
+            timeout=30,
+        )
+        data = r.json()
+        if "error" in data:
+            print(f"  ❌ RPC error: {data['error']}")
+            return 0
+        if "result" not in data:
+            print(f"  ❌ Неожиданный ответ: {data}")
+            return 0
+        return int(data["result"], 16)
+    except Exception as e:
+        print(f"  ❌ Ошибка получения блока: {e}")
+        return 0
+
+
+def get_block_timestamp(block_number: int) -> int:
+    """Получить timestamp блока."""
+    try:
+        r = httpx.post(
+            POLYGON_RPC,
+            json={
+                "jsonrpc": "2.0",
+                "method": "eth_getBlockByNumber",
+                "params": [hex(block_number), False],
+                "id": 1,
+            },
+            timeout=30,
+        )
+        result = r.json().get("result")
+        if result:
+            return int(result["timestamp"], 16)
+    except:
+        pass
+    return 0
+
+
+def fetch_order_filled_logs(from_block: int, to_block: int) -> list:
+    """Получить OrderFilled логи из блокчейна."""
+    try:
+        r = httpx.post(
+            POLYGON_RPC,
+            json={
+                "jsonrpc": "2.0",
+                "method": "eth_getLogs",
+                "params": [{
+                    "address": CTF_EXCHANGE,
+                    "topics": [ORDER_FILLED_TOPIC],
+                    "fromBlock": hex(from_block),
+                    "toBlock": hex(to_block),
+                }],
+                "id": 1,
+            },
+            timeout=60,
+        )
+
+        result = r.json()
+        if "error" in result:
+            error_msg = result["error"].get("message", "Unknown error")
+            if "range" in error_msg.lower():
+                return None  # Слишком большой диапазон блоков
+            print(f"  ⚠️  RPC error: {error_msg}")
+            return []
+
+        return result.get("result", [])
+
+    except Exception as e:
+        print(f"  ❌ Ошибка запроса логов: {e}")
+        return []
+
+
+def decode_order_filled(log: dict) -> dict:
+    """Декодировать OrderFilled событие.
+
+    NOTE: Цена рассчитывается как amount_usd / amount_tokens.
+    На Polymarket цена должна быть 0-1, но из-за особенностей контракта
+    результат может отличаться. Для точного расчёта нужно изучить
+    логику CTFExchange контракта.
+    """
+    data = log.get("data", "0x")[2:]  # Убираем "0x"
+
+    if len(data) < 320:  # 5 параметров по 64 символа
+        return None
+
+    try:
+        # OrderFilled event data (indexed: orderHash, maker, taker в topics):
+        # data[0:64] = side (uint8, 0=BUY, 1=SELL)
+        # data[64:128] = assetId (uint256 - token ID)
+        # data[128:192] = makerAmountFilled (uint256 - outcome tokens)
+        # data[192:256] = takerAmountFilled (uint256 - USDC в raw units)
+        # data[256:320] = fee (uint256)
+
+        side = int(data[0:64], 16)  # 0 = BUY, 1 = SELL
+        asset_id = str(int(data[64:128], 16))
+        maker_amount = int(data[128:192], 16) / 1e6  # Outcome tokens (6 decimals)
+        taker_amount = int(data[192:256], 16) / 1e6  # USDC (6 decimals)
+
+        # Цена = USDC / outcome tokens
+        # TODO: Проверить правильность расчёта для Polymarket
+        if maker_amount > 0:
+            price = taker_amount / maker_amount
+        else:
+            price = 0
+
+        return {
+            "block": int(log["blockNumber"], 16),
+            "tx_hash": log["transactionHash"],
+            "asset_id": asset_id,
+            "side": "BUY" if side == 0 else "SELL",
+            "amount_usd": taker_amount,  # Сумма в USDC
+            "amount_tokens": maker_amount,  # Количество токенов
+            "price": round(price, 6),
+        }
+
+    except Exception:
+        return None
+
+
+def download_blockchain_trades(
+    start_block: int = None,
+    blocks_to_scan: int = 100000,
+    chunk_size: int = 2000,
+):
+    """Скачать историю сделок из блокчейна Polygon."""
+    print("\n" + "=" * 60)
+    print("СКАЧИВАНИЕ ИСТОРИИ СДЕЛОК (Polygon RPC)")
+    print("=" * 60)
+
+    # Загружаем earthquake token IDs
+    token_ids, token_to_market = load_earthquake_token_ids()
+    if not token_ids:
+        print("\n⚠️  Не найдены token_ids. Сначала скачайте метаданные:")
+        print("   python history_downloader.py --metadata")
+        return []
+
+    print(f"\n📊 Token IDs для earthquake рынков: {len(token_ids)}")
+
+    # Определяем диапазон блоков
+    current_block = get_current_block()
+    if not current_block:
+        print("❌ Не удалось получить текущий блок")
+        return []
+
+    if start_block is None:
+        start_block = current_block - blocks_to_scan
+
+    print(f"📦 Текущий блок: {current_block}")
+    print(f"📦 Сканируем: {start_block} → {current_block} ({current_block - start_block} блоков)")
+    print(f"📦 Chunk size: {chunk_size} блоков")
+
+    TRADES_DIR.mkdir(parents=True, exist_ok=True)
+
+    all_trades = []
+    total_logs = 0
+    failed_chunks = 0
+
+    # Сканируем блоки чанками
+    chunks_total = (current_block - start_block) // chunk_size + 1
+    chunk_num = 0
+
+    for from_block in range(start_block, current_block, chunk_size):
+        to_block = min(from_block + chunk_size - 1, current_block)
+        chunk_num += 1
+
+        # Прогресс
+        progress = (chunk_num / chunks_total) * 100
+        print(f"\r  [{progress:5.1f}%] Блоки {from_block}-{to_block}...", end="", flush=True)
+
+        logs = fetch_order_filled_logs(from_block, to_block)
+
+        if logs is None:
+            # Слишком большой диапазон - пробуем меньший chunk
+            failed_chunks += 1
+            continue
+
+        total_logs += len(logs)
+
+        # Фильтруем earthquake trades
+        for log in logs:
+            trade = decode_order_filled(log)
+            if trade and trade["asset_id"] in token_ids:
+                trade["market"] = token_to_market.get(trade["asset_id"], "Unknown")
+                all_trades.append(trade)
+
+        time.sleep(0.1)  # Rate limiting
+
+    print(f"\n\n✅ Просканировано {total_logs:,} логов")
+    print(f"✅ Найдено {len(all_trades)} earthquake trades")
+
+    if failed_chunks > 0:
+        print(f"⚠️  Пропущено чанков (слишком большой range): {failed_chunks}")
+
+    if all_trades:
+        # Добавляем timestamps для первого и последнего трейда
+        if all_trades:
+            first_ts = get_block_timestamp(all_trades[0]["block"])
+            last_ts = get_block_timestamp(all_trades[-1]["block"])
+        else:
+            first_ts = last_ts = 0
+
+        # Сохраняем
+        filepath = TRADES_DIR / f"blockchain_trades_{start_block}_{current_block}.json"
+        with open(filepath, 'w') as f:
+            json.dump({
+                "source": "polygon_rpc",
+                "downloaded_at": datetime.now(timezone.utc).isoformat(),
+                "start_block": start_block,
+                "end_block": current_block,
+                "total_logs_scanned": total_logs,
+                "earthquake_trades_count": len(all_trades),
+                "first_trade_timestamp": first_ts,
+                "last_trade_timestamp": last_ts,
+                "trades": all_trades,
+            }, f, indent=2)
+
+        print(f"✅ Сохранено: {filepath}")
+
+        # Показываем примеры
+        print(f"\n📈 Примеры сделок:")
+        for trade in all_trades[:5]:
+            market = trade.get('market', 'Unknown')[:50]
+            print(f"  {trade['side']} ${trade['amount_usd']:.2f} - {market}")
+
+    return all_trades
+
+
+# ============================================================================
 # MAIN
 # ============================================================================
 
@@ -552,10 +847,13 @@ def main():
     parser.add_argument("--usgs", action="store_true", help="Только USGS")
     parser.add_argument("--dune", action="store_true", help="Только Dune Analytics")
     parser.add_argument("--query-id", type=int, help="Dune query ID для скачивания")
+    parser.add_argument("--blockchain", action="store_true", help="Сделки из Polygon блокчейна")
+    parser.add_argument("--blocks", type=int, default=100000, help="Сколько блоков сканировать (default: 100000)")
+    parser.add_argument("--chunk-size", type=int, default=2000, help="Размер чанка блоков (default: 2000)")
     args = parser.parse_args()
 
-    # Если ничего не указано - скачиваем всё (кроме Dune без query-id)
-    download_all = not (args.metadata or args.trades or args.usgs or args.dune)
+    # Если ничего не указано - скачиваем всё (кроме Dune и blockchain)
+    download_all = not (args.metadata or args.trades or args.usgs or args.dune or args.blockchain)
 
     print("=" * 60)
     print("EARTHQUAKE HISTORY DOWNLOADER")
@@ -568,6 +866,12 @@ def main():
 
     if args.trades or args.dune or args.query_id:
         download_dune_trades(args.query_id)
+
+    if args.blockchain:
+        download_blockchain_trades(
+            blocks_to_scan=args.blocks,
+            chunk_size=args.chunk_size,
+        )
 
     if download_all or args.usgs:
         download_all_usgs()
