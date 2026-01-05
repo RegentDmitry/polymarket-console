@@ -4,7 +4,7 @@
 
 Сравнивает три модели на исторических данных USGS (1973+):
 1. Простая модель (Poisson)
-2. Интегрированная модель (Bayesian + ETAS + Lunar)
+2. Интегрированная модель (Bayesian + ETAS)
 3. Консенсусная модель (комбинация)
 
 Периоды прогнозирования:
@@ -78,13 +78,6 @@ except ImportError:
         if x <= 0:
             return float('inf')
         return (x - 0.5) * math.log(x) - x + 0.5 * math.log(2 * math.pi)
-
-# Для лунных фаз
-try:
-    import ephem
-    HAS_EPHEM = True
-except ImportError:
-    HAS_EPHEM = False
 
 # Для HTTP запросов
 try:
@@ -393,18 +386,16 @@ class SimpleModel:
 
 
 class IntegratedModel:
-    """Интегрированная модель (Bayesian + ETAS + Lunar)."""
+    """Интегрированная модель (Bayesian + ETAS)."""
 
     def __init__(
         self,
         magnitude: float,
         use_bayesian: bool = True,
-        use_etas: bool = True,
-        use_lunar: bool = True,
+        use_etas: bool = False,  # Отключено: для M7.0+ эффект минимален
     ):
         self.magnitude = magnitude
         self.use_etas = use_etas
-        self.use_lunar = use_lunar and HAS_EPHEM
 
         # Выбираем исторические данные
         if magnitude >= 9.0:
@@ -497,34 +488,6 @@ class IntegratedModel:
 
         return boost
 
-    def _lunar_modifier(
-        self,
-        start_date: datetime,
-        end_date: datetime,
-    ) -> float:
-        """Лунный модификатор."""
-        if not self.use_lunar:
-            return 1.0
-
-        total_days = (end_date - start_date).days
-        if total_days <= 0 or total_days > 365:
-            return 1.0
-
-        total_modifier = 0.0
-        sample_days = min(total_days, 60)
-        step = max(1, total_days // sample_days)
-        samples = 0
-
-        for i in range(0, total_days, step):
-            date = start_date + timedelta(days=i)
-            moon = ephem.Moon(date)
-            phase = moon.phase / 100.0
-            effect = math.cos(4 * math.pi * phase) * 0.075
-            total_modifier += 1.0 + effect
-            samples += 1
-
-        return total_modifier / samples if samples > 0 else 1.0
-
     def predict_at_least(
         self,
         min_count: int,
@@ -551,20 +514,16 @@ class IntegratedModel:
         # ETAS
         etas_lambda = self._etas_boost(recent_events, forecast_date)
 
-        # Lunar
-        lunar_mod = self._lunar_modifier(forecast_date, end_date)
-
         # Корректируем параметры
         remaining_years = period_days / 365.0
         effective_beta = beta_post / (1 + etas_lambda / max(lambda_mean, 0.1))
-        effective_beta = effective_beta / lunar_mod
 
         r = alpha_post
         p = effective_beta / (effective_beta + remaining_years)
 
         if p <= 0 or p >= 1:
             # Fallback на Poisson
-            lam = lambda_mean * remaining_years * lunar_mod
+            lam = lambda_mean * remaining_years
             additional_needed = min_count - current_count
             return 1.0 - poisson_cdf(additional_needed - 1, lam)
 
@@ -598,13 +557,9 @@ class IntegratedModel:
         # ETAS
         etas_lambda = self._etas_boost(recent_events, forecast_date)
 
-        # Lunar
-        lunar_mod = self._lunar_modifier(forecast_date, end_date)
-
         # Корректируем параметры
         remaining_years = period_days / 365.0
         effective_beta = beta_post / (1 + etas_lambda / max(lambda_mean, 0.1))
-        effective_beta = effective_beta / lunar_mod
 
         r = alpha_post
         p = effective_beta / (effective_beta + remaining_years)
@@ -613,7 +568,7 @@ class IntegratedModel:
 
         if p <= 0 or p >= 1:
             # Fallback на Poisson
-            lam = lambda_mean * remaining_years * lunar_mod
+            lam = lambda_mean * remaining_years
             if max_count is None:
                 return 1.0 - poisson_cdf(min_additional - 1, lam) if min_additional > 0 else 1.0
             max_additional = max_count - current_count
@@ -1847,7 +1802,6 @@ def main():
     print(f"Параллелизм: {'ВЫКЛ' if args.no_parallel else f'{n_workers} workers'}")
     print(f"TQDM: {'ВКЛ' if HAS_TQDM else 'ВЫКЛ (pip install tqdm)'}")
     print(f"Scipy: {'ВКЛ' if HAS_SCIPY else 'ВЫКЛ (pip install scipy)'}")
-    print(f"Ephem: {'ВКЛ' if HAS_EPHEM else 'ВЫКЛ (pip install ephem)'}")
     print()
 
     # Определяем магнитуды для тестирования

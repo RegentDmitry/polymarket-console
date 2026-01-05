@@ -5,8 +5,7 @@ Earthquake Trading Bot с ИНТЕГРИРОВАННОЙ МОДЕЛЬЮ для P
 Улучшения по сравнению с базовой моделью (main.py):
 1. Байесовский Пуассон (Gamma-Poisson) вместо фиксированного λ
 2. ETAS-коррекция для учёта кластеризации афтершоков
-3. Лунный модификатор (приливные силы)
-4. Исторический fit на данных 1900-2024
+3. Исторический fit на данных 1900-2024
 
 Использование:
     python main_integrated.py              # Режим анализа (без торговли)
@@ -37,13 +36,6 @@ except ImportError:
     HAS_SCIPY = False
     print("WARNING: scipy not installed. Using fallback implementations.")
 
-# Для лунных фаз
-try:
-    import ephem
-    HAS_EPHEM = True
-except ImportError:
-    HAS_EPHEM = False
-    print("WARNING: ephem not installed. Lunar modifier disabled.")
 
 
 # ============================================================================
@@ -205,20 +197,22 @@ class IntegratedModel:
 
     Компоненты:
     1. Bayesian Poisson (Gamma-Poisson conjugate)
-    2. ETAS-коррекция (кластеризация)
-    3. Лунный модификатор (приливы)
+    2. ETAS-коррекция (кластеризация) — отключена по умолчанию
+
+    Примечание по ETAS:
+        ETAS полезен для M4.0-5.0 на коротких горизонтах (дни-недели).
+        Для M7.0+ на месячных горизонтах эффект < 0.1%, можно игнорировать.
+        Включать use_etas=True только для низких магнитуд.
     """
 
     def __init__(
         self,
         magnitude: float = 7.0,
-        use_etas: bool = True,
-        use_lunar: bool = True,
+        use_etas: bool = False,  # Отключено: для M7.0+ эффект минимален
         use_bayesian: bool = True,
     ):
         self.magnitude = magnitude
         self.use_etas = use_etas
-        self.use_lunar = use_lunar and HAS_EPHEM
         self.use_bayesian = use_bayesian and HAS_SCIPY
 
         # Выбираем исторические данные в зависимости от магнитуды
@@ -340,56 +334,6 @@ class IntegratedModel:
 
         return boost
 
-    def lunar_modifier(
-        self,
-        start_date: datetime,
-        end_date: datetime,
-    ) -> float:
-        """
-        Лунный модификатор для периода.
-
-        Эффект ~15% при сизигиях (полнолуние/новолуние).
-        Усредняем по периоду.
-
-        Returns:
-            Множитель (около 1.0, в диапазоне 0.925 - 1.075)
-        """
-        if not self.use_lunar:
-            return 1.0
-
-        # Для коротких периодов считаем среднее по дням
-        total_days = (end_date - start_date).days
-
-        if total_days <= 0:
-            return 1.0
-
-        if total_days > 365:
-            # Для длинных периодов эффект усредняется до ~1.0
-            return 1.0
-
-        # Сэмплируем каждый день
-        total_modifier = 0.0
-        sample_days = min(total_days, 60)  # Максимум 60 точек
-        step = max(1, total_days // sample_days)
-
-        for i in range(0, total_days, step):
-            date = start_date + timedelta(days=i)
-
-            # Вычисляем лунную фазу
-            moon = ephem.Moon(date)
-
-            # Фаза от 0 (новолуние) до 1 (полнолуние) и обратно
-            phase = moon.phase / 100.0  # 0-1
-
-            # Максимальный эффект при новолунии (phase=0) и полнолунии (phase≈0.5)
-            # cos(4π * phase) = 1 при phase=0, 0.5, 1.0 (сизигии)
-            #                 = -1 при phase=0.25, 0.75 (квадратуры)
-            effect = math.cos(4 * math.pi * phase) * 0.075  # ±7.5%
-
-            total_modifier += 1.0 + effect
-
-        return total_modifier / (total_days // step + 1)
-
     def probability_count(
         self,
         min_count: int,
@@ -433,21 +377,16 @@ class IntegratedModel:
         # 2. ETAS boost
         etas_lambda = self.etas_boost(recent_events, now)
 
-        # 3. Lunar modifier
-        lunar_mod = self.lunar_modifier(now, end_date)
-
-        # 4. Финальный λ для периода
+        # 3. Финальный λ для периода
         remaining_years = remaining_days / 365.0
 
         # Базовый λ для периода из posterior
         # Predictive: X ~ NegBinom(α_post, β_post/(β_post + t))
         # где t = remaining_years
 
-        # Корректируем на ETAS и лунный эффект
-        # Это грубое приближение - в идеале нужно интегрировать
+        # Корректируем на ETAS
         effective_alpha = alpha_post
         effective_beta = beta_post / (1 + etas_lambda / lambda_mean)
-        effective_beta = effective_beta / lunar_mod
 
         # Negative Binomial параметры
         r = effective_alpha
@@ -455,7 +394,7 @@ class IntegratedModel:
 
         if p <= 0 or p >= 1:
             # Fallback на простой Пуассон
-            lam = lambda_mean * remaining_years * lunar_mod + etas_lambda * remaining_years
+            lam = lambda_mean * remaining_years + etas_lambda * remaining_years
             return self._poisson_range(min_count - current_count, max_count - current_count if max_count else None, lam)
 
         # Считаем дополнительное количество (сверх current_count)
@@ -521,7 +460,6 @@ class IntegratedModel:
             "magnitude": self.magnitude,
             "use_bayesian": self.use_bayesian,
             "use_etas": self.use_etas,
-            "use_lunar": self.use_lunar,
             "alpha_prior": self.alpha_prior,
             "beta_prior": self.beta_prior,
             "annual_rate_mean": self.annual_rate,
@@ -977,8 +915,7 @@ def analyze_market(
 def run_analysis(
     poly: PolymarketClient,
     usgs: USGSClient,
-    use_etas: bool = True,
-    use_lunar: bool = True,
+    use_etas: bool = False,  # Отключено: для M7.0+ эффект минимален
     use_bayesian: bool = True,
 ) -> list[Opportunity]:
     """Запустить анализ всех рынков."""
@@ -1011,7 +948,6 @@ def run_analysis(
         integrated_model = IntegratedModel(
             magnitude=magnitude,
             use_etas=use_etas,
-            use_lunar=use_lunar,
             use_bayesian=use_bayesian,
         )
         simple_model = SimpleModel(magnitude=magnitude)
@@ -1291,7 +1227,6 @@ def save_report_to_markdown(
     lines.append(f"|----------|----------|")
     lines.append(f"| Bayesian | {'Да' if model_info.get('use_bayesian') else 'Нет'} |")
     lines.append(f"| ETAS | {'Да' if model_info.get('use_etas') else 'Нет'} |")
-    lines.append(f"| Lunar | {'Да' if model_info.get('use_lunar') else 'Нет'} |")
     lines.append(f"| α prior (M7.0) | {GAMMA_ALPHA_M7:.1f} |")
     lines.append(f"| β prior (M7.0) | {GAMMA_BETA_M7:.2f} |")
     lines.append(f"| λ mean | {M7_MEAN:.1f}/год |")
@@ -1415,12 +1350,10 @@ def main():
     parser.add_argument("--bankroll", type=float, default=230.0, help="Банкролл в USD")
     parser.add_argument("--compare", action="store_true", help="Показать сравнение с простой моделью")
     parser.add_argument("--no-etas", action="store_true", help="Отключить ETAS-коррекцию")
-    parser.add_argument("--no-lunar", action="store_true", help="Отключить лунный модификатор")
     parser.add_argument("--no-bayesian", action="store_true", help="Отключить Bayesian (использовать точечную оценку)")
     args = parser.parse_args()
 
     use_etas = not args.no_etas
-    use_lunar = not args.no_lunar
     use_bayesian = not args.no_bayesian
 
     print("=" * 80)
@@ -1432,7 +1365,6 @@ def main():
     print()
     # Реальный статус компонентов (с учётом доступности библиотек)
     bayesian_active = use_bayesian and HAS_SCIPY
-    lunar_active = use_lunar and HAS_EPHEM
 
     print("Компоненты модели:")
     if use_bayesian and not HAS_SCIPY:
@@ -1441,11 +1373,6 @@ def main():
         print(f"  • Bayesian Poisson: {'ВКЛ' if bayesian_active else 'ВЫКЛ'}")
 
     print(f"  • ETAS-коррекция:   {'ВКЛ' if use_etas else 'ВЫКЛ'}")
-
-    if use_lunar and not HAS_EPHEM:
-        print(f"  • Лунный модиф.:    ВЫКЛ (ephem не установлен, pip install ephem)")
-    else:
-        print(f"  • Лунный модиф.:    {'ВКЛ' if lunar_active else 'ВЫКЛ'}")
     print()
     print(f"Исторические данные M7.0+ (1900-2024):")
     print(f"  • Среднее: {M7_MEAN:.1f}/год  |  Std: {M7_STD:.1f}  |  Min: {M7_MIN}  |  Max: {M7_MAX}")
@@ -1460,7 +1387,6 @@ def main():
     opportunities = run_analysis(
         poly, usgs,
         use_etas=use_etas,
-        use_lunar=use_lunar,
         use_bayesian=use_bayesian,
     )
 
@@ -1477,7 +1403,6 @@ def main():
         model_info = {
             "use_bayesian": use_bayesian,
             "use_etas": use_etas,
-            "use_lunar": use_lunar,
         }
         report_path = save_report_to_markdown(selected, poly, model_info)
         print(f"\nОтчёт сохранён: {report_path}")
