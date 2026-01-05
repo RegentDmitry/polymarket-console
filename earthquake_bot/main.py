@@ -727,6 +727,84 @@ def get_orderbook_tiers(poly: 'PolymarketClient', token_id: str, fair_price: flo
         return []
 
 
+def get_spread_info(poly: 'PolymarketClient', token_id: str) -> dict:
+    """
+    Получить информацию о спреде для оценки возможности активной торговли.
+
+    Returns:
+        dict с полями:
+        - best_bid: лучшая цена продажи
+        - best_ask: лучшая цена покупки
+        - spread: абсолютный спред
+        - spread_pct: спред в процентах от ask
+        - bid_liquidity: ликвидность на bid (сколько можно продать)
+        - ask_liquidity: ликвидность на ask (сколько можно купить)
+        - active_trading_ok: рекомендация по активной торговле
+    """
+    import httpx
+
+    try:
+        response = httpx.get(
+            f"{poly.host}/book",
+            params={"token_id": token_id},
+            timeout=30,
+        )
+        if response.status_code != 200:
+            return {}
+
+        ob = response.json()
+        asks = ob.get("asks", [])
+        bids = ob.get("bids", [])
+
+        if not asks or not bids:
+            return {
+                "best_bid": 0,
+                "best_ask": float(asks[0]["price"]) if asks else 0,
+                "spread": 0,
+                "spread_pct": 0,
+                "bid_liquidity": 0,
+                "ask_liquidity": sum(float(a["price"]) * float(a["size"]) for a in asks) if asks else 0,
+                "active_trading_ok": False,
+                "reason": "Нет bids — только hold to expiry",
+            }
+
+        best_ask = min(float(a["price"]) for a in asks)
+        best_bid = max(float(b["price"]) for b in bids)
+        spread = best_ask - best_bid
+        spread_pct = (spread / best_ask * 100) if best_ask > 0 else 0
+
+        # Ликвидность на лучших уровнях
+        ask_liquidity = sum(float(a["price"]) * float(a["size"]) for a in asks if float(a["price"]) == best_ask)
+        bid_liquidity = sum(float(b["price"]) * float(b["size"]) for b in bids if float(b["price"]) == best_bid)
+
+        # Рекомендация по активной торговле
+        # Спред < 5% — активная торговля возможна
+        # Спред 5-10% — возможна, но дорого
+        # Спред > 10% — только hold to expiry
+        if spread_pct < 5:
+            active_trading_ok = True
+            reason = "Узкий спред — активная торговля OK"
+        elif spread_pct < 10:
+            active_trading_ok = True
+            reason = "Средний спред — активная торговля возможна"
+        else:
+            active_trading_ok = False
+            reason = f"Широкий спред ({spread_pct:.0f}%) — только hold to expiry"
+
+        return {
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "spread": spread,
+            "spread_pct": spread_pct,
+            "bid_liquidity": bid_liquidity,
+            "ask_liquidity": ask_liquidity,
+            "active_trading_ok": active_trading_ok,
+            "reason": reason,
+        }
+    except Exception:
+        return {}
+
+
 def print_opportunities(opportunities: list[Opportunity], bankroll: float, poly: 'PolymarketClient' = None):
     """Вывести возможности с информацией о доступных инвестициях."""
     print("\n" + "=" * 75)
@@ -793,6 +871,22 @@ def print_opportunities(opportunities: list[Opportunity], bankroll: float, poly:
                     min_apy = tiers[-1]["apy"]
                     if total_available > prev_cumulative and min_apy >= MIN_ANNUAL_RETURN:
                         print(f"     → ${total_available:,.0f} всего (мин APY {int(min_apy * 100)}%)")
+
+            # Показываем информацию о спреде и возможности активной торговли
+            spread_info = get_spread_info(poly, opp.token_id)
+            if spread_info:
+                spread_pct = spread_info.get("spread_pct", 0)
+                bid = spread_info.get("best_bid", 0)
+                ask = spread_info.get("best_ask", 0)
+                bid_liq = spread_info.get("bid_liquidity", 0)
+                reason = spread_info.get("reason", "")
+                active_ok = spread_info.get("active_trading_ok", False)
+
+                # Символ для быстрого понимания
+                symbol = "✓" if active_ok else "✗"
+
+                print(f"   Спред: {spread_pct:.1f}% (bid: {bid:.2f}, ask: {ask:.2f}, bid liquidity: ${bid_liq:.0f})")
+                print(f"   Активная торговля: {symbol} {reason}")
 
     print(f"\n" + "-" * 75)
     print(f"Всего {len(selected)} возможностей")

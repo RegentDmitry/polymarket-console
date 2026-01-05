@@ -27,7 +27,7 @@ from typing import Optional
 from main import (
     MIN_EDGE, MIN_ANNUAL_RETURN, MIN_BET_USD, MAX_LIQUIDITY_PCT,
     MARKET_CONFIGS, Opportunity, kelly_criterion,
-    get_orderbook_data, get_orderbook_tiers, allocate_portfolio,
+    get_orderbook_data, get_orderbook_tiers, get_spread_info, allocate_portfolio,
     execute_trade,
 )
 from main_integrated import IntegratedModel
@@ -680,6 +680,21 @@ def print_opportunities(opportunities: list[TestedOpportunity], poly: Polymarket
                         shown += 1
                         if shown >= 5:
                             break
+
+            # Показываем информацию о спреде и возможности активной торговли
+            spread_info = get_spread_info(poly, opp.token_id)
+            if spread_info:
+                spread_pct = spread_info.get("spread_pct", 0)
+                bid = spread_info.get("best_bid", 0)
+                ask = spread_info.get("best_ask", 0)
+                bid_liq = spread_info.get("bid_liquidity", 0)
+                reason = spread_info.get("reason", "")
+                active_ok = spread_info.get("active_trading_ok", False)
+
+                symbol = "✓" if active_ok else "✗"
+
+                print(f"   Спред: {spread_pct:.1f}% (bid: {bid:.2f}, ask: {ask:.2f}, bid liquidity: ${bid_liq:.0f})")
+                print(f"   Активная торговля: {symbol} {reason}")
 
     print(f"\n" + "-" * 80)
     print(f"Всего {len(selected)} возможностей")
