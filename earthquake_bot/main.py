@@ -928,11 +928,29 @@ def execute_trade(
         return False
 
 
+def check_extended_history() -> tuple[bool, list]:
+    """
+    Check for extended history events (detected before USGS).
+
+    Returns:
+        (has_extended, pending_events)
+    """
+    try:
+        from extended_usgs_client import ExtendedUSGSClient
+        extended = ExtendedUSGSClient()
+        pending = extended.get_pending_events(min_magnitude=7.0)
+        return len(pending) > 0, pending
+    except Exception as e:
+        print(f"Extended history unavailable: {e}")
+        return False, []
+
+
 def main():
     parser = argparse.ArgumentParser(description="Earthquake Trading Bot")
     parser.add_argument("--debug", action="store_true", help="Режим отладки")
     parser.add_argument("--auto", action="store_true", help="Автоматическая торговля")
     parser.add_argument("--bankroll", type=float, default=230.0, help="Банкролл в USD")
+    parser.add_argument("--no-extended", action="store_true", help="Не проверять extended history")
     args = parser.parse_args()
 
     print("=" * 75)
@@ -941,6 +959,29 @@ def main():
     print(f"Время: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     print(f"Режим: {'AUTO' if args.auto else ('DEBUG' if args.debug else 'ANALYSIS')}")
     print(f"Min Edge: {MIN_EDGE*100:.0f}%  |  Min APY: {MIN_ANNUAL_RETURN*100:.0f}%")
+
+    # Проверяем extended history (события обнаруженные до USGS)
+    has_extended = False
+    pending_events = []
+    if not args.no_extended:
+        has_extended, pending_events = check_extended_history()
+
+        if has_extended:
+            print("\n" + "!" * 75)
+            print("!!! EXTENDED HISTORY: СОБЫТИЯ ОБНАРУЖЕНЫ ДО USGS !!!")
+            print("!" * 75)
+            for event in pending_events:
+                mag = float(event['magnitude'])
+                place = event['place'] or 'Unknown'
+                sources = event['source_count']
+                mins = float(event['minutes_since_detection'])
+                print(f"  M{mag:.1f} | {place} | {sources} источников | {mins:.0f} мин назад")
+            print("!" * 75)
+            print(f"*** У ВАС ЕСТЬ ИНФОРМАЦИОННОЕ ПРЕИМУЩЕСТВО! ***")
+            print("*** Эти события ЕЩЁ НЕ В USGS! ***")
+            print("!" * 75 + "\n")
+        else:
+            print("\nExtended history: нет новых событий (все уже в USGS)")
 
     # Инициализация
     poly = PolymarketClient()
