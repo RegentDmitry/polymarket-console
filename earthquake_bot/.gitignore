@@ -16,7 +16,10 @@ venv/
 *.swp
 
 # Output reports (generated)
-output/*.md
+output/
+
+# Bot data (positions, history)
+bot/data/
 
 # Historical data (downloaded from APIs)
 history/closed/*.json

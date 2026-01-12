@@ -1,0 +1,156 @@
+"""
+Bot configuration and CLI argument parsing.
+"""
+
+import argparse
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+
+@dataclass
+class BotConfig:
+    """Main bot configuration."""
+
+    # Trading mode
+    auto_mode: bool = False  # False = CONFIRM, True = AUTO
+    dry_run: bool = False    # True = don't execute trades, just show signals
+
+    # Scan settings
+    scan_interval: int = 300  # seconds (5 minutes default)
+
+    # Position sizing
+    position_size: float = 10.0  # $ per position
+    max_positions: int = 20
+
+    # Strategy parameters
+    min_edge: float = 0.04  # 4%
+    min_roi: float = 0.15   # 15%
+
+    # Paths
+    data_dir: Path = field(default_factory=lambda: Path("bot/data"))
+    active_dir: Path = field(default_factory=lambda: Path("bot/data/active"))
+    history_dir: Path = field(default_factory=lambda: Path("bot/data/history"))
+
+    # API (loaded from environment)
+    api_key: Optional[str] = None
+    private_key: Optional[str] = None
+
+    def __post_init__(self):
+        """Ensure directories exist."""
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.active_dir.mkdir(parents=True, exist_ok=True)
+        self.history_dir.mkdir(parents=True, exist_ok=True)
+
+
+def parse_interval(interval_str: str) -> int:
+    """
+    Parse interval string to seconds.
+    Examples: "5m" -> 300, "1h" -> 3600, "30s" -> 30
+    """
+    interval_str = interval_str.lower().strip()
+
+    if interval_str.endswith('s'):
+        return int(interval_str[:-1])
+    elif interval_str.endswith('m'):
+        return int(interval_str[:-1]) * 60
+    elif interval_str.endswith('h'):
+        return int(interval_str[:-1]) * 3600
+    else:
+        # Assume seconds if no suffix
+        return int(interval_str)
+
+
+def parse_args() -> BotConfig:
+    """Parse command line arguments and return config."""
+
+    parser = argparse.ArgumentParser(
+        description="Polymarket Trading Bot",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python -m bot --interval 5m
+  python -m bot --interval 5m --auto
+  python -m bot --dry-run
+  python -m bot --interval 1h --position-size 50
+        """
+    )
+
+    parser.add_argument(
+        "--interval", "-i",
+        type=str,
+        default="5m",
+        help="Scan interval (e.g., 30s, 5m, 1h). Default: 5m"
+    )
+
+    parser.add_argument(
+        "--auto", "-a",
+        action="store_true",
+        help="Enable AUTO mode (execute trades without confirmation)"
+    )
+
+    parser.add_argument(
+        "--dry-run", "-d",
+        action="store_true",
+        help="Dry run mode - show signals but don't execute trades"
+    )
+
+    parser.add_argument(
+        "--position-size", "-p",
+        type=float,
+        default=10.0,
+        help="Position size in $. Default: 10"
+    )
+
+    parser.add_argument(
+        "--max-positions", "-m",
+        type=int,
+        default=20,
+        help="Maximum number of open positions. Default: 20"
+    )
+
+    parser.add_argument(
+        "--min-edge",
+        type=float,
+        default=0.04,
+        help="Minimum edge to enter. Default: 0.04 (4%%)"
+    )
+
+    parser.add_argument(
+        "--min-roi",
+        type=float,
+        default=0.15,
+        help="Minimum ROI to enter. Default: 0.15 (15%%)"
+    )
+
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=Path("bot/data"),
+        help="Data directory. Default: bot/data"
+    )
+
+    args = parser.parse_args()
+
+    return BotConfig(
+        auto_mode=args.auto,
+        dry_run=args.dry_run,
+        scan_interval=parse_interval(args.interval),
+        position_size=args.position_size,
+        max_positions=args.max_positions,
+        min_edge=args.min_edge,
+        min_roi=args.min_roi,
+        data_dir=args.data_dir,
+        active_dir=args.data_dir / "active",
+        history_dir=args.data_dir / "history",
+    )
+
+
+def format_interval(seconds: int) -> str:
+    """Format seconds as human readable interval."""
+    if seconds < 60:
+        return f"{seconds}s"
+    elif seconds < 3600:
+        return f"{seconds // 60}m"
+    else:
+        return f"{seconds // 3600}h"
