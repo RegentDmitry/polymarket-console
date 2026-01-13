@@ -14,13 +14,12 @@ class BotConfig:
 
     # Trading mode
     auto_mode: bool = False  # False = CONFIRM, True = AUTO
-    dry_run: bool = False    # True = don't execute trades, just show signals
+    dry_run: bool = True     # True = don't execute trades, just show signals (default)
 
     # Scan settings
     scan_interval: int = 300  # seconds (5 minutes default)
 
-    # Position sizing
-    position_size: float = 10.0  # $ per position
+    # Position limits
     max_positions: int = 20
 
     # Strategy parameters
@@ -69,10 +68,10 @@ def parse_args() -> BotConfig:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python -m bot --interval 5m
-  python -m bot --interval 5m --auto
-  python -m bot --dry-run
-  python -m bot --interval 1h --position-size 50
+  python -m bot                          # dry-run mode (default)
+  python -m bot --live                   # live trading with confirmation
+  python -m bot --live --auto            # live trading without confirmation
+  python -m bot --interval 1h
         """
     )
 
@@ -90,16 +89,9 @@ Examples:
     )
 
     parser.add_argument(
-        "--dry-run", "-d",
+        "--live", "-l",
         action="store_true",
-        help="Dry run mode - show signals but don't execute trades"
-    )
-
-    parser.add_argument(
-        "--position-size", "-p",
-        type=float,
-        default=10.0,
-        help="Position size in $. Default: 10"
+        help="Enable live trading (default is dry-run mode)"
     )
 
     parser.add_argument(
@@ -134,9 +126,8 @@ Examples:
 
     return BotConfig(
         auto_mode=args.auto,
-        dry_run=args.dry_run,
+        dry_run=not args.live,  # dry-run by default, --live disables it
         scan_interval=parse_interval(args.interval),
-        position_size=args.position_size,
         max_positions=args.max_positions,
         min_edge=args.min_edge,
         min_roi=args.min_roi,

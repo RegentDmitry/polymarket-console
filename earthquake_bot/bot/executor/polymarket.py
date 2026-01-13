@@ -18,8 +18,10 @@ from ..models.market import Market
 # Import Polymarket client
 try:
     from polymarket_client import PolymarketClient
+    POLYMARKET_AVAILABLE = True
 except ImportError:
     PolymarketClient = None
+    POLYMARKET_AVAILABLE = False
 
 
 @dataclass
@@ -42,20 +44,15 @@ class PolymarketExecutor:
     """
     Executes trades on Polymarket.
 
-    Supports both limit and market orders.
+    Buys maximum available liquidity at target price within balance limits.
     """
 
-    def __init__(self, use_market_orders: bool = False):
-        """
-        Initialize executor.
+    def __init__(self):
+        """Initialize executor with PolymarketClient."""
+        self.client: Optional[PolymarketClient] = None
+        self.initialized = False
 
-        Args:
-            use_market_orders: If True, use market orders (immediate fill).
-                              If False, use limit orders at current best price.
-        """
-        self.use_market_orders = use_market_orders
-
-        if PolymarketClient:
+        if POLYMARKET_AVAILABLE:
             try:
                 self.client = PolymarketClient()
                 self.initialized = True
@@ -63,9 +60,6 @@ class PolymarketExecutor:
                 print(f"Failed to initialize Polymarket client: {e}")
                 self.client = None
                 self.initialized = False
-        else:
-            self.client = None
-            self.initialized = False
 
     def get_balance(self) -> float:
         """Get current USDC balance."""
@@ -90,8 +84,10 @@ class PolymarketExecutor:
         """
         Execute a BUY order.
 
+        Buys maximum available liquidity at the signal price within balance limits.
+
         Args:
-            signal: BUY signal with market info and suggested size
+            signal: BUY signal with market info
             market: Market object with token IDs
 
         Returns:
@@ -100,45 +96,76 @@ class PolymarketExecutor:
         if not self.client:
             return OrderResult(success=False, error="Client not initialized"), None
 
-        token_id = market.yes_token_id
+        token_id = signal.token_id or market.yes_token_id
         if not token_id:
-            return OrderResult(success=False, error="No YES token ID"), None
+            return OrderResult(success=False, error="No token ID"), None
 
         try:
-            if self.use_market_orders:
-                # Market order - immediate fill
-                result = self.client.create_market_order(
-                    token_id=token_id,
-                    side="BUY",
-                    amount=signal.suggested_size,
-                )
-            else:
-                # Limit order at current price
-                # Calculate tokens: size / price
-                tokens = signal.suggested_size / signal.current_price
-                result = self.client.create_limit_order(
-                    token_id=token_id,
-                    side="BUY",
-                    price=signal.current_price,
-                    size=tokens,
-                )
+            # 1. Get current balance
+            balance = self.get_balance()
+            if balance <= 0:
+                return OrderResult(success=False, error="No balance available"), None
+
+            # 2. Get orderbook
+            orderbook = self.client.get_orderbook(token_id)
+            asks = orderbook.get("asks", [])
+
+            if not asks:
+                return OrderResult(success=False, error="No asks in orderbook"), None
+
+            # 3. Calculate available liquidity at target price or better
+            # asks are sorted by price ascending (best price first)
+            target_price = signal.current_price
+            available_size = 0.0  # in tokens
+            total_cost = 0.0      # in USD
+
+            for ask in asks:
+                ask_price = float(ask.get("price", 0))
+                ask_size = float(ask.get("size", 0))
+
+                # Only take asks at our target price or better (lower)
+                if ask_price <= target_price:
+                    cost_for_this = ask_price * ask_size
+                    if total_cost + cost_for_this <= balance:
+                        available_size += ask_size
+                        total_cost += cost_for_this
+                    else:
+                        # Partial fill with remaining balance
+                        remaining = balance - total_cost
+                        partial_size = remaining / ask_price
+                        available_size += partial_size
+                        total_cost += remaining
+                        break
+
+            if available_size <= 0 or total_cost <= 0:
+                return OrderResult(
+                    success=False,
+                    error=f"No liquidity at price {target_price:.2%} or better"
+                ), None
+
+            # 4. Place order for the calculated size
+            result = self.client.create_limit_order(
+                token_id=token_id,
+                side="BUY",
+                price=target_price,
+                size=available_size,
+            )
 
             order_id = result.get("orderID") or result.get("order_id")
 
             if order_id:
                 # Create position
-                tokens = signal.suggested_size / signal.current_price
                 position = Position(
                     market_id=signal.market_id,
                     market_slug=signal.market_slug,
                     market_name=signal.market_name,
-                    outcome="YES",
+                    outcome=signal.outcome,
                     resolution_date=market.end_date,
-                    entry_price=signal.current_price,
+                    entry_price=target_price,
                     entry_time=datetime.utcnow().isoformat() + "Z",
-                    entry_size=signal.suggested_size,
-                    tokens=tokens,
-                    strategy="tested",
+                    entry_size=total_cost,
+                    tokens=available_size,
+                    strategy="earthquake",
                     fair_price_at_entry=signal.fair_price,
                     edge_at_entry=signal.edge,
                     entry_order_id=order_id,
@@ -147,9 +174,9 @@ class PolymarketExecutor:
                 return OrderResult(
                     success=True,
                     order_id=order_id,
-                    filled_price=signal.current_price,
-                    filled_size=signal.suggested_size,
-                    tokens=tokens,
+                    filled_price=target_price,
+                    filled_size=total_cost,
+                    tokens=available_size,
                 ), position
             else:
                 return OrderResult(
@@ -180,21 +207,13 @@ class PolymarketExecutor:
             return OrderResult(success=False, error="No YES token ID")
 
         try:
-            if self.use_market_orders:
-                # Market order - sell all tokens
-                result = self.client.create_market_order(
-                    token_id=token_id,
-                    side="SELL",
-                    amount=position.tokens,
-                )
-            else:
-                # Limit order
-                result = self.client.create_limit_order(
-                    token_id=token_id,
-                    side="SELL",
-                    price=signal.current_price,
-                    size=position.tokens,
-                )
+            # Sell all tokens at current price
+            result = self.client.create_limit_order(
+                token_id=token_id,
+                side="SELL",
+                price=signal.current_price,
+                size=position.tokens,
+            )
 
             order_id = result.get("orderID") or result.get("order_id")
 

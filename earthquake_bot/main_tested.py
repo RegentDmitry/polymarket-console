@@ -394,48 +394,46 @@ def analyze_market_tested(
 
             # Edge для YES
             edge_yes = fair_yes - mkt_yes
-            if edge_yes > MIN_EDGE:
-                odds = (1 - mkt_yes) / mkt_yes if mkt_yes > 0 else 0
-                opp = TestedOpportunity(
-                    event=event_slug,
-                    outcome=outcome_name,
-                    side="YES",
-                    token_id="",
-                    fair_price=fair_yes,
-                    market_price=mkt_yes,
-                    edge=edge_yes,
-                    kelly=kelly_criterion(fair_yes, odds),
-                    current_count=current_count,
-                    lambda_used=remaining_days,
-                    remaining_days=remaining_days,
-                    model_used=model_used,
-                    simple_prob=simple_prob,
-                    integrated_prob=integrated_prob,
-                )
-                opportunities.append(opp)
+            odds = (1 - mkt_yes) / mkt_yes if mkt_yes > 0 else 0
+            opp = TestedOpportunity(
+                event=event_slug,
+                outcome=outcome_name,
+                side="YES",
+                token_id="",
+                fair_price=fair_yes,
+                market_price=mkt_yes,
+                edge=edge_yes,
+                kelly=kelly_criterion(fair_yes, odds) if edge_yes > 0 else 0,
+                current_count=current_count,
+                lambda_used=remaining_days,
+                remaining_days=remaining_days,
+                model_used=model_used,
+                simple_prob=simple_prob,
+                integrated_prob=integrated_prob,
+            )
+            opportunities.append(opp)
 
             # Edge для NO
             fair_no = 1 - fair_yes
             edge_no = fair_no - mkt_no
-            if edge_no > MIN_EDGE:
-                odds = (1 - mkt_no) / mkt_no if mkt_no > 0 else 0
-                opp = TestedOpportunity(
-                    event=event_slug,
-                    outcome=outcome_name,
-                    side="NO",
-                    token_id="",
-                    fair_price=fair_no,
-                    market_price=mkt_no,
-                    edge=edge_no,
-                    kelly=kelly_criterion(fair_no, odds),
-                    current_count=current_count,
-                    lambda_used=remaining_days,
-                    remaining_days=remaining_days,
-                    model_used=model_used,
-                    simple_prob=1 - simple_prob,
-                    integrated_prob=1 - integrated_prob,
-                )
-                opportunities.append(opp)
+            odds_no = (1 - mkt_no) / mkt_no if mkt_no > 0 else 0
+            opp = TestedOpportunity(
+                event=event_slug,
+                outcome=outcome_name,
+                side="NO",
+                token_id="",
+                fair_price=fair_no,
+                market_price=mkt_no,
+                edge=edge_no,
+                kelly=kelly_criterion(fair_no, odds_no) if edge_no > 0 else 0,
+                current_count=current_count,
+                lambda_used=remaining_days,
+                remaining_days=remaining_days,
+                model_used=model_used,
+                simple_prob=1 - simple_prob,
+                integrated_prob=1 - integrated_prob,
+            )
+            opportunities.append(opp)
 
     elif config["type"] == "binary":
         # Бинарный рынок (будет/не будет хотя бы одно событие)
@@ -462,48 +460,49 @@ def analyze_market_tested(
                 mkt_yes = market_prices[outcome_name]
                 mkt_no = 1 - mkt_yes
 
+                # YES side
                 edge_yes = fair_yes - mkt_yes
-                if edge_yes > MIN_EDGE:
-                    odds = (1 - mkt_yes) / mkt_yes if mkt_yes > 0 else 0
-                    opp = TestedOpportunity(
-                        event=event_slug,
-                        outcome="Yes",
-                        side="YES",
-                        token_id="",
-                        fair_price=fair_yes,
-                        market_price=mkt_yes,
-                        edge=edge_yes,
-                        kelly=kelly_criterion(fair_yes, odds),
-                        current_count=current_count,
-                        lambda_used=remaining_days,
-                        remaining_days=remaining_days,
-                        model_used=model_used,
-                        simple_prob=simple_prob,
-                        integrated_prob=integrated_prob,
-                    )
-                    opportunities.append(opp)
+                odds = (1 - mkt_yes) / mkt_yes if mkt_yes > 0 else 0
+                opp = TestedOpportunity(
+                    event=event_slug,
+                    outcome="Yes",
+                    side="YES",
+                    token_id="",
+                    fair_price=fair_yes,
+                    market_price=mkt_yes,
+                    edge=edge_yes,
+                    kelly=kelly_criterion(fair_yes, odds) if edge_yes > 0 else 0,
+                    current_count=current_count,
+                    lambda_used=remaining_days,
+                    remaining_days=remaining_days,
+                    model_used=model_used,
+                    simple_prob=simple_prob,
+                    integrated_prob=integrated_prob,
+                )
+                opportunities.append(opp)
 
+                # NO side
                 fair_no = 1 - fair_yes
                 edge_no = fair_no - mkt_no
-                if edge_no > MIN_EDGE:
-                    odds = (1 - mkt_no) / mkt_no if mkt_no > 0 else 0
-                    opp = TestedOpportunity(
-                        event=event_slug,
-                        outcome="No",
-                        side="NO",
-                        token_id="",
-                        fair_price=fair_no,
-                        market_price=mkt_no,
-                        edge=edge_no,
-                        kelly=kelly_criterion(fair_no, odds),
-                        current_count=current_count,
-                        lambda_used=remaining_days,
-                        remaining_days=remaining_days,
-                        model_used=model_used,
-                        simple_prob=1 - simple_prob,
-                        integrated_prob=1 - integrated_prob,
-                    )
-                    opportunities.append(opp)
+                odds_no = (1 - mkt_no) / mkt_no if mkt_no > 0 else 0
+                opp = TestedOpportunity(
+                    event=event_slug,
+                    outcome="No",
+                    side="NO",
+                    token_id="",
+                    fair_price=fair_no,
+                    market_price=mkt_no,
+                    edge=edge_no,
+                    kelly=kelly_criterion(fair_no, odds_no) if edge_no > 0 else 0,
+                    current_count=current_count,
+                    lambda_used=remaining_days,
+                    remaining_days=remaining_days,
+                    model_used=model_used,
+                    simple_prob=1 - simple_prob,
+                    integrated_prob=1 - integrated_prob,
+                )
+                opportunities.append(opp)
+                break  # Found the outcome, no need to check other variants
 
     return opportunities
 
@@ -611,18 +610,11 @@ def run_analysis(poly: PolymarketClient, usgs: USGSClient) -> list[TestedOpportu
                 else:
                     opp.kelly = 0
 
-        if opp.edge > MIN_EDGE:
-            updated_opportunities.append(opp)
+        updated_opportunities.append(opp)
 
     all_opportunities = updated_opportunities
 
-    # Фильтруем по минимальной годовой доходности
-    all_opportunities = [
-        opp for opp in all_opportunities
-        if opp.annual_return >= MIN_ANNUAL_RETURN
-    ]
-
-    # Сортируем по годовой доходности
+    # Сортируем по годовой доходности (лучшие первыми)
     all_opportunities.sort(key=lambda x: x.annual_return, reverse=True)
 
     return all_opportunities

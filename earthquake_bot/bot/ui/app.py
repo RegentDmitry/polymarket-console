@@ -35,26 +35,39 @@ class StatusBar(Static):
         self.invested = 0.0
         self.unrealized_pnl = 0.0
         self.unrealized_pnl_pct = 0.0
+        self.last_scan_time: Optional[datetime] = None
 
     def update_status(self, balance: float, positions_count: int, invested: float,
-                      unrealized_pnl: float, unrealized_pnl_pct: float) -> None:
+                      unrealized_pnl: float, unrealized_pnl_pct: float,
+                      last_scan_time: Optional[datetime] = None) -> None:
         self.balance = balance
         self.positions_count = positions_count
         self.invested = invested
         self.unrealized_pnl = unrealized_pnl
         self.unrealized_pnl_pct = unrealized_pnl_pct
+        if last_scan_time:
+            self.last_scan_time = last_scan_time
         self.refresh()
 
     def render(self) -> Text:
         mode = "DRY RUN" if self.config.dry_run else ("AUTO" if self.config.auto_mode else "CONFIRM")
-        now = datetime.now().strftime("%H:%M:%S")
+
+        # Time since last scan
+        if self.last_scan_time:
+            elapsed = (datetime.now() - self.last_scan_time).total_seconds()
+            if elapsed < 60:
+                scan_ago = f"{int(elapsed)}s ago"
+            else:
+                scan_ago = f"{int(elapsed // 60)}m ago"
+        else:
+            scan_ago = "never"
 
         # First line
         line1 = (
             f"  Balance: ${self.balance:,.2f}  |  "
             f"Positions: {self.positions_count}  |  "
             f"Invested: ${self.invested:,.2f}  |  "
-            f"{now}"
+            f"Last scan: {scan_ago}"
         )
 
         # Second line
@@ -107,11 +120,13 @@ class ScannerPanel(Static):
         # Scanning status
         now = datetime.now().strftime("%H:%M:%S")
         if self.scanning:
-            lines.append(f"[{now}] Scanning markets...")
+            lines.append(f"[{now}] [yellow]Scanning markets...[/yellow]")
         else:
             mins = self.next_scan_seconds // 60
             secs = self.next_scan_seconds % 60
-            lines.append(f"[{now}] Next scan in: {mins}:{secs:02d}")
+            buy_count = len([s for s in self.signals if s.type == SignalType.BUY])
+            total_count = len(self.signals)
+            lines.append(f"[{now}] Next: {mins}:{secs:02d}  |  Found: {buy_count}/{total_count} markets")
 
         lines.append("")
 
@@ -124,7 +139,7 @@ class ScannerPanel(Static):
             lines.append(f"  {signal.market_name}")
             lines.append(f"  Price: {signal.current_price:.1%}  Fair: {signal.fair_price:.1%}  ({signal.model_used.upper()})")
             lines.append(f"  Edge: {signal.edge:.1%}  ROI: {signal.roi:.0%}  APY: {signal.annual_return:.0%}")
-            lines.append(f"  >>> BUY {signal.outcome} ${signal.suggested_size:.2f}")
+            lines.append(f"  >>> BUY {signal.outcome}")
 
             if self.pending_confirmation and self.pending_confirmation.market_slug == signal.market_slug:
                 lines.append("  [yellow]Confirm? [Y/N][/yellow]")
@@ -143,7 +158,7 @@ class ScannerPanel(Static):
 
             for signal in self.exit_signals:
                 lines.append(f"[yellow]! {signal.market_slug}[/yellow]")
-                lines.append(f"  >>> SELL ${signal.suggested_size:.2f} @ {signal.target_price:.1%}")
+                lines.append(f"  >>> SELL @ {signal.target_price:.1%}")
                 lines.append(f"  Reason: {signal.reason}")
 
                 if self.pending_confirmation and self.pending_confirmation.position_id == signal.position_id:
@@ -180,51 +195,41 @@ class PositionsPanel(Static):
         self.refresh()
 
     def render(self) -> Panel:
-        # Build table
-        table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
-        table.add_column("Market", width=15)
-        table.add_column("Entry", justify="right", width=6)
-        table.add_column("Curr", justify="right", width=6)
-        table.add_column("P&L", justify="right", width=8)
-
-        for pos in self.positions[:10]:  # Max 10 positions
-            current = self.current_prices.get(pos.market_slug, pos.entry_price)
-            pnl = pos.unrealized_pnl(current)
-
-            # Color P&L
-            if pnl > 0:
-                pnl_str = f"[green]+${pnl:.2f}[/green]"
-            elif pnl < 0:
-                pnl_str = f"[red]-${abs(pnl):.2f}[/red]"
-            else:
-                pnl_str = f"${pnl:.2f}"
-
-            # Truncate market slug
-            slug = pos.market_slug[:15] if len(pos.market_slug) > 15 else pos.market_slug
-
-            table.add_row(
-                slug,
-                f"{pos.entry_price:.1%}",
-                f"{current:.1%}",
-                pnl_str,
-            )
-
-        # Summary lines
         lines = []
 
-        from io import StringIO
-        from rich.console import Console
-        console = Console(file=StringIO(), force_terminal=True)
-        console.print(table)
-        table_str = console.file.getvalue()
+        if not self.positions:
+            # No positions - show empty state
+            lines.append("[dim]No open positions[/dim]")
+            lines.append("")
+            lines.append("-" * 38)
+            lines.append(f"Total invested:       $      0.00")
+            lines.append(f"Unrealized P&L:          $0.00 (+0.0%)")
+        else:
+            # Simple text table (Rich Table breaks on narrow width)
+            lines.append("[bold]Market          Entry   Curr     P&L[/bold]")
 
-        lines.append(table_str)
-        lines.append("-" * 38)
-        lines.append(f"Total invested:       ${self.total_invested:>10.2f}")
+            for pos in self.positions[:10]:  # Max 10 positions
+                current = self.current_prices.get(pos.market_slug, pos.entry_price)
+                pnl = pos.unrealized_pnl(current)
 
-        pnl_str = f"+${self.unrealized_pnl:.2f}" if self.unrealized_pnl >= 0 else f"-${abs(self.unrealized_pnl):.2f}"
-        pnl_pct = f"+{self.unrealized_pnl_pct:.1%}" if self.unrealized_pnl_pct >= 0 else f"{self.unrealized_pnl_pct:.1%}"
-        lines.append(f"Unrealized P&L:       {pnl_str:>10} ({pnl_pct})")
+                # Color P&L
+                if pnl > 0:
+                    pnl_str = f"[green]+${pnl:.2f}[/green]"
+                elif pnl < 0:
+                    pnl_str = f"[red]-${abs(pnl):.2f}[/red]"
+                else:
+                    pnl_str = f"${pnl:.2f}"
+
+                # Truncate market slug
+                slug = pos.market_slug[:15] if len(pos.market_slug) > 15 else pos.market_slug
+
+                lines.append(f"{slug:<15} {pos.entry_price:>5.1%}  {current:>5.1%}  {pnl_str:>8}")
+            lines.append("-" * 38)
+            lines.append(f"Total invested:       ${self.total_invested:>10.2f}")
+
+            pnl_str = f"+${self.unrealized_pnl:.2f}" if self.unrealized_pnl >= 0 else f"-${abs(self.unrealized_pnl):.2f}"
+            pnl_pct = f"+{self.unrealized_pnl_pct:.1%}" if self.unrealized_pnl_pct >= 0 else f"{self.unrealized_pnl_pct:.1%}"
+            lines.append(f"Unrealized P&L:       {pnl_str:>10} ({pnl_pct})")
 
         content = "\n".join(lines)
         return Panel(content, title="MY POSITIONS", border_style="green")
@@ -300,14 +305,19 @@ class TradingBotApp(App):
     """
 
     BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("r", "refresh", "Refresh"),
-        Binding("h", "history", "History"),
-        Binding("p", "pause", "Pause"),
-        Binding("l", "logs", "Logs"),
-        Binding("m", "toggle_mode", "Mode"),
+        Binding("q", "quit", "Quit", key_display="Q"),
+        Binding("r", "refresh", "Scan", key_display="R"),
+        Binding("h", "history", "History", key_display="H"),
+        Binding("m", "toggle_mode", "Mode", key_display="M"),
         Binding("y", "confirm_yes", "Yes", show=False),
         Binding("n", "confirm_no", "No", show=False),
+        # Russian keyboard layout support
+        Binding("й", "quit", "Quit", show=False),
+        Binding("к", "refresh", "Scan", show=False),
+        Binding("р", "history", "History", show=False),
+        Binding("ь", "toggle_mode", "Mode", show=False),
+        Binding("н", "confirm_yes", "Yes", show=False),
+        Binding("т", "confirm_no", "No", show=False),
     ]
 
     def __init__(self, config: BotConfig, position_storage: PositionStorage,
@@ -319,16 +329,24 @@ class TradingBotApp(App):
         self.scanner = scanner
         self.executor = executor or PolymarketExecutor()
 
-        self.paused = False
+        self.scanning = False
         self.scan_timer: Optional[Timer] = None
         self.countdown_timer: Optional[Timer] = None
         self.next_scan_seconds = config.scan_interval
 
-        # Pending confirmation
+        # Pending confirmation queue
         self.pending_signal: Optional[Signal] = None
+        self._pending_signals_queue: List[Signal] = []
+        self.quit_pending = False
 
-        # Cache for markets (for executor)
+        # Virtual positions for DRY RUN mode (in-memory only)
+        self._dry_run_positions: List[Position] = []
+        self._dry_run_size = 10.0  # Default position size for dry run
+
+        # Cache for markets and prices
         self._markets_cache: dict[str, Market] = {}
+        self._current_prices: dict[str, float] = {}
+        self._last_scan_time: Optional[datetime] = None
 
     def compose(self) -> ComposeResult:
         yield Static(id="status-bar")
@@ -361,9 +379,22 @@ class TradingBotApp(App):
         # Do first scan now
         self.call_later(self.do_scan)
 
+    def _get_all_positions(self) -> List[Position]:
+        """Get all positions (real + dry run)."""
+        real_positions = self.position_storage.load_all_active()
+        if self.config.dry_run:
+            return self._dry_run_positions + real_positions
+        return real_positions
+
+    def _refresh_positions_panel(self) -> None:
+        """Refresh positions panel with current data."""
+        positions = self._get_all_positions()
+        positions_panel = self.query_one(PositionsPanel)
+        positions_panel.update_positions(positions, self._current_prices)
+
     def update_countdown(self) -> None:
         """Update countdown to next scan."""
-        if self.paused:
+        if self.scanning:
             return
 
         self.next_scan_seconds -= 1
@@ -375,21 +406,27 @@ class TradingBotApp(App):
 
     async def do_scan(self) -> None:
         """Perform market scan."""
-        if self.paused:
-            return
-
-        scanner_panel = self.query_one(ScannerPanel)
-        scanner_panel.set_scanning(True)
+        # Set scanning state (may already be set by action_refresh)
+        if not self.scanning:
+            self.scanning = True
+            self.refresh_bindings()  # Gray out R in footer
+            scanner_panel = self.query_one(ScannerPanel)
+            scanner_panel.set_scanning(True)
+        else:
+            scanner_panel = self.query_one(ScannerPanel)
 
         # Reset countdown
         self.next_scan_seconds = self.config.scan_interval
 
-        # Get current positions
-        positions = self.position_storage.load_all_active()
+        # Get current positions (real + dry run)
+        positions = self._get_all_positions()
 
-        # Run scanner
+        # Run scanner in a separate thread to avoid blocking UI
         if self.scanner:
-            entry_signals, exit_signals = self.scanner.scan(positions)
+            loop = asyncio.get_event_loop()
+            entry_signals, exit_signals = await loop.run_in_executor(
+                None, self.scanner.scan, positions
+            )
 
             # Cache markets for executor
             for market in self.scanner.get_markets():
@@ -400,18 +437,22 @@ class TradingBotApp(App):
         # Update UI
         scanner_panel.update_signals(entry_signals, exit_signals)
         scanner_panel.set_scanning(False)
+        self.scanning = False
+        self.refresh_bindings()  # Re-enable R in footer
 
-        # Update positions panel
-        positions_panel = self.query_one(PositionsPanel)
-        current_prices = {s.market_slug: s.current_price for s in entry_signals}
-        positions_panel.update_positions(positions, current_prices)
+        # Update positions panel with current prices
+        self._current_prices = {s.market_slug: s.current_price for s in entry_signals}
+        self._refresh_positions_panel()
+
+        # Record scan time
+        self._last_scan_time = datetime.now()
 
         # Update trades panel
         trades_panel = self.query_one(RecentTradesPanel)
         trades_panel.update_trades()
 
         # Update status bar
-        self.update_status_bar(positions, current_prices)
+        self.update_status_bar(positions, self._current_prices)
 
         # Handle signals based on mode
         await self.process_signals(entry_signals, exit_signals)
@@ -435,6 +476,7 @@ class TradingBotApp(App):
             invested=invested,
             unrealized_pnl=unrealized_pnl,
             unrealized_pnl_pct=unrealized_pnl_pct,
+            last_scan_time=self._last_scan_time,
         )
 
         status = self.query_one("#status-bar", Static)
@@ -453,18 +495,53 @@ class TradingBotApp(App):
             for signal in actionable:
                 await self.execute_signal(signal)
         else:
-            # CONFIRM mode - ask for confirmation
-            for signal in actionable:
-                self.pending_signal = signal
-                scanner_panel = self.query_one(ScannerPanel)
-                scanner_panel.set_pending_confirmation(signal)
-                break  # One at a time
+            # CONFIRM mode - queue all signals and ask one at a time
+            self._pending_signals_queue = actionable.copy()
+            self._show_next_pending_signal()
+
+    def _show_next_pending_signal(self) -> None:
+        """Show the next signal in queue for confirmation."""
+        scanner_panel = self.query_one(ScannerPanel)
+
+        if self._pending_signals_queue:
+            self.pending_signal = self._pending_signals_queue.pop(0)
+            scanner_panel.set_pending_confirmation(self.pending_signal)
+        else:
+            self.pending_signal = None
+            scanner_panel.set_pending_confirmation(None)
 
     async def execute_signal(self, signal: Signal) -> None:
         """Execute a trading signal via Polymarket API."""
-        # Dry run mode - don't execute, just log
+        # Dry run mode - create virtual position in memory
         if self.config.dry_run:
-            self.notify(f"[DRY RUN] Would {signal.type.value} {signal.market_slug}")
+            if signal.type == SignalType.BUY:
+                # Create virtual position
+                tokens = self._dry_run_size / signal.current_price if signal.current_price > 0 else 0
+                position = Position(
+                    market_id=signal.market_id,
+                    market_slug=signal.market_slug,
+                    market_name=signal.market_name,
+                    outcome=signal.outcome,
+                    entry_price=signal.current_price,
+                    entry_time=datetime.now().isoformat() + "Z",
+                    entry_size=self._dry_run_size,
+                    tokens=tokens,
+                    strategy="dry_run",
+                    fair_price_at_entry=signal.fair_price,
+                    edge_at_entry=signal.edge,
+                )
+                self._dry_run_positions.append(position)
+                self.notify(f"[DRY] Bought {signal.market_slug} @ {signal.current_price:.1%}")
+
+                # Refresh positions panel
+                self._refresh_positions_panel()
+            elif signal.type == SignalType.SELL and signal.position_id:
+                # Remove virtual position
+                self._dry_run_positions = [
+                    p for p in self._dry_run_positions if p.id != signal.position_id
+                ]
+                self.notify(f"[DRY] Sold {signal.market_slug}")
+                self._refresh_positions_panel()
             return
 
         self.notify(f"Executing {signal.type.value} for {signal.market_slug}...")
@@ -484,6 +561,8 @@ class TradingBotApp(App):
                 self.position_storage.save(position)
                 self.history_storage.record_buy(position, result.order_id)
                 self.notify(f"BUY order placed: {result.order_id}")
+                # Refresh positions panel immediately
+                self._refresh_positions_panel()
             else:
                 self.notify(f"BUY failed: {result.error}")
 
@@ -505,31 +584,48 @@ class TradingBotApp(App):
                 if closed_position:
                     self.history_storage.record_sell(closed_position, result.order_id)
                 self.notify(f"SELL order placed: {result.order_id}")
+                # Refresh positions panel immediately
+                self._refresh_positions_panel()
             else:
                 self.notify(f"SELL failed: {result.error}")
 
     def action_quit(self) -> None:
-        """Quit the application."""
-        self.exit()
+        """Quit the application (with confirmation)."""
+        if self.quit_pending:
+            self.exit()
+        else:
+            self.quit_pending = True
+            self.notify("Quit? Press ENTER to confirm, any other key to cancel")
+
+    def on_key(self, event) -> None:
+        """Handle key presses for quit confirmation."""
+        if self.quit_pending:
+            if event.key == "enter":
+                self.exit()
+            else:
+                self.quit_pending = False
+                self.notify("Quit cancelled")
+
+    def check_action_refresh(self) -> bool:
+        """Disable R key while scanning (grays out in footer)."""
+        return not self.scanning
 
     def action_refresh(self) -> None:
         """Manual refresh/scan."""
+        # Show scanning state immediately
+        self.scanning = True
+        self.refresh_bindings()  # Update footer to gray out R
+        scanner_panel = self.query_one(ScannerPanel)
+        scanner_panel.set_scanning(True)
         asyncio.create_task(self.do_scan())
 
     def action_history(self) -> None:
         """Show history."""
         stats = self.history_storage.get_statistics()
-        self.notify(f"Total trades: {stats['total_trades']}, Win rate: {stats['win_rate']:.0%}")
-
-    def action_pause(self) -> None:
-        """Pause/resume scanning."""
-        self.paused = not self.paused
-        status = "PAUSED" if self.paused else "RESUMED"
-        self.notify(f"Scanning {status}")
-
-    def action_logs(self) -> None:
-        """Show logs."""
-        self.notify("Logs view not implemented yet")
+        if stats['total_trades'] == 0:
+            self.notify("No trading history yet")
+        else:
+            self.notify(f"Total trades: {stats['total_trades']}, Win rate: {stats['win_rate']:.0%}")
 
     def action_toggle_mode(self) -> None:
         """Toggle between AUTO and CONFIRM mode."""
@@ -538,21 +634,19 @@ class TradingBotApp(App):
         self.notify(f"Mode changed to {mode}")
 
         # Refresh status bar
-        positions = self.position_storage.load_all_active()
-        self.update_status_bar(positions, {})
+        positions = self._get_all_positions()
+        self.update_status_bar(positions, self._current_prices)
 
     def action_confirm_yes(self) -> None:
         """Confirm pending action."""
         if self.pending_signal:
             asyncio.create_task(self.execute_signal(self.pending_signal))
-            self.pending_signal = None
-            scanner_panel = self.query_one(ScannerPanel)
-            scanner_panel.set_pending_confirmation(None)
+            # Show next signal in queue
+            self._show_next_pending_signal()
 
     def action_confirm_no(self) -> None:
         """Reject pending action."""
         if self.pending_signal:
-            self.notify(f"Rejected {self.pending_signal.type.value} for {self.pending_signal.market_slug}")
-            self.pending_signal = None
-            scanner_panel = self.query_one(ScannerPanel)
-            scanner_panel.set_pending_confirmation(None)
+            self.notify(f"Skipped {self.pending_signal.market_slug}")
+            # Show next signal in queue
+            self._show_next_pending_signal()

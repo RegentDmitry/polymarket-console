@@ -26,15 +26,16 @@ def main():
     config = parse_args()
 
     mode = "DRY RUN" if config.dry_run else ("AUTO" if config.auto_mode else "CONFIRM")
+    min_edge_str = f"{config.min_edge:.0%}"
+    min_roi_str = f"{config.min_roi:.0%}"
     print(f"""
 ┌─────────────────────────────────────────────────────────────┐
 │                    EARTHQUAKE TRADING BOT                   │
 ├─────────────────────────────────────────────────────────────┤
 │  Mode:      {mode:<47} │
 │  Interval:  {format_interval(config.scan_interval):<47} │
-│  Position:  ${config.position_size:<46.2f} │
-│  Min Edge:  {config.min_edge:.0%}{'':<45} │
-│  Min ROI:   {config.min_roi:.0%}{'':<45} │
+│  Min Edge:  {min_edge_str:<47} │
+│  Min ROI:   {min_roi_str:<47} │
 └─────────────────────────────────────────────────────────────┘
     """)
 
@@ -50,7 +51,7 @@ def main():
     scanner = EarthquakeScanner(config)
 
     # Initialize executor
-    executor = PolymarketExecutor(use_market_orders=False)  # Use limit orders
+    executor = PolymarketExecutor()
     if executor.initialized:
         print(f"Executor: {executor.get_address()[:10]}...")
         print(f"Balance: ${executor.get_balance():,.2f}")

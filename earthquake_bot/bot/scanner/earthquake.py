@@ -133,7 +133,6 @@ class EarthquakeScanner(BaseScanner):
                         edge=opp.edge,
                         roi=opp.expected_return,
                         days_remaining=opp.remaining_days,
-                        suggested_size=self.config.position_size,
                         token_id=opp.token_id,
                         model_used=getattr(opp, 'model_used', 'unknown'),
                         annual_return=opp.annual_return,

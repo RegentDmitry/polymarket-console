@@ -111,7 +111,6 @@ class BaseScanner(ABC):
                     edge=edge,
                     roi=roi,
                     days_remaining=market.days_remaining,
-                    suggested_size=self.config.position_size,
                 )
             else:
                 signal = Signal(

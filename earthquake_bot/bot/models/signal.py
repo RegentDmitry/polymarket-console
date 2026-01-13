@@ -79,11 +79,11 @@ class Signal:
             lines.append(f"+ {self.market_slug}")
             lines.append(f"  Price: {self.current_price:.1%}  Fair: {self.fair_price:.1%}")
             lines.append(f"  Edge: {self.edge:.1%}   ROI: {self.roi:.0%}")
-            lines.append(f"  >>> BUY {self.outcome} ${self.suggested_size:.2f}")
+            lines.append(f"  >>> BUY {self.outcome}")
 
         elif self.type == SignalType.SELL:
             lines.append(f"! {self.market_slug}: price {self.current_price:.1%}")
-            lines.append(f"  >>> SELL ${self.suggested_size:.2f} @ {self.target_price:.1%}")
+            lines.append(f"  >>> SELL @ {self.target_price:.1%}")
             lines.append(f"  Reason: {self.reason}")
 
         else:  # SKIP
