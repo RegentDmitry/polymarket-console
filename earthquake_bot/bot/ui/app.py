@@ -96,10 +96,14 @@ class ScannerPanel(Static):
         self.next_scan_seconds = 0
         self.scanning = False
         self.pending_confirmation: Optional[Signal] = None
+        self.last_scan_time: Optional[datetime] = None
 
-    def update_signals(self, signals: List[Signal], exit_signals: List[Signal]) -> None:
+    def update_signals(self, signals: List[Signal], exit_signals: List[Signal],
+                       last_scan_time: Optional[datetime] = None) -> None:
         self.signals = signals
         self.exit_signals = exit_signals
+        if last_scan_time:
+            self.last_scan_time = last_scan_time
         self.refresh()
 
     def set_next_scan(self, seconds: int) -> None:
@@ -117,16 +121,21 @@ class ScannerPanel(Static):
     def render(self) -> Panel:
         lines = []
 
+        # Format last scan time
+        if self.last_scan_time:
+            scan_time = self.last_scan_time.strftime("%H:%M:%S")
+        else:
+            scan_time = "--:--:--"
+
         # Scanning status
-        now = datetime.now().strftime("%H:%M:%S")
         if self.scanning:
-            lines.append(f"[{now}] [yellow]Scanning markets...[/yellow]")
+            lines.append(f"[{scan_time}] [yellow]Scanning markets...[/yellow]")
         else:
             mins = self.next_scan_seconds // 60
             secs = self.next_scan_seconds % 60
             buy_count = len([s for s in self.signals if s.type == SignalType.BUY])
             total_count = len(self.signals)
-            lines.append(f"[{now}] Next: {mins}:{secs:02d}  |  Found: {buy_count}/{total_count} markets")
+            lines.append(f"[{scan_time}] Next: {mins}:{secs:02d}  |  Found: {buy_count}/{total_count}")
 
         lines.append("")
 
@@ -434,8 +443,11 @@ class TradingBotApp(App):
         else:
             entry_signals, exit_signals = [], []
 
+        # Record scan time
+        self._last_scan_time = datetime.now()
+
         # Update UI
-        scanner_panel.update_signals(entry_signals, exit_signals)
+        scanner_panel.update_signals(entry_signals, exit_signals, self._last_scan_time)
         scanner_panel.set_scanning(False)
         self.scanning = False
         self.refresh_bindings()  # Re-enable R in footer
@@ -443,9 +455,6 @@ class TradingBotApp(App):
         # Update positions panel with current prices
         self._current_prices = {s.market_slug: s.current_price for s in entry_signals}
         self._refresh_positions_panel()
-
-        # Record scan time
-        self._last_scan_time = datetime.now()
 
         # Update trades panel
         trades_panel = self.query_one(RecentTradesPanel)

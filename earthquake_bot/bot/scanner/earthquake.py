@@ -97,15 +97,21 @@ class EarthquakeScanner(BaseScanner):
             return signals
 
         try:
+            # Clear caches before each scan
+            self._markets_cache = []
+
             # Run the same analysis as main_tested.py
             self._opportunities = run_analysis(self.api_client, self.usgs_client)
 
             # Convert opportunities to signals
             for opp in self._opportunities:
+                # Use unique slug: event + outcome to avoid price collisions
+                unique_slug = f"{opp.event}-{opp.outcome}"
+
                 # Create market for cache
                 market = Market(
-                    id=opp.condition_id or opp.event,
-                    slug=opp.event,
+                    id=opp.condition_id or unique_slug,
+                    slug=unique_slug,
                     name=f"{opp.event} - {opp.outcome}",
                     yes_token_id=opp.token_id if opp.side == "YES" else "",
                     no_token_id=opp.token_id if opp.side == "NO" else "",
@@ -124,8 +130,8 @@ class EarthquakeScanner(BaseScanner):
                 if meets_edge and meets_roi:
                     signal = Signal(
                         type=SignalType.BUY,
-                        market_id=opp.condition_id or opp.event,
-                        market_slug=opp.event,
+                        market_id=opp.condition_id or unique_slug,
+                        market_slug=unique_slug,
                         market_name=f"{opp.outcome} ({opp.side})",
                         outcome=opp.side,
                         current_price=opp.market_price,
@@ -140,8 +146,8 @@ class EarthquakeScanner(BaseScanner):
                 else:
                     signal = Signal(
                         type=SignalType.SKIP,
-                        market_id=opp.condition_id or opp.event,
-                        market_slug=opp.event,
+                        market_id=opp.condition_id or unique_slug,
+                        market_slug=unique_slug,
                         market_name=f"{opp.outcome} ({opp.side})",
                         outcome=opp.side,
                         current_price=opp.market_price,
@@ -173,5 +179,6 @@ class EarthquakeScanner(BaseScanner):
         """Get current prices for all tracked markets."""
         prices = {}
         for opp in self._opportunities:
-            prices[opp.event] = opp.market_price
+            unique_slug = f"{opp.event}-{opp.outcome}"
+            prices[unique_slug] = opp.market_price
         return prices
