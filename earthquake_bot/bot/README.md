@@ -75,7 +75,7 @@ python -m bot --live --auto
 | `--auto` | `-a` | Авто-режим без подтверждений | выкл |
 | `--max-positions` | `-m` | Максимум открытых позиций | `20` |
 | `--min-edge` | | Минимальный edge для входа | `0.04` (4%) |
-| `--min-roi` | | Минимальный ROI для входа | `0.15` (15%) |
+| `--min-apy` | | Минимальный APY для входа | `0.30` (30%) |
 | `--data-dir` | | Директория для данных | `bot/data` |
 
 ## Примеры
@@ -85,10 +85,10 @@ python -m bot --live --auto
 python -m bot --interval 1m
 
 # Строгие параметры входа
-python -m bot --min-edge 0.08 --min-roi 0.25
+python -m bot --min-edge 0.08 --min-apy 0.50
 
 # Полный пример
-python -m bot --live --interval 5m --min-edge 0.05 --max-positions 10
+python -m bot --live --interval 5m --min-edge 0.05 --min-apy 0.25 --max-positions 10
 ```
 
 ## Режимы работы

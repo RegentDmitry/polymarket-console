@@ -125,9 +125,9 @@ class EarthquakeScanner(BaseScanner):
 
                 # Check if meets our criteria
                 meets_edge = opp.edge >= self.config.min_edge
-                meets_roi = opp.expected_return >= self.config.min_roi
+                meets_apy = opp.annual_return >= self.config.min_apy
 
-                if meets_edge and meets_roi:
+                if meets_edge and meets_apy:
                     signal = Signal(
                         type=SignalType.BUY,
                         market_id=opp.condition_id or unique_slug,

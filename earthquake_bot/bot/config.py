@@ -24,7 +24,7 @@ class BotConfig:
 
     # Strategy parameters
     min_edge: float = 0.04  # 4%
-    min_roi: float = 0.15   # 15%
+    min_apy: float = 0.30   # 30% annualized
 
     # Paths
     data_dir: Path = field(default_factory=lambda: Path("bot/data"))
@@ -109,10 +109,10 @@ Examples:
     )
 
     parser.add_argument(
-        "--min-roi",
+        "--min-apy",
         type=float,
-        default=0.15,
-        help="Minimum ROI to enter. Default: 0.15 (15%%)"
+        default=0.30,
+        help="Minimum APY (annualized return) to enter. Default: 0.30 (30%%)"
     )
 
     parser.add_argument(
@@ -130,7 +130,7 @@ Examples:
         scan_interval=parse_interval(args.interval),
         max_positions=args.max_positions,
         min_edge=args.min_edge,
-        min_roi=args.min_roi,
+        min_apy=args.min_apy,
         data_dir=args.data_dir,
         active_dir=args.data_dir / "active",
         history_dir=args.data_dir / "history",
