@@ -12,10 +12,26 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-print("Loading config...", end=" ", flush=True)
+# Config is lightweight - import and parse first
 from .config import parse_args, format_interval
-print("OK")
+config = parse_args()
 
+# Show settings table immediately
+mode = "DRY RUN" if config.dry_run else ("AUTO" if config.auto_mode else "CONFIRM")
+min_edge_str = f"{config.min_edge:.0%}"
+min_apy_str = f"{config.min_apy:.0%}"
+print(f"""
+┌─────────────────────────────────────────────────────────────┐
+│                    EARTHQUAKE TRADING BOT                   │
+├─────────────────────────────────────────────────────────────┤
+│  Mode:      {mode:<47} │
+│  Interval:  {format_interval(config.scan_interval):<47} │
+│  Min Edge:  {min_edge_str:<47} │
+│  Min APY:   {min_apy_str:<47} │
+└─────────────────────────────────────────────────────────────┘
+""")
+
+# Now load heavy modules
 print("Loading storage...", end=" ", flush=True)
 from .storage.positions import PositionStorage
 from .storage.history import HistoryStorage
@@ -37,22 +53,6 @@ print()
 
 def main():
     """Main entry point."""
-    # Parse CLI arguments
-    config = parse_args()
-
-    mode = "DRY RUN" if config.dry_run else ("AUTO" if config.auto_mode else "CONFIRM")
-    min_edge_str = f"{config.min_edge:.0%}"
-    min_apy_str = f"{config.min_apy:.0%}"
-    print(f"""
-┌─────────────────────────────────────────────────────────────┐
-│                    EARTHQUAKE TRADING BOT                   │
-├─────────────────────────────────────────────────────────────┤
-│  Mode:      {mode:<47} │
-│  Interval:  {format_interval(config.scan_interval):<47} │
-│  Min Edge:  {min_edge_str:<47} │
-│  Min APY:   {min_apy_str:<47} │
-└─────────────────────────────────────────────────────────────┘
-    """)
 
     # Initialize storage
     print("Initializing storage...", end=" ", flush=True)

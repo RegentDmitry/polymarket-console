@@ -3,7 +3,7 @@ Base scanner class - abstract interface for market scanners.
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import List, Optional, Callable
 
 from ..models.market import Market
 from ..models.signal import Signal, SignalType
@@ -82,9 +82,13 @@ class BaseScanner(ABC):
         """
         pass
 
-    def scan_for_entries(self) -> List[Signal]:
+    def scan_for_entries(self,
+                         progress_callback: Optional[Callable[[str], None]] = None) -> List[Signal]:
         """
         Scan markets for entry opportunities.
+
+        Args:
+            progress_callback: Optional callback for progress updates
 
         Returns:
             List of BUY or SKIP signals
@@ -165,22 +169,27 @@ class BaseScanner(ABC):
 
         return signals
 
-    def scan(self, open_positions: List[Position]) -> tuple[List[Signal], List[Signal]]:
+    def scan(self, open_positions: List[Position],
+             progress_callback: Optional[Callable[[str], None]] = None) -> tuple[List[Signal], List[Signal]]:
         """
         Full scan - entries and exits.
 
         Args:
             open_positions: Current open positions
+            progress_callback: Optional callback for progress updates
 
         Returns:
             Tuple of (entry_signals, exit_signals)
         """
-        entry_signals = self.scan_for_entries()
+        entry_signals = self.scan_for_entries(progress_callback)
 
         # Get current prices for exit check
         current_prices = {}
         for signal in entry_signals:
             current_prices[signal.market_slug] = signal.current_price
+
+        if progress_callback:
+            progress_callback("Checking exits...")
 
         exit_signals = self.scan_for_exits(open_positions, current_prices)
 

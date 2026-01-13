@@ -91,6 +91,7 @@ class ScannerPanel(Static):
         self.exit_signals: List[Signal] = []
         self.next_scan_seconds = 0
         self.scanning = False
+        self.scan_status: str = ""  # Progress status during scan
         self.pending_confirmation: Optional[Signal] = None
         self.last_scan_time: Optional[datetime] = None
 
@@ -108,6 +109,13 @@ class ScannerPanel(Static):
 
     def set_scanning(self, scanning: bool) -> None:
         self.scanning = scanning
+        if not scanning:
+            self.scan_status = ""  # Clear status when done
+        self.refresh()
+
+    def set_scan_status(self, status: str) -> None:
+        """Update scan progress status."""
+        self.scan_status = status
         self.refresh()
 
     def set_pending_confirmation(self, signal: Optional[Signal]) -> None:
@@ -117,21 +125,16 @@ class ScannerPanel(Static):
     def render(self) -> Panel:
         lines = []
 
-        # Format last scan time
-        if self.last_scan_time:
-            scan_time = self.last_scan_time.strftime("%H:%M:%S")
-        else:
-            scan_time = "--:--:--"
-
         # Scanning status
         if self.scanning:
-            lines.append(f"[{scan_time}] [yellow]Scanning markets...[/yellow]")
+            status_text = self.scan_status or "Starting..."
+            lines.append(f"[yellow]{status_text}[/yellow]")
         else:
             mins = self.next_scan_seconds // 60
             secs = self.next_scan_seconds % 60
             buy_count = len([s for s in self.signals if s.type == SignalType.BUY])
             total_count = len(self.signals)
-            lines.append(f"[{scan_time}] Next: {mins}:{secs:02d}  |  Found: {buy_count}/{total_count}")
+            lines.append(f"Next: {mins}:{secs:02d}  |  Found: {buy_count}/{total_count}")
 
         lines.append("")
 
@@ -144,6 +147,11 @@ class ScannerPanel(Static):
             lines.append(f"  {signal.market_name}")
             lines.append(f"  Price: {signal.current_price:.1%}  Fair: {signal.fair_price:.1%}  ({signal.model_used.upper()})")
             lines.append(f"  Edge: {signal.edge:.1%}  ROI: {signal.roi:.0%}  APY: {signal.annual_return:.0%}")
+
+            # Show available liquidity (filtered by edge/apy) and suggested size
+            liq_str = f"${signal.liquidity:.0f}" if signal.liquidity else "$0"
+            size_str = f"${signal.suggested_size:.0f}" if signal.suggested_size > 0 else f"Kelly: {signal.kelly:.1%}"
+            lines.append(f"  Available: {liq_str}  |  Buy: {size_str}")
             lines.append(f"  >>> BUY {signal.outcome}")
 
             if self.pending_confirmation and self.pending_confirmation.market_slug == signal.market_slug:
@@ -206,15 +214,16 @@ class PositionsPanel(Static):
             # No positions - show empty state
             lines.append("[dim]No open positions[/dim]")
             lines.append("")
-            lines.append("-" * 38)
-            lines.append(f"Total invested:       $      0.00")
-            lines.append(f"Unrealized P&L:          $0.00 (+0.0%)")
+            lines.append("-" * 46)
+            lines.append(f"Total invested:  $0.00")
+            lines.append(f"Unrealized P&L:  $0.00 (+0.0%)")
         else:
             # Simple text table (Rich Table breaks on narrow width)
-            lines.append("[bold]Market          Entry   Curr     P&L[/bold]")
+            lines.append("[bold]Market          Entry  Fair   Curr    P&L[/bold]")
 
             for pos in self.positions[:10]:  # Max 10 positions
                 current = self.current_prices.get(pos.market_slug, pos.entry_price)
+                fair = pos.fair_price_at_entry
                 pnl = pos.unrealized_pnl(current)
 
                 # Color P&L
@@ -228,13 +237,13 @@ class PositionsPanel(Static):
                 # Truncate market slug
                 slug = pos.market_slug[:15] if len(pos.market_slug) > 15 else pos.market_slug
 
-                lines.append(f"{slug:<15} {pos.entry_price:>5.1%}  {current:>5.1%}  {pnl_str:>8}")
-            lines.append("-" * 38)
-            lines.append(f"Total invested:       ${self.total_invested:>10.2f}")
+                lines.append(f"{slug:<15} {pos.entry_price:>5.1%} {fair:>5.1%} {current:>5.1%} {pnl_str:>8}")
+            lines.append("-" * 46)
+            lines.append(f"Total invested:  ${self.total_invested:.2f}")
 
             pnl_str = f"+${self.unrealized_pnl:.2f}" if self.unrealized_pnl >= 0 else f"-${abs(self.unrealized_pnl):.2f}"
             pnl_pct = f"+{self.unrealized_pnl_pct:.1%}" if self.unrealized_pnl_pct >= 0 else f"{self.unrealized_pnl_pct:.1%}"
-            lines.append(f"Unrealized P&L:       {pnl_str:>10} ({pnl_pct})")
+            lines.append(f"Unrealized P&L:  {pnl_str} ({pnl_pct})")
 
         content = "\n".join(lines)
         return Panel(content, title="MY POSITIONS", border_style="green")
@@ -429,13 +438,30 @@ class TradingBotApp(App):
         # Run scanner in a separate thread to avoid blocking UI
         if self.scanner:
             loop = asyncio.get_event_loop()
+
+            # Create progress callback that updates UI from thread
+            def update_status(status: str) -> None:
+                self.call_from_thread(scanner_panel.set_scan_status, status)
+
+            def do_scan_with_progress():
+                return self.scanner.scan(positions, progress_callback=update_status)
+
             entry_signals, exit_signals = await loop.run_in_executor(
-                None, self.scanner.scan, positions
+                None, do_scan_with_progress
             )
 
             # Cache markets for executor
             for market in self.scanner.get_markets():
                 self._markets_cache[market.slug] = market
+
+            # Calculate suggested sizes based on balance and kelly
+            balance = self.executor.get_balance() if self.executor.initialized else 0
+            for signal in entry_signals:
+                if signal.kelly > 0 and balance > 0:
+                    # Kelly-based size, but cap at available liquidity and 10% of balance
+                    kelly_size = balance * signal.kelly
+                    max_size = min(balance * 0.10, signal.liquidity) if signal.liquidity > 0 else balance * 0.10
+                    signal.suggested_size = min(kelly_size, max_size)
         else:
             entry_signals, exit_signals = [], []
 

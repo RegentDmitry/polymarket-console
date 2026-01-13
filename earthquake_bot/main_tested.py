@@ -507,16 +507,72 @@ def analyze_market_tested(
     return opportunities
 
 
-def run_analysis(poly: PolymarketClient, usgs: USGSClient) -> list[TestedOpportunity]:
+def get_usable_liquidity(poly: PolymarketClient, token_id: str,
+                         fair_price: float, remaining_days: float,
+                         min_edge: float, min_apy: float) -> float:
+    """
+    Рассчитать ликвидность, доступную по ценам, проходящим фильтры.
+
+    Args:
+        poly: Polymarket клиент
+        token_id: ID токена
+        fair_price: Справедливая цена по модели
+        remaining_days: Дней до резолюции
+        min_edge: Минимальный edge
+        min_apy: Минимальный APY
+
+    Returns:
+        Сумма в USD, которую можно купить с edge >= min_edge и APY >= min_apy
+    """
+    if not token_id:
+        return 0.0
+
+    tiers = get_orderbook_tiers(poly, token_id, fair_price, remaining_days)
+    usable = 0.0
+
+    for tier in tiers:
+        price = tier["price"]
+        size_usd = tier["size_usd"]
+
+        # Рассчитываем edge и APY для этой цены
+        edge = fair_price - price
+        roi = (fair_price - price) / price if price > 0 else 0
+        apy = roi * (365 / remaining_days) if remaining_days > 0 else 0
+
+        # Если проходит фильтры - добавляем
+        if edge >= min_edge and apy >= min_apy:
+            usable += size_usd
+        else:
+            # Дальше цены только хуже - выходим
+            break
+
+    return usable
+
+
+def run_analysis(poly: PolymarketClient, usgs: USGSClient,
+                 progress_callback=None,
+                 min_edge: float = MIN_EDGE,
+                 min_apy: float = MIN_ANNUAL_RETURN) -> list[TestedOpportunity]:
     """Запустить анализ всех рынков."""
     all_opportunities = []
 
     # Получаем данные с Polymarket
+    if progress_callback:
+        progress_callback("Fetching prices...")
     all_prices = poly.get_all_earthquake_prices()
+
+    # Count events to analyze
+    events_to_analyze = [slug for slug in all_prices.keys() if slug in MARKET_CONFIGS]
+    total_events = len(events_to_analyze)
+    current_event = 0
 
     for event_slug, markets in all_prices.items():
         if event_slug not in MARKET_CONFIGS:
             continue
+
+        current_event += 1
+        if progress_callback:
+            progress_callback(f"Analyzing {current_event}/{total_events}...")
 
         config = MARKET_CONFIGS[event_slug]
 
@@ -589,7 +645,10 @@ def run_analysis(poly: PolymarketClient, usgs: USGSClient) -> list[TestedOpportu
         all_opportunities.extend(opps)
 
     # Получаем реальные цены из ордербука
-    print("Проверяю ордербуки...")
+    if progress_callback:
+        progress_callback(f"Checking orderbooks ({len(all_opportunities)})...")
+    else:
+        print("Проверяю ордербуки...")
     updated_opportunities = []
     for opp in all_opportunities:
         if opp.condition_id:
@@ -609,6 +668,12 @@ def run_analysis(poly: PolymarketClient, usgs: USGSClient) -> list[TestedOpportu
                     opp.kelly = kelly_criterion(opp.fair_price, odds)
                 else:
                     opp.kelly = 0
+
+                # Рассчитываем usable liquidity (по ценам, проходящим фильтры)
+                opp.usable_liquidity = get_usable_liquidity(
+                    poly, token_id, opp.fair_price, opp.remaining_days,
+                    min_edge, min_apy
+                )
 
         updated_opportunities.append(opp)
 

@@ -4,7 +4,7 @@ Earthquake scanner - uses the same logic as main_tested.py
 
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Callable
 from datetime import datetime
 
 # Add parent directory to path
@@ -89,7 +89,8 @@ class EarthquakeScanner(BaseScanner):
         # TODO: implement proper exit signals
         return False, ""
 
-    def scan_for_entries(self) -> List[Signal]:
+    def scan_for_entries(self,
+                         progress_callback: Optional[Callable[[str], None]] = None) -> List[Signal]:
         """Scan markets for entry opportunities using main_tested logic."""
         signals = []
 
@@ -101,12 +102,20 @@ class EarthquakeScanner(BaseScanner):
             self._markets_cache = []
 
             # Run the same analysis as main_tested.py
-            self._opportunities = run_analysis(self.api_client, self.usgs_client)
+            self._opportunities = run_analysis(
+                self.api_client, self.usgs_client,
+                progress_callback=progress_callback,
+                min_edge=self.config.min_edge,
+                min_apy=self.config.min_apy
+            )
 
             # Convert opportunities to signals
+            if progress_callback:
+                progress_callback(f"Processing {len(self._opportunities)} results...")
+
             for opp in self._opportunities:
-                # Use unique slug: event + outcome to avoid price collisions
-                unique_slug = f"{opp.event}-{opp.outcome}"
+                # Use unique slug: event + outcome + side to avoid price collisions
+                unique_slug = f"{opp.event}-{opp.outcome}-{opp.side}"
 
                 # Create market for cache
                 market = Market(
@@ -127,6 +136,10 @@ class EarthquakeScanner(BaseScanner):
                 meets_edge = opp.edge >= self.config.min_edge
                 meets_apy = opp.annual_return >= self.config.min_apy
 
+                # Get usable liquidity (filtered by edge/apy) and kelly from opportunity
+                liquidity = getattr(opp, 'usable_liquidity', 0.0) or 0.0
+                kelly = getattr(opp, 'kelly', 0.0) or 0.0
+
                 if meets_edge and meets_apy:
                     signal = Signal(
                         type=SignalType.BUY,
@@ -142,6 +155,8 @@ class EarthquakeScanner(BaseScanner):
                         token_id=opp.token_id,
                         model_used=getattr(opp, 'model_used', 'unknown'),
                         annual_return=opp.annual_return,
+                        liquidity=liquidity,
+                        kelly=kelly,
                     )
                 else:
                     signal = Signal(
@@ -157,6 +172,8 @@ class EarthquakeScanner(BaseScanner):
                         days_remaining=opp.remaining_days,
                         model_used=getattr(opp, 'model_used', 'unknown'),
                         annual_return=opp.annual_return,
+                        liquidity=liquidity,
+                        kelly=kelly,
                     )
 
                 signals.append(signal)
@@ -179,6 +196,6 @@ class EarthquakeScanner(BaseScanner):
         """Get current prices for all tracked markets."""
         prices = {}
         for opp in self._opportunities:
-            unique_slug = f"{opp.event}-{opp.outcome}"
+            unique_slug = f"{opp.event}-{opp.outcome}-{opp.side}"
             prices[unique_slug] = opp.market_price
         return prices

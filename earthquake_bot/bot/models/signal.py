@@ -44,6 +44,10 @@ class Signal:
 
     # Suggested action
     suggested_size: float = 0.0   # $ to buy/sell
+    kelly: float = 0.0            # Kelly criterion (fraction of bankroll)
+
+    # Liquidity
+    liquidity: float = 0.0        # Available liquidity at current price ($)
 
     # Extra info
     token_id: str = ""            # Polymarket token ID

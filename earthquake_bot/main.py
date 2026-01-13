@@ -252,7 +252,8 @@ class Opportunity:
     lambda_used: float
     remaining_days: float = 0  # Дней до резолюции
     condition_id: str = ""
-    liquidity_usd: Optional[float] = None  # Доступная ликвидность для покупки
+    liquidity_usd: Optional[float] = None  # Общая ликвидность в ордербуке
+    usable_liquidity: Optional[float] = None  # Ликвидность по ценам, проходящим фильтры
 
     @property
     def expected_return(self) -> float:
