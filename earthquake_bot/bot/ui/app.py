@@ -52,22 +52,18 @@ class StatusBar(Static):
     def render(self) -> Text:
         mode = "DRY RUN" if self.config.dry_run else ("AUTO" if self.config.auto_mode else "CONFIRM")
 
-        # Time since last scan
+        # Last scan time
         if self.last_scan_time:
-            elapsed = (datetime.now() - self.last_scan_time).total_seconds()
-            if elapsed < 60:
-                scan_ago = f"{int(elapsed)}s ago"
-            else:
-                scan_ago = f"{int(elapsed // 60)}m ago"
+            scan_time = self.last_scan_time.strftime("%H:%M:%S")
         else:
-            scan_ago = "never"
+            scan_time = "--:--:--"
 
         # First line
         line1 = (
             f"  Balance: ${self.balance:,.2f}  |  "
             f"Positions: {self.positions_count}  |  "
             f"Invested: ${self.invested:,.2f}  |  "
-            f"Last scan: {scan_ago}"
+            f"Scanned: {scan_time}"
         )
 
         # Second line
