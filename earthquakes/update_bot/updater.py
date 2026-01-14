@@ -4,11 +4,16 @@ JSON updater for earthquake markets configuration.
 
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Dict, List, Set, Optional, Callable
 from datetime import datetime
 from .scanner import PolymarketScanner, MarketInfo
 from .claude_client import ClaudeCodeClient
+
+# Import PolymarketClient from parent directory
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from polymarket_client import PolymarketClient
 
 
 class MarketsUpdater:
@@ -19,6 +24,7 @@ class MarketsUpdater:
         self.scanner = scanner
         self.working_dir = working_dir or json_path.parent
         self.claude_client = ClaudeCodeClient(self.working_dir)
+        self.poly_client = PolymarketClient()  # For fetching condition_id and token_ids
 
     def load_current_config(self) -> dict:
         """Load current earthquake_markets.json."""
@@ -53,6 +59,23 @@ class MarketsUpdater:
                 outcomes_str = json.dumps(data["outcomes"])
                 lines[-1] += ","  # Add comma to type line
                 lines.append(f'    "outcomes": {outcomes_str}')
+
+            # Add condition_id if present
+            if "condition_id" in data:
+                lines[-1] += ","  # Add comma to previous line
+                lines.append(f'    "condition_id": "{data["condition_id"]}"')
+
+            # Add condition_ids if present (for count markets)
+            if "condition_ids" in data:
+                lines[-1] += ","  # Add comma to previous line
+                condition_ids_str = json.dumps(data["condition_ids"])
+                lines.append(f'    "condition_ids": {condition_ids_str}')
+
+            # Add token_ids if present
+            if "token_ids" in data:
+                lines[-1] += ","  # Add comma to previous line
+                token_ids_str = json.dumps(data["token_ids"])
+                lines.append(f'    "token_ids": {token_ids_str}')
 
             # Close market entry
             if is_last:
@@ -193,6 +216,20 @@ class MarketsUpdater:
                 output_callback(f"Current config: {len(before_config)} markets")
                 output_callback("")
 
+            # Fetch ALL earthquake market data with condition_ids and token_ids
+            if output_callback:
+                output_callback("Fetching condition_ids and token_ids from Polymarket...")
+
+            try:
+                all_prices = self.poly_client.get_all_earthquake_prices()
+            except Exception as e:
+                if output_callback:
+                    output_callback(f"Warning: Failed to fetch market data: {e}")
+                all_prices = {}
+
+            if output_callback:
+                output_callback("")
+
             # Check existing markets from config
             if output_callback:
                 output_callback("Checking existing markets...")
@@ -288,6 +325,55 @@ class MarketsUpdater:
                 else:
                     # Binary event
                     config_entry["type"] = "binary"
+
+                # Add condition_id and token_ids from polymarket data
+                if event_slug in all_prices:
+                    poly_markets = all_prices[event_slug]
+
+                    if is_count_event:
+                        # Count market - multiple condition_ids
+                        config_entry["condition_ids"] = {}
+                        config_entry["token_ids"] = {}
+
+                        for market in poly_markets:
+                            # Match market question to outcome
+                            question_lower = market.question.lower()
+                            for outcome_data in outcomes:
+                                outcome_name = outcome_data[0]  # e.g., "<5", "5-7", etc.
+
+                                # Match patterns
+                                matched = False
+                                if "-" in outcome_name and outcome_name[0].isdigit():
+                                    # Range like "5-7"
+                                    parts = outcome_name.split("-")
+                                    if len(parts) == 2:
+                                        matched = bool(re.search(rf'between\s+{parts[0]}\s+and\s+{parts[1]}', question_lower))
+                                elif outcome_name.startswith("<"):
+                                    # Less than like "<5"
+                                    num = outcome_name[1:]
+                                    matched = bool(re.search(rf'fewer\s+than\s+{num}\b', question_lower))
+                                elif outcome_name.endswith("+"):
+                                    # Or more like "8+"
+                                    num = outcome_name[:-1]
+                                    matched = bool(re.search(rf'{num}\s+or\s+more', question_lower))
+                                else:
+                                    # Exact like "2"
+                                    matched = bool(re.search(rf'exactly\s+{outcome_name}\b', question_lower))
+
+                                if matched:
+                                    config_entry["condition_ids"][outcome_name] = market.condition_id
+                                    config_entry["token_ids"][outcome_name] = {}
+                                    for outcome in market.outcomes:
+                                        config_entry["token_ids"][outcome_name][outcome.outcome_name] = outcome.token_id
+                                    break
+                    else:
+                        # Binary market - single condition_id
+                        if poly_markets:
+                            market = poly_markets[0]  # First market
+                            config_entry["condition_id"] = market.condition_id
+                            config_entry["token_ids"] = {}
+                            for outcome in market.outcomes:
+                                config_entry["token_ids"][outcome.outcome_name] = outcome.token_id
 
                 # Use event slug as key
                 new_config[event_slug] = config_entry

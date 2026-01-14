@@ -580,55 +580,43 @@ def process_opportunity_orderbook(opp: 'TestedOpportunity', poly: PolymarketClie
     Обработать одну возможность - получить данные ордербука.
     Используется для параллельной обработки.
 
-    ОПТИМИЗИРОВАНО v2:
-    - Кеширование get_clob_market результатов
-    - get_orderbook_full() за ОДИН запрос вместо двух (get_orderbook_data + get_usable_liquidity)
+    ОПТИМИЗИРОВАНО v3:
+    - token_id читается из JSON (БЕЗ HTTP запросов!)
+    - get_orderbook_full() за ОДИН запрос вместо двух
 
     Args:
         opp: Возможность для обработки
         poly: Polymarket клиент
         min_edge: Минимальный edge
         min_apy: Минимальный APY
-        clob_cache: Словарь для кеширования результатов get_clob_market
+        clob_cache: НЕ ИСПОЛЬЗУЕТСЯ (оставлено для совместимости)
 
     Returns:
         Обновлённая возможность
     """
-    if opp.condition_id:
-        outcome_to_check = "Yes" if opp.side == "YES" else "No"
+    # token_id уже установлен из JSON конфига - никаких HTTP запросов!
+    if opp.token_id:
+        # Получаем ВСЕ данные ордербука за ОДИН запрос
+        best_ask, liquidity, tiers = get_orderbook_full(
+            poly, opp.token_id, opp.fair_price, opp.remaining_days
+        )
 
-        # Получаем token_id с кешированием
-        cache_key = f"{opp.condition_id}:{outcome_to_check}"
-        if cache_key in clob_cache:
-            token_id = clob_cache[cache_key]
-        else:
-            token_id = get_token_id_from_condition(poly, opp.condition_id, outcome_to_check)
-            clob_cache[cache_key] = token_id
+        opp.liquidity_usd = liquidity
 
-        if token_id:
-            opp.token_id = token_id
+        if best_ask is not None and best_ask > 0:
+            opp.market_price = best_ask
+            opp.edge = opp.fair_price - opp.market_price
 
-            # Получаем ВСЕ данные ордербука за ОДИН запрос
-            best_ask, liquidity, tiers = get_orderbook_full(
-                poly, token_id, opp.fair_price, opp.remaining_days
+            if opp.market_price > 0 and opp.market_price < 1:
+                odds = (1 - opp.market_price) / opp.market_price
+                opp.kelly = kelly_criterion(opp.fair_price, odds)
+            else:
+                opp.kelly = 0
+
+            # Рассчитываем usable liquidity из уже полученных tiers (БЕЗ нового запроса!)
+            opp.usable_liquidity = calculate_usable_liquidity_from_tiers(
+                tiers, opp.fair_price, opp.remaining_days, min_edge, min_apy
             )
-
-            opp.liquidity_usd = liquidity
-
-            if best_ask is not None and best_ask > 0:
-                opp.market_price = best_ask
-                opp.edge = opp.fair_price - opp.market_price
-
-                if opp.market_price > 0 and opp.market_price < 1:
-                    odds = (1 - opp.market_price) / opp.market_price
-                    opp.kelly = kelly_criterion(opp.fair_price, odds)
-                else:
-                    opp.kelly = 0
-
-                # Рассчитываем usable liquidity из уже полученных tiers (БЕЗ нового запроса!)
-                opp.usable_liquidity = calculate_usable_liquidity_from_tiers(
-                    tiers, opp.fair_price, opp.remaining_days, min_edge, min_apy
-                )
 
     return opp
 
@@ -663,10 +651,8 @@ def run_analysis(poly: PolymarketClient, usgs: USGSClient,
 
         config = market_configs[event_slug]
 
-        # Собираем рыночные цены и condition_ids
+        # Собираем рыночные цены
         market_prices = {}
-        token_ids = {}
-        condition_ids = {}
 
         for market in markets:
             if not market.active:
@@ -704,30 +690,28 @@ def run_analysis(poly: PolymarketClient, usgs: USGSClient,
 
                 if matched:
                     market_prices[name] = yes_outcome.yes_price
-                    token_ids[(name, "YES")] = yes_outcome.token_id
-                    condition_ids[name] = market.condition_id
-                    if no_outcome:
-                        token_ids[(name, "NO")] = no_outcome.token_id
                     break
             else:
                 market_prices[yes_outcome.outcome_name] = yes_outcome.yes_price
-                token_ids[(yes_outcome.outcome_name, "YES")] = yes_outcome.token_id
-                condition_ids[yes_outcome.outcome_name] = market.condition_id
-                if no_outcome:
-                    token_ids[("No", "NO")] = no_outcome.token_id
 
         # Анализируем
         opps = analyze_market_tested(event_slug, config, usgs, market_prices, poly)
 
-        # Добавляем token_id и condition_id
+        # Добавляем condition_id и token_id из JSON конфигов (БЕЗ HTTP запросов!)
         for opp in opps:
-            key = (opp.outcome, opp.side)
-            opp.token_id = token_ids.get(key, "")
+            # Для binary markets
+            if "condition_id" in config:
+                opp.condition_id = config["condition_id"]
+                # token_ids для binary: {"Yes": "...", "No": "..."}
+                if "token_ids" in config:
+                    opp.token_id = config["token_ids"].get(opp.outcome, "")
 
-            if opp.outcome in condition_ids:
-                opp.condition_id = condition_ids[opp.outcome]
-            elif "Yes" in condition_ids:
-                opp.condition_id = condition_ids["Yes"]
+            # Для count markets
+            elif "condition_ids" in config and "token_ids" in config:
+                opp.condition_id = config["condition_ids"].get(opp.outcome, "")
+                # token_ids для count: {"<5": {"Yes": "...", "No": "..."}, ...}
+                outcome_tokens = config["token_ids"].get(opp.outcome, {})
+                opp.token_id = outcome_tokens.get("Yes" if opp.side == "YES" else "No", "")
 
         all_opportunities.extend(opps)
 
