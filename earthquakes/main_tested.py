@@ -28,8 +28,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from main import (
     MIN_EDGE, MIN_ANNUAL_RETURN, MIN_BET_USD, MAX_LIQUIDITY_PCT,
     load_market_configs, Opportunity, kelly_criterion,
-    get_orderbook_data, get_orderbook_tiers, get_spread_info, allocate_portfolio,
-    execute_trade,
+    get_orderbook_data, get_orderbook_tiers, get_orderbook_full,
+    get_token_id_from_condition, get_spread_info,
+    allocate_portfolio, execute_trade,
 )
 from main_integrated import IntegratedModel
 from markets import EARTHQUAKE_ANNUAL_RATES
@@ -508,15 +509,14 @@ def analyze_market_tested(
     return opportunities
 
 
-def get_usable_liquidity(poly: PolymarketClient, token_id: str,
-                         fair_price: float, remaining_days: float,
-                         min_edge: float, min_apy: float) -> float:
+def calculate_usable_liquidity_from_tiers(tiers: list[dict], fair_price: float,
+                                          remaining_days: float, min_edge: float,
+                                          min_apy: float) -> float:
     """
-    Рассчитать ликвидность, доступную по ценам, проходящим фильтры.
+    Рассчитать usable liquidity из уже полученных tiers (без запроса).
 
     Args:
-        poly: Polymarket клиент
-        token_id: ID токена
+        tiers: Уровни ордербука из get_orderbook_full()
         fair_price: Справедливая цена по модели
         remaining_days: Дней до резолюции
         min_edge: Минимальный edge
@@ -525,10 +525,6 @@ def get_usable_liquidity(poly: PolymarketClient, token_id: str,
     Returns:
         Сумма в USD, которую можно купить с edge >= min_edge и APY >= min_apy
     """
-    if not token_id:
-        return 0.0
-
-    tiers = get_orderbook_tiers(poly, token_id, fair_price, remaining_days)
     usable = 0.0
 
     for tier in tiers:
@@ -550,44 +546,89 @@ def get_usable_liquidity(poly: PolymarketClient, token_id: str,
     return usable
 
 
+def get_usable_liquidity(poly: PolymarketClient, token_id: str,
+                         fair_price: float, remaining_days: float,
+                         min_edge: float, min_apy: float) -> float:
+    """
+    Рассчитать ликвидность, доступную по ценам, проходящим фильтры.
+
+    DEPRECATED: Используйте calculate_usable_liquidity_from_tiers() с get_orderbook_full()
+    для избежания дублирующихся запросов.
+
+    Args:
+        poly: Polymarket клиент
+        token_id: ID токена
+        fair_price: Справедливая цена по модели
+        remaining_days: Дней до резолюции
+        min_edge: Минимальный edge
+        min_apy: Минимальный APY
+
+    Returns:
+        Сумма в USD, которую можно купить с edge >= min_edge и APY >= min_apy
+    """
+    if not token_id:
+        return 0.0
+
+    tiers = get_orderbook_tiers(poly, token_id, fair_price, remaining_days)
+    return calculate_usable_liquidity_from_tiers(tiers, fair_price, remaining_days, min_edge, min_apy)
+
+
 def process_opportunity_orderbook(opp: 'TestedOpportunity', poly: PolymarketClient,
-                                  min_edge: float, min_apy: float) -> 'TestedOpportunity':
+                                  min_edge: float, min_apy: float,
+                                  clob_cache: dict) -> 'TestedOpportunity':
     """
     Обработать одну возможность - получить данные ордербука.
     Используется для параллельной обработки.
+
+    ОПТИМИЗИРОВАНО v2:
+    - Кеширование get_clob_market результатов
+    - get_orderbook_full() за ОДИН запрос вместо двух (get_orderbook_data + get_usable_liquidity)
 
     Args:
         opp: Возможность для обработки
         poly: Polymarket клиент
         min_edge: Минимальный edge
         min_apy: Минимальный APY
+        clob_cache: Словарь для кеширования результатов get_clob_market
 
     Returns:
         Обновлённая возможность
     """
     if opp.condition_id:
         outcome_to_check = "Yes" if opp.side == "YES" else "No"
-        best_ask, liquidity, token_id = get_orderbook_data(poly, opp.condition_id, outcome_to_check)
 
-        opp.liquidity_usd = liquidity
+        # Получаем token_id с кешированием
+        cache_key = f"{opp.condition_id}:{outcome_to_check}"
+        if cache_key in clob_cache:
+            token_id = clob_cache[cache_key]
+        else:
+            token_id = get_token_id_from_condition(poly, opp.condition_id, outcome_to_check)
+            clob_cache[cache_key] = token_id
+
         if token_id:
             opp.token_id = token_id
 
-        if best_ask is not None and best_ask > 0:
-            opp.market_price = best_ask
-            opp.edge = opp.fair_price - opp.market_price
-
-            if opp.market_price > 0 and opp.market_price < 1:
-                odds = (1 - opp.market_price) / opp.market_price
-                opp.kelly = kelly_criterion(opp.fair_price, odds)
-            else:
-                opp.kelly = 0
-
-            # Рассчитываем usable liquidity (по ценам, проходящим фильтры)
-            opp.usable_liquidity = get_usable_liquidity(
-                poly, token_id, opp.fair_price, opp.remaining_days,
-                min_edge, min_apy
+            # Получаем ВСЕ данные ордербука за ОДИН запрос
+            best_ask, liquidity, tiers = get_orderbook_full(
+                poly, token_id, opp.fair_price, opp.remaining_days
             )
+
+            opp.liquidity_usd = liquidity
+
+            if best_ask is not None and best_ask > 0:
+                opp.market_price = best_ask
+                opp.edge = opp.fair_price - opp.market_price
+
+                if opp.market_price > 0 and opp.market_price < 1:
+                    odds = (1 - opp.market_price) / opp.market_price
+                    opp.kelly = kelly_criterion(opp.fair_price, odds)
+                else:
+                    opp.kelly = 0
+
+                # Рассчитываем usable liquidity из уже полученных tiers (БЕЗ нового запроса!)
+                opp.usable_liquidity = calculate_usable_liquidity_from_tiers(
+                    tiers, opp.fair_price, opp.remaining_days, min_edge, min_apy
+                )
 
     return opp
 
@@ -696,12 +737,15 @@ def run_analysis(poly: PolymarketClient, usgs: USGSClient,
     else:
         print("Проверяю ордербуки...")
 
+    # Кеш для get_clob_market результатов (thread-safe благодаря GIL)
+    clob_cache = {}
+
     # Параллельная обработка ордербуков (до 10 одновременно)
     updated_opportunities = []
     with ThreadPoolExecutor(max_workers=10) as executor:
         # Запускаем все задачи
         future_to_opp = {
-            executor.submit(process_opportunity_orderbook, opp, poly, min_edge, min_apy): opp
+            executor.submit(process_opportunity_orderbook, opp, poly, min_edge, min_apy, clob_cache): opp
             for opp in all_opportunities
         }
 

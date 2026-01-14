@@ -268,6 +268,34 @@ class Opportunity:
         return self.expected_return * (365 / self.remaining_days)
 
 
+def get_token_id_from_condition(poly: 'PolymarketClient', condition_id: str, outcome: str) -> Optional[str]:
+    """
+    Получить token_id для заданного condition_id и outcome.
+
+    Используется для оптимизации - получить token_id без запроса ордербука.
+
+    Args:
+        poly: Polymarket клиент
+        condition_id: ID условия рынка
+        outcome: "Yes" или "No"
+
+    Returns:
+        token_id или None
+    """
+    try:
+        clob_market = poly.get_clob_market(condition_id)
+        if not clob_market or not clob_market.get("enable_order_book"):
+            return None
+
+        for token in clob_market.get("tokens", []):
+            if token.get("outcome") == outcome:
+                return token.get("token_id")
+
+        return None
+    except Exception:
+        return None
+
+
 def get_orderbook_data(poly: 'PolymarketClient', condition_id: str, outcome: str) -> tuple[Optional[float], Optional[float], Optional[float]]:
     """
     Получить данные ордербука для покупки из CLOB API.
@@ -665,17 +693,22 @@ def allocate_portfolio(opportunities: list[Opportunity], bankroll: float) -> lis
     return allocations
 
 
-def get_orderbook_tiers(poly: 'PolymarketClient', token_id: str, fair_price: float, remaining_days: float) -> list[dict]:
+def get_orderbook_full(poly: 'PolymarketClient', token_id: str,
+                       fair_price: float, remaining_days: float) -> tuple[Optional[float], float, list[dict]]:
     """
-    Получить уровни из ордербука с расчётом APY для каждого.
+    Получить полные данные ордербука за ОДИН запрос (оптимизация).
+
+    Args:
+        poly: Polymarket клиент
+        token_id: ID токена
+        fair_price: Справедливая цена для расчёта ROI/APY
+        remaining_days: Дней до резолюции
 
     Returns:
-        Список словарей с полями:
-        - price: цена покупки
-        - size_usd: сколько можно купить на этом уровне (в USD)
-        - cumulative_usd: сколько можно купить до этого уровня включительно
-        - roi: ROI на этом уровне
-        - apy: APY на этом уровне
+        (best_ask, total_liquidity, tiers)
+        - best_ask: лучшая цена покупки
+        - total_liquidity: общая ликвидность в USD
+        - tiers: список уровней с APY
     """
     import httpx
 
@@ -686,17 +719,20 @@ def get_orderbook_tiers(poly: 'PolymarketClient', token_id: str, fair_price: flo
             timeout=30,
         )
         if response.status_code != 200:
-            return []
+            return None, 0.0, []
 
         ob = response.json()
         asks = ob.get("asks", [])
 
         if not asks:
-            return []
+            return None, 0.0, []
 
         # Сортируем по цене (от лучшей к худшей)
         asks = sorted(asks, key=lambda x: float(x.get("price", 1.0)))
 
+        # Best ask
+        best_ask = None
+        total_liquidity = 0.0
         tiers = []
         cumulative = 0.0
 
@@ -707,8 +743,13 @@ def get_orderbook_tiers(poly: 'PolymarketClient', token_id: str, fair_price: flo
             if price <= 0 or price >= 1 or size <= 0:
                 continue
 
+            # Best ask - первая валидная цена
+            if best_ask is None:
+                best_ask = price
+
             size_usd = price * size
             cumulative += size_usd
+            total_liquidity += size_usd
 
             # ROI и APY для этой цены
             roi = fair_price / price - 1 if price > 0 else 0
@@ -722,9 +763,27 @@ def get_orderbook_tiers(poly: 'PolymarketClient', token_id: str, fair_price: flo
                 "apy": apy,
             })
 
-        return tiers
+        return best_ask, total_liquidity, tiers
     except Exception:
-        return []
+        return None, 0.0, []
+
+
+def get_orderbook_tiers(poly: 'PolymarketClient', token_id: str, fair_price: float, remaining_days: float) -> list[dict]:
+    """
+    Получить уровни из ордербука с расчётом APY для каждого.
+
+    DEPRECATED: Используйте get_orderbook_full() для избежания дублирующихся запросов.
+
+    Returns:
+        Список словарей с полями:
+        - price: цена покупки
+        - size_usd: сколько можно купить на этом уровне (в USD)
+        - cumulative_usd: сколько можно купить до этого уровня включительно
+        - roi: ROI на этом уровне
+        - apy: APY на этом уровне
+    """
+    _, _, tiers = get_orderbook_full(poly, token_id, fair_price, remaining_days)
+    return tiers
 
 
 def get_spread_info(poly: 'PolymarketClient', token_id: str) -> dict:
