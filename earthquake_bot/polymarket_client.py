@@ -93,20 +93,14 @@ class PolymarketClient:
         Returns:
             Список событий с рынками
         """
-        # Список известных earthquake event slugs (только активные)
-        earthquake_slugs = [
-            # M7.0+ рынки
-            "how-many-7pt0-or-above-earthquakes-by-june-30",
-            "how-many-7pt0-or-above-earthquakes-in-2026",
-            "another-7pt0-or-above-earthquake-by-555",
-            # M9.0+ / M10.0+ рынки
-            "9pt0-or-above-earthquake-before-2027",
-            "10pt0-or-above-earthquake-before-2027",
-            # Megaquake (M8.0+) рынки
-            "megaquake-by-january-31",
-            "megaquake-by-march-31",
-            "megaquake-by-june-30",
-        ]
+        # Читаем slugs из JSON файла (можно редактировать без перезапуска бота)
+        slugs_file = Path(__file__).parent / "earthquake_slugs.json"
+        try:
+            with open(slugs_file, "r") as f:
+                earthquake_slugs = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"Warning: Could not load {slugs_file}: {e}")
+            earthquake_slugs = []
 
         all_events = []
         for slug in earthquake_slugs:
