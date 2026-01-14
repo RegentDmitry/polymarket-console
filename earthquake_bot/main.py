@@ -10,6 +10,7 @@ Earthquake Trading Bot для Polymarket.
 """
 
 import argparse
+import json
 import math
 import sys
 from datetime import datetime, timezone
@@ -20,6 +21,36 @@ from typing import Optional
 from usgs_client import USGSClient
 from polymarket_client import PolymarketClient
 from markets import EARTHQUAKE_ANNUAL_RATES
+
+
+def load_market_configs() -> dict:
+    """
+    Загрузить конфигурации рынков из JSON файла.
+    Позволяет обновлять рынки без перезапуска бота.
+    """
+    config_file = Path(__file__).parent / "earthquake_markets.json"
+    try:
+        with open(config_file, "r") as f:
+            raw_config = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"Warning: Could not load {config_file}: {e}")
+        return {}
+
+    # Конвертируем строки дат в datetime объекты
+    configs = {}
+    for slug, config in raw_config.items():
+        configs[slug] = {
+            "magnitude": config["magnitude"],
+            "start": datetime.fromisoformat(config["start"].replace("Z", "+00:00")),
+            "end": datetime.fromisoformat(config["end"].replace("Z", "+00:00")),
+            "type": config["type"],
+        }
+        # Конвертируем outcomes если есть (list of lists -> list of tuples)
+        if "outcomes" in config:
+            configs[slug]["outcomes"] = [
+                (o[0], o[1], o[2]) for o in config["outcomes"]
+            ]
+    return configs
 
 
 # ============================================================================
@@ -182,59 +213,7 @@ def kelly_criterion(prob: float, odds: float) -> float:
 # MARKET CONFIGS
 # ============================================================================
 
-MARKET_CONFIGS = {
-    "how-many-7pt0-or-above-earthquakes-by-june-30": {
-        "magnitude": 7.0,
-        "start": datetime(2025, 12, 4, 17, 0, 0, tzinfo=timezone.utc),
-        "end": datetime(2026, 6, 30, 23, 59, 59, tzinfo=timezone.utc),
-        "type": "count",
-        "outcomes": [
-            ("2", 2, 2), ("3", 3, 3), ("4", 4, 4), ("5", 5, 5),
-            ("6", 6, 6), ("7", 7, 7), ("8+", 8, None),
-        ],
-    },
-    "how-many-7pt0-or-above-earthquakes-in-2026": {
-        "magnitude": 7.0,
-        "start": datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
-        "end": datetime(2026, 12, 31, 23, 59, 59, tzinfo=timezone.utc),
-        "type": "count",
-        "outcomes": [
-            ("<5", 0, 4), ("5-7", 5, 7), ("8-10", 8, 10), ("11-13", 11, 13),
-            ("14-16", 14, 16), ("17-19", 17, 19), ("20+", 20, None),
-        ],
-    },
-    "10pt0-or-above-earthquake-before-2027": {
-        "magnitude": 10.0,
-        "start": datetime(2025, 12, 8, 12, 0, 0, tzinfo=timezone.utc),
-        "end": datetime(2026, 12, 31, 23, 59, 59, tzinfo=timezone.utc),
-        "type": "binary",
-    },
-    "9pt0-or-above-earthquake-before-2027": {
-        "magnitude": 9.0,
-        "start": datetime(2025, 12, 8, 12, 0, 0, tzinfo=timezone.utc),
-        "end": datetime(2026, 12, 31, 23, 59, 59, tzinfo=timezone.utc),
-        "type": "binary",
-    },
-    # Megaquake (M8.0+) рынки
-    "megaquake-by-january-31": {
-        "magnitude": 8.0,
-        "start": datetime(2025, 12, 28, 0, 0, 0, tzinfo=timezone.utc),
-        "end": datetime(2026, 1, 31, 23, 59, 59, tzinfo=timezone.utc),
-        "type": "binary",
-    },
-    "megaquake-by-march-31": {
-        "magnitude": 8.0,
-        "start": datetime(2025, 12, 28, 0, 0, 0, tzinfo=timezone.utc),
-        "end": datetime(2026, 3, 31, 23, 59, 59, tzinfo=timezone.utc),
-        "type": "binary",
-    },
-    "megaquake-by-june-30": {
-        "magnitude": 8.0,
-        "start": datetime(2025, 12, 28, 0, 0, 0, tzinfo=timezone.utc),
-        "end": datetime(2026, 6, 30, 23, 59, 59, tzinfo=timezone.utc),
-        "type": "binary",
-    },
-}
+# MARKET_CONFIGS загружается из earthquake_markets.json через load_market_configs()
 
 
 @dataclass
@@ -471,14 +450,17 @@ def run_analysis(poly: PolymarketClient, usgs: USGSClient) -> list[Opportunity]:
     """Запустить анализ всех рынков."""
     all_opportunities = []
 
+    # Загружаем конфиги из JSON (hot-reload при каждом скане)
+    market_configs = load_market_configs()
+
     # Получаем данные с Polymarket
     all_prices = poly.get_all_earthquake_prices()
 
     for event_slug, markets in all_prices.items():
-        if event_slug not in MARKET_CONFIGS:
+        if event_slug not in market_configs:
             continue
 
-        config = MARKET_CONFIGS[event_slug]
+        config = market_configs[event_slug]
 
         # Собираем рыночные цены и condition_ids
         market_prices = {}

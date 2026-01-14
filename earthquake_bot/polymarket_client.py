@@ -94,12 +94,13 @@ class PolymarketClient:
             Список событий с рынками
         """
         # Читаем slugs из JSON файла (можно редактировать без перезапуска бота)
-        slugs_file = Path(__file__).parent / "earthquake_slugs.json"
+        markets_file = Path(__file__).parent / "earthquake_markets.json"
         try:
-            with open(slugs_file, "r") as f:
-                earthquake_slugs = json.load(f)
+            with open(markets_file, "r") as f:
+                markets_config = json.load(f)
+                earthquake_slugs = list(markets_config.keys())
         except (FileNotFoundError, json.JSONDecodeError) as e:
-            print(f"Warning: Could not load {slugs_file}: {e}")
+            print(f"Warning: Could not load {markets_file}: {e}")
             earthquake_slugs = []
 
         all_events = []

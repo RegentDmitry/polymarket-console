@@ -26,7 +26,7 @@ from typing import Optional
 # Импортируем модели
 from main import (
     MIN_EDGE, MIN_ANNUAL_RETURN, MIN_BET_USD, MAX_LIQUIDITY_PCT,
-    MARKET_CONFIGS, Opportunity, kelly_criterion,
+    load_market_configs, Opportunity, kelly_criterion,
     get_orderbook_data, get_orderbook_tiers, get_spread_info, allocate_portfolio,
     execute_trade,
 )
@@ -556,25 +556,28 @@ def run_analysis(poly: PolymarketClient, usgs: USGSClient,
     """Запустить анализ всех рынков."""
     all_opportunities = []
 
+    # Загружаем конфиги из JSON (hot-reload при каждом скане)
+    market_configs = load_market_configs()
+
     # Получаем данные с Polymarket
     if progress_callback:
         progress_callback("Fetching prices...")
     all_prices = poly.get_all_earthquake_prices()
 
     # Count events to analyze
-    events_to_analyze = [slug for slug in all_prices.keys() if slug in MARKET_CONFIGS]
+    events_to_analyze = [slug for slug in all_prices.keys() if slug in market_configs]
     total_events = len(events_to_analyze)
     current_event = 0
 
     for event_slug, markets in all_prices.items():
-        if event_slug not in MARKET_CONFIGS:
+        if event_slug not in market_configs:
             continue
 
         current_event += 1
         if progress_callback:
             progress_callback(f"Analyzing {current_event}/{total_events}...")
 
-        config = MARKET_CONFIGS[event_slug]
+        config = market_configs[event_slug]
 
         # Собираем рыночные цены и condition_ids
         market_prices = {}
