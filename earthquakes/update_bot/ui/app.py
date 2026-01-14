@@ -338,12 +338,13 @@ class UpdateBotApp(App):
 
     def action_quit(self) -> None:
         """Action: Quit the app (with confirmation)."""
-        if self.quit_pending:
-            self.log_message("Shutting down...", color="red", bold=True)
-            self.exit()
-        else:
+        if not self.quit_pending:
             self.quit_pending = True
             self.notify("Quit? Press ENTER to confirm, any other key to cancel")
+        else:
+            # Повторное нажатие Q -> отменяем выход
+            self.quit_pending = False
+            self.notify("Quit cancelled")
 
     def on_key(self, event) -> None:
         """Handle key presses for quit confirmation and Russian layout."""
