@@ -22,6 +22,7 @@ try:
         run_analysis, TestedOpportunity, TestedModel,
         MIN_EDGE, MIN_ANNUAL_RETURN,
     )
+    from main import get_spread_info
     from polymarket_client import PolymarketClient
     from usgs_client import USGSClient
     IMPORTS_OK = True
@@ -30,6 +31,7 @@ except ImportError as e:
     IMPORTS_OK = False
     TestedModel = None
     PolymarketClient = None
+    get_spread_info = None
 
 
 class EarthquakeScanner(BaseScanner):
@@ -54,6 +56,9 @@ class EarthquakeScanner(BaseScanner):
         # Cache for opportunities from last scan
         self._opportunities: List[TestedOpportunity] = []
         self._markets_cache: List[Market] = []
+        # Cache for fair prices and token_ids (for exit checks)
+        self._fair_prices: dict[str, float] = {}  # market_slug -> fair_price
+        self._token_ids: dict[str, str] = {}  # market_slug -> token_id
 
     @property
     def name(self) -> str:
@@ -100,6 +105,8 @@ class EarthquakeScanner(BaseScanner):
         try:
             # Clear caches before each scan
             self._markets_cache = []
+            self._fair_prices = {}
+            self._token_ids = {}
 
             # Run the same analysis as main_tested.py
             self._opportunities = run_analysis(
@@ -116,6 +123,11 @@ class EarthquakeScanner(BaseScanner):
             for opp in self._opportunities:
                 # Use unique slug: event + outcome + side to avoid price collisions
                 unique_slug = f"{opp.event}-{opp.outcome}-{opp.side}"
+
+                # Cache fair price and token_id for exit checks
+                self._fair_prices[unique_slug] = opp.fair_price
+                if opp.token_id:
+                    self._token_ids[unique_slug] = opp.token_id
 
                 # Create market for cache
                 market = Market(
@@ -187,10 +199,63 @@ class EarthquakeScanner(BaseScanner):
 
     def scan_for_exits(self, positions: List[Position],
                        current_prices: dict[str, float]) -> List[Signal]:
-        """Scan open positions for exit opportunities."""
-        # For now, basic exit logic
-        # TODO: implement proper exit signals based on model
-        return []
+        """Scan open positions for exit opportunities.
+
+        Logic: SELL when bid_price >= current_fair_price
+        (market is willing to pay more than our model thinks it's worth)
+        """
+        signals = []
+
+        if not IMPORTS_OK or not self.api_client or not get_spread_info:
+            return signals
+
+        for position in positions:
+            # Get current fair price from cache
+            fair_price = self._fair_prices.get(position.market_slug)
+            if fair_price is None:
+                # Market not in current scan results - skip
+                continue
+
+            # Get token_id for this position
+            token_id = self._token_ids.get(position.market_slug)
+            if not token_id:
+                continue
+
+            # Get bid price from orderbook
+            spread_info = get_spread_info(self.api_client, token_id)
+            if not spread_info:
+                continue
+
+            bid_price = spread_info.get("best_bid", 0)
+            bid_liquidity = spread_info.get("bid_liquidity", 0)
+
+            if bid_price <= 0:
+                # No bids - can't sell
+                continue
+
+            # Check sell condition: bid >= fair
+            if bid_price >= fair_price:
+                # Calculate position value at bid price
+                current_value = position.current_value(bid_price)
+
+                signal = Signal(
+                    type=SignalType.SELL,
+                    market_id=position.market_id,
+                    market_slug=position.market_slug,
+                    market_name=position.market_name,
+                    outcome=position.outcome,
+                    current_price=bid_price,
+                    fair_price=fair_price,
+                    target_price=bid_price,
+                    position_id=position.id,
+                    reason=f"Bid {bid_price:.1%} >= Fair {fair_price:.1%}",
+                    suggested_size=current_value,
+                    liquidity=bid_liquidity,
+                    token_id=token_id,
+                )
+                signals.append(signal)
+
+        return signals
 
     def get_current_prices(self) -> dict[str, float]:
         """Get current prices for all tracked markets."""

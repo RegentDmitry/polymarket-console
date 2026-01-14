@@ -150,7 +150,7 @@ class ScannerPanel(Static):
 
             # Show available liquidity (filtered by edge/apy) and suggested size
             liq_str = f"${signal.liquidity:.0f}" if signal.liquidity else "$0"
-            size_str = f"${signal.suggested_size:.0f}" if signal.suggested_size > 0 else f"Kelly: {signal.kelly:.1%}"
+            size_str = f"${signal.suggested_size:.0f}" if signal.suggested_size > 0 else "-"
             lines.append(f"  Available: {liq_str}  |  Buy: {size_str}")
             lines.append(f"  >>> BUY {signal.outcome}")
 
@@ -171,8 +171,12 @@ class ScannerPanel(Static):
 
             for signal in self.exit_signals:
                 lines.append(f"[yellow]! {signal.market_slug}[/yellow]")
-                lines.append(f"  >>> SELL @ {signal.target_price:.1%}")
-                lines.append(f"  Reason: {signal.reason}")
+                lines.append(f"  {signal.market_name}")
+                lines.append(f"  Bid: {signal.current_price:.1%}  Fair: {signal.fair_price:.1%}")
+                liq_str = f"${signal.liquidity:.0f}" if signal.liquidity else "-"
+                size_str = f"${signal.suggested_size:.0f}" if signal.suggested_size > 0 else "-"
+                lines.append(f"  Bid liquidity: {liq_str}  |  Sell: {size_str}")
+                lines.append(f"  >>> SELL {signal.outcome}")
 
                 if self.pending_confirmation and self.pending_confirmation.position_id == signal.position_id:
                     lines.append("  [yellow]Confirm? [Y/N][/yellow]")
@@ -214,17 +218,19 @@ class PositionsPanel(Static):
             # No positions - show empty state
             lines.append("[dim]No open positions[/dim]")
             lines.append("")
-            lines.append("-" * 46)
+            lines.append("-" * 62)
             lines.append(f"Total invested:  $0.00")
             lines.append(f"Unrealized P&L:  $0.00 (+0.0%)")
         else:
             # Simple text table (Rich Table breaks on narrow width)
-            lines.append("[bold]Market          Entry  Fair   Curr    P&L[/bold]")
+            lines.append("[bold]Market        Entry  Fair  Curr   Cost    Value    P&L[/bold]")
 
             for pos in self.positions[:10]:  # Max 10 positions
                 current = self.current_prices.get(pos.market_slug, pos.entry_price)
                 fair = pos.fair_price_at_entry
-                pnl = pos.unrealized_pnl(current)
+                cost = pos.entry_size
+                value = pos.current_value(current)
+                pnl = value - cost
 
                 # Color P&L
                 if pnl > 0:
@@ -235,10 +241,10 @@ class PositionsPanel(Static):
                     pnl_str = f"${pnl:.2f}"
 
                 # Truncate market slug
-                slug = pos.market_slug[:15] if len(pos.market_slug) > 15 else pos.market_slug
+                slug = pos.market_slug[:12] if len(pos.market_slug) > 12 else pos.market_slug
 
-                lines.append(f"{slug:<15} {pos.entry_price:>5.1%} {fair:>5.1%} {current:>5.1%} {pnl_str:>8}")
-            lines.append("-" * 46)
+                lines.append(f"{slug:<12} {pos.entry_price:>5.1%} {fair:>5.1%} {current:>5.1%} ${cost:>5.0f}  ${value:>6.2f} {pnl_str:>8}")
+            lines.append("-" * 62)
             lines.append(f"Total invested:  ${self.total_invested:.2f}")
 
             pnl_str = f"+${self.unrealized_pnl:.2f}" if self.unrealized_pnl >= 0 else f"-${abs(self.unrealized_pnl):.2f}"
@@ -454,14 +460,12 @@ class TradingBotApp(App):
             for market in self.scanner.get_markets():
                 self._markets_cache[market.slug] = market
 
-            # Calculate suggested sizes based on balance and kelly
+            # Calculate suggested sizes: buy all available liquidity (or remaining balance)
             balance = self.executor.get_balance() if self.executor.initialized else 0
             for signal in entry_signals:
-                if signal.kelly > 0 and balance > 0:
-                    # Kelly-based size, but cap at available liquidity and 10% of balance
-                    kelly_size = balance * signal.kelly
-                    max_size = min(balance * 0.10, signal.liquidity) if signal.liquidity > 0 else balance * 0.10
-                    signal.suggested_size = min(kelly_size, max_size)
+                if signal.liquidity > 0 and balance > 0:
+                    # Buy all available at good prices, but not more than we have
+                    signal.suggested_size = min(signal.liquidity, balance)
         else:
             entry_signals, exit_signals = [], []
 
@@ -567,11 +571,21 @@ class TradingBotApp(App):
                 # Refresh positions panel
                 self._refresh_positions_panel()
             elif signal.type == SignalType.SELL and signal.position_id:
-                # Remove virtual position
-                self._dry_run_positions = [
-                    p for p in self._dry_run_positions if p.id != signal.position_id
-                ]
-                self.notify(f"[DRY] Sold {signal.market_slug}")
+                # Find and remove virtual position
+                sold_position = None
+                for p in self._dry_run_positions:
+                    if p.id == signal.position_id:
+                        sold_position = p
+                        break
+
+                if sold_position:
+                    pnl = sold_position.unrealized_pnl(signal.current_price)
+                    self._dry_run_positions = [
+                        p for p in self._dry_run_positions if p.id != signal.position_id
+                    ]
+                    self.notify(f"[DRY] Sold {signal.market_slug} @ {signal.current_price:.1%} (P&L: ${pnl:+.2f})")
+                else:
+                    self.notify(f"[DRY] Position not found: {signal.position_id}")
                 self._refresh_positions_panel()
             return
 
