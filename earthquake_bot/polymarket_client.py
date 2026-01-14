@@ -93,14 +93,15 @@ class PolymarketClient:
         Returns:
             Список событий с рынками
         """
-        # Список известных earthquake event slugs
+        # Список известных earthquake event slugs (только активные)
         earthquake_slugs = [
+            # M7.0+ рынки
             "how-many-7pt0-or-above-earthquakes-by-june-30",
             "how-many-7pt0-or-above-earthquakes-in-2026",
-            "10pt0-or-above-earthquake-before-2027",
-            "9pt0-or-above-earthquake-before-2027",
             "another-7pt0-or-above-earthquake-by-555",
-            "how-many-6pt5-or-above-earthquakes-by-january-4",
+            # M9.0+ / M10.0+ рынки
+            "9pt0-or-above-earthquake-before-2027",
+            "10pt0-or-above-earthquake-before-2027",
             # Megaquake (M8.0+) рынки
             "megaquake-by-january-31",
             "megaquake-by-march-31",
