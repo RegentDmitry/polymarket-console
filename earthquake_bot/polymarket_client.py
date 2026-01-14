@@ -21,6 +21,8 @@ from polymarket_console.order_builder.constants import BUY, SELL
 
 # Gamma API для поиска рынков
 GAMMA_API_URL = "https://gamma-api.polymarket.com"
+# Data API для позиций и истории
+DATA_API_URL = "https://data-api.polymarket.com"
 
 
 @dataclass
@@ -332,6 +334,35 @@ class PolymarketClient:
     def cancel_all_orders(self) -> dict:
         """Отменить все ордера."""
         return self.client.cancel_all()
+
+    def get_positions(self) -> list[dict]:
+        """
+        Получить все позиции пользователя через Data API.
+
+        Returns:
+            Список позиций с полями:
+            - asset: token_id
+            - size: количество токенов
+            - avgCost: средняя цена входа
+            - currentValue: текущая стоимость
+            - profit: P&L
+            - market: информация о рынке
+        """
+        address = self.get_address()
+        if not address:
+            return []
+
+        try:
+            response = httpx.get(
+                f"{DATA_API_URL}/positions",
+                params={"user": address},
+                timeout=30,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            print(f"Ошибка получения позиций: {e}")
+            return []
 
 
 if __name__ == "__main__":

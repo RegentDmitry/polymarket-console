@@ -15,6 +15,7 @@ from ..models.market import Market
 from ..models.signal import Signal, SignalType
 from ..models.position import Position
 from ..config import BotConfig
+from ..logger import get_logger
 
 # Import from main_tested.py
 try:
@@ -98,11 +99,14 @@ class EarthquakeScanner(BaseScanner):
                          progress_callback: Optional[Callable[[str], None]] = None) -> List[Signal]:
         """Scan markets for entry opportunities using main_tested logic."""
         signals = []
+        logger = get_logger()
 
         if not IMPORTS_OK or not self.api_client:
+            logger.log_warning("Scanner not available - imports failed or no API client")
             return signals
 
         try:
+            logger.log_scan_start()
             # Clear caches before each scan
             self._markets_cache = []
             self._fair_prices = {}
@@ -189,9 +193,15 @@ class EarthquakeScanner(BaseScanner):
                     )
 
                 signals.append(signal)
+                logger.log_signal(signal)
+
+            # Log scan summary
+            buy_count = len([s for s in signals if s.type == SignalType.BUY])
+            skip_count = len([s for s in signals if s.type == SignalType.SKIP])
+            logger.log_info(f"Scan found {buy_count} BUY, {skip_count} SKIP signals")
 
         except Exception as e:
-            print(f"Error during scan: {e}")
+            logger.log_error(f"Error during scan: {e}")
             import traceback
             traceback.print_exc()
 
@@ -205,9 +215,13 @@ class EarthquakeScanner(BaseScanner):
         (market is willing to pay more than our model thinks it's worth)
         """
         signals = []
+        logger = get_logger()
 
         if not IMPORTS_OK or not self.api_client or not get_spread_info:
             return signals
+
+        if positions:
+            logger.log_info(f"Checking exits for {len(positions)} positions...")
 
         for position in positions:
             # Get current fair price from cache
@@ -254,6 +268,13 @@ class EarthquakeScanner(BaseScanner):
                     token_id=token_id,
                 )
                 signals.append(signal)
+
+                # Log sell signal with reasoning
+                pnl = position.unrealized_pnl(bid_price)
+                logger.log_info(
+                    f"EXIT SIGNAL: {position.market_slug} - "
+                    f"bid {bid_price:.1%} >= fair {fair_price:.1%}, P&L: ${pnl:+.2f}"
+                )
 
         return signals
 

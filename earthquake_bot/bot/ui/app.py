@@ -22,6 +22,7 @@ from ..models.market import Market
 from ..storage.positions import PositionStorage
 from ..storage.history import HistoryStorage
 from ..executor.polymarket import PolymarketExecutor, OrderResult
+from ..logger import get_logger
 
 
 class StatusBar(Static):
@@ -380,6 +381,17 @@ class TradingBotApp(App):
 
     def on_mount(self) -> None:
         """Called when app is mounted."""
+        # Log startup
+        logger = get_logger()
+        mode = "DRY RUN" if self.config.dry_run else ("AUTO" if self.config.auto_mode else "CONFIRM")
+        logger.log_startup(mode, self.config.scan_interval, self.config.min_edge, self.config.min_apy)
+
+        # Sync positions with Polymarket API (unless dry run)
+        if not self.config.dry_run and self.executor.initialized:
+            synced = self.executor.sync_positions(self.position_storage)
+            if synced:
+                self.notify(f"Synced {len(synced)} positions from Polymarket")
+
         # Initialize status bar
         status = self.query_one("#status-bar", Static)
         status_bar = StatusBar(self.config)
@@ -547,6 +559,8 @@ class TradingBotApp(App):
 
     async def execute_signal(self, signal: Signal) -> None:
         """Execute a trading signal via Polymarket API."""
+        logger = get_logger()
+
         # Dry run mode - create virtual position in memory
         if self.config.dry_run:
             if signal.type == SignalType.BUY:
@@ -568,6 +582,12 @@ class TradingBotApp(App):
                 self._dry_run_positions.append(position)
                 self.notify(f"[DRY] Bought {signal.market_slug} @ {signal.current_price:.1%}")
 
+                logger.log_trade_executed(
+                    "BUY", signal.market_slug, signal.outcome,
+                    signal.current_price, tokens, self._dry_run_size, dry_run=True
+                )
+                logger.log_position_opened(position)
+
                 # Refresh positions panel
                 self._refresh_positions_panel()
             elif signal.type == SignalType.SELL and signal.position_id:
@@ -584,8 +604,15 @@ class TradingBotApp(App):
                         p for p in self._dry_run_positions if p.id != signal.position_id
                     ]
                     self.notify(f"[DRY] Sold {signal.market_slug} @ {signal.current_price:.1%} (P&L: ${pnl:+.2f})")
+
+                    logger.log_trade_executed(
+                        "SELL", signal.market_slug, signal.outcome,
+                        signal.current_price, sold_position.tokens, signal.suggested_size, dry_run=True
+                    )
+                    logger.log_position_closed(sold_position, signal.current_price, pnl)
                 else:
                     self.notify(f"[DRY] Position not found: {signal.position_id}")
+                    logger.log_warning(f"Position not found for sell: {signal.position_id}")
                 self._refresh_positions_panel()
             return
 
@@ -606,10 +633,18 @@ class TradingBotApp(App):
                 self.position_storage.save(position)
                 self.history_storage.record_buy(position, result.order_id)
                 self.notify(f"BUY order placed: {result.order_id}")
+
+                logger.log_trade_executed(
+                    "BUY", signal.market_slug, signal.outcome,
+                    signal.current_price, position.size, position.entry_size
+                )
+                logger.log_position_opened(position)
+
                 # Refresh positions panel immediately
                 self._refresh_positions_panel()
             else:
                 self.notify(f"BUY failed: {result.error}")
+                logger.log_trade_failed("BUY", signal.market_slug, result.error or "Unknown error")
 
         elif signal.type == SignalType.SELL and signal.position_id:
             # Get position
@@ -628,11 +663,18 @@ class TradingBotApp(App):
                 )
                 if closed_position:
                     self.history_storage.record_sell(closed_position, result.order_id)
+                    pnl = closed_position.realized_pnl()
+                    logger.log_trade_executed(
+                        "SELL", signal.market_slug, signal.outcome,
+                        signal.current_price, position.tokens, signal.suggested_size
+                    )
+                    logger.log_position_closed(closed_position, signal.current_price, pnl)
                 self.notify(f"SELL order placed: {result.order_id}")
                 # Refresh positions panel immediately
                 self._refresh_positions_panel()
             else:
                 self.notify(f"SELL failed: {result.error}")
+                logger.log_trade_failed("SELL", signal.market_slug, result.error or "Unknown error")
 
     def action_quit(self) -> None:
         """Quit the application (with confirmation)."""
@@ -685,6 +727,8 @@ class TradingBotApp(App):
     def action_confirm_yes(self) -> None:
         """Confirm pending action."""
         if self.pending_signal:
+            logger = get_logger()
+            logger.log_user_confirmed(self.pending_signal.type.value, self.pending_signal.market_slug)
             asyncio.create_task(self.execute_signal(self.pending_signal))
             # Show next signal in queue
             self._show_next_pending_signal()
@@ -692,6 +736,8 @@ class TradingBotApp(App):
     def action_confirm_no(self) -> None:
         """Reject pending action."""
         if self.pending_signal:
+            logger = get_logger()
+            logger.log_user_rejected(self.pending_signal.type.value, self.pending_signal.market_slug)
             self.notify(f"Skipped {self.pending_signal.market_slug}")
             # Show next signal in queue
             self._show_next_pending_signal()

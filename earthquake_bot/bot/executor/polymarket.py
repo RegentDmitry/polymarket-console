@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from ..models.position import Position
 from ..models.signal import Signal, SignalType
 from ..models.market import Market
+from ..logger import get_logger
 
 # Import Polymarket client
 try:
@@ -268,3 +269,102 @@ class PolymarketExecutor:
         except Exception as e:
             print(f"Error canceling all orders: {e}")
             return False
+
+    def get_api_positions(self) -> list[dict]:
+        """
+        Get all positions from Polymarket API.
+
+        Returns:
+            List of position dicts from the API
+        """
+        if not self.client:
+            return []
+
+        try:
+            return self.client.get_positions()
+        except Exception as e:
+            print(f"Error getting positions from API: {e}")
+            return []
+
+    def sync_positions(self, storage) -> list[Position]:
+        """
+        Sync positions with Polymarket API.
+
+        Fetches positions from API and creates local Position objects
+        for any that don't exist locally.
+
+        Args:
+            storage: PositionStorage instance
+
+        Returns:
+            List of newly created Position objects
+        """
+        logger = get_logger()
+
+        if not self.client:
+            logger.log_warning("Cannot sync positions - client not initialized")
+            return []
+
+        logger.log_info("Syncing positions with Polymarket API...")
+
+        api_positions = self.get_api_positions()
+        if not api_positions:
+            logger.log_info("No positions found on Polymarket API")
+            return []
+
+        logger.log_info(f"Found {len(api_positions)} positions on Polymarket")
+
+        new_positions = []
+        existing_slugs = {p.market_slug for p in storage.load_all_active()}
+
+        for api_pos in api_positions:
+            # Extract position data
+            token_id = api_pos.get("asset", "")
+            size = float(api_pos.get("size", 0))
+            avg_cost = float(api_pos.get("avgCost", 0))
+            market_info = api_pos.get("market", {})
+
+            if size <= 0:
+                continue
+
+            # Build market slug from API data
+            condition_id = market_info.get("conditionId", "")
+            outcome = api_pos.get("outcome", "Yes")
+            slug = api_pos.get("slug", condition_id)
+
+            # Skip if we already have this position locally
+            if slug in existing_slugs:
+                continue
+
+            # Calculate entry price from avg cost and size
+            entry_price = avg_cost if avg_cost > 0 else 0.5
+            entry_size = size * entry_price
+
+            position = Position(
+                market_id=condition_id,
+                market_slug=slug,
+                market_name=market_info.get("question", slug)[:50],
+                outcome=outcome,
+                resolution_date=market_info.get("endDateIso"),
+                entry_price=entry_price,
+                entry_time=datetime.utcnow().isoformat() + "Z",
+                entry_size=entry_size,
+                tokens=size,
+                strategy="synced",
+                fair_price_at_entry=entry_price,  # Unknown, use entry as estimate
+            )
+
+            # Save to storage
+            storage.save(position)
+            new_positions.append(position)
+
+            logger.log_info(
+                f"Synced position: {slug} - {size:.2f} tokens @ {entry_price:.2%}"
+            )
+
+        if new_positions:
+            logger.log_info(f"Synced {len(new_positions)} new positions from API")
+        else:
+            logger.log_info("All API positions already exist locally")
+
+        return new_positions
