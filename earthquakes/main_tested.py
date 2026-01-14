@@ -22,6 +22,7 @@ from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Импортируем модели
 from main import (
@@ -549,6 +550,48 @@ def get_usable_liquidity(poly: PolymarketClient, token_id: str,
     return usable
 
 
+def process_opportunity_orderbook(opp: 'TestedOpportunity', poly: PolymarketClient,
+                                  min_edge: float, min_apy: float) -> 'TestedOpportunity':
+    """
+    Обработать одну возможность - получить данные ордербука.
+    Используется для параллельной обработки.
+
+    Args:
+        opp: Возможность для обработки
+        poly: Polymarket клиент
+        min_edge: Минимальный edge
+        min_apy: Минимальный APY
+
+    Returns:
+        Обновлённая возможность
+    """
+    if opp.condition_id:
+        outcome_to_check = "Yes" if opp.side == "YES" else "No"
+        best_ask, liquidity, token_id = get_orderbook_data(poly, opp.condition_id, outcome_to_check)
+
+        opp.liquidity_usd = liquidity
+        if token_id:
+            opp.token_id = token_id
+
+        if best_ask is not None and best_ask > 0:
+            opp.market_price = best_ask
+            opp.edge = opp.fair_price - opp.market_price
+
+            if opp.market_price > 0 and opp.market_price < 1:
+                odds = (1 - opp.market_price) / opp.market_price
+                opp.kelly = kelly_criterion(opp.fair_price, odds)
+            else:
+                opp.kelly = 0
+
+            # Рассчитываем usable liquidity (по ценам, проходящим фильтры)
+            opp.usable_liquidity = get_usable_liquidity(
+                poly, token_id, opp.fair_price, opp.remaining_days,
+                min_edge, min_apy
+            )
+
+    return opp
+
+
 def run_analysis(poly: PolymarketClient, usgs: USGSClient,
                  progress_callback=None,
                  min_edge: float = MIN_EDGE,
@@ -647,38 +690,31 @@ def run_analysis(poly: PolymarketClient, usgs: USGSClient,
 
         all_opportunities.extend(opps)
 
-    # Получаем реальные цены из ордербука
+    # Получаем реальные цены из ордербука (параллельно!)
     if progress_callback:
         progress_callback(f"Checking orderbooks ({len(all_opportunities)})...")
     else:
         print("Проверяю ордербуки...")
+
+    # Параллельная обработка ордербуков (до 10 одновременно)
     updated_opportunities = []
-    for opp in all_opportunities:
-        if opp.condition_id:
-            outcome_to_check = "Yes" if opp.side == "YES" else "No"
-            best_ask, liquidity, token_id = get_orderbook_data(poly, opp.condition_id, outcome_to_check)
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        # Запускаем все задачи
+        future_to_opp = {
+            executor.submit(process_opportunity_orderbook, opp, poly, min_edge, min_apy): opp
+            for opp in all_opportunities
+        }
 
-            opp.liquidity_usd = liquidity
-            if token_id:
-                opp.token_id = token_id
-
-            if best_ask is not None and best_ask > 0:
-                opp.market_price = best_ask
-                opp.edge = opp.fair_price - opp.market_price
-
-                if opp.market_price > 0 and opp.market_price < 1:
-                    odds = (1 - opp.market_price) / opp.market_price
-                    opp.kelly = kelly_criterion(opp.fair_price, odds)
-                else:
-                    opp.kelly = 0
-
-                # Рассчитываем usable liquidity (по ценам, проходящим фильтры)
-                opp.usable_liquidity = get_usable_liquidity(
-                    poly, token_id, opp.fair_price, opp.remaining_days,
-                    min_edge, min_apy
-                )
-
-        updated_opportunities.append(opp)
+        # Собираем результаты по мере готовности
+        for future in as_completed(future_to_opp):
+            try:
+                updated_opp = future.result()
+                updated_opportunities.append(updated_opp)
+            except Exception as e:
+                # В случае ошибки добавляем оригинальную возможность
+                original_opp = future_to_opp[future]
+                updated_opportunities.append(original_opp)
+                print(f"Error processing {original_opp.event_slug}: {e}")
 
     all_opportunities = updated_opportunities
 
