@@ -1,0 +1,1 @@
+"""Monitor Bot TUI."""
