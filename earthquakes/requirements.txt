@@ -1,0 +1,18 @@
+# Earthquake Bots - All Dependencies
+# Install: pip install -r requirements.txt
+
+# TUI framework (both bots)
+textual>=0.47.0
+rich>=13.0.0
+
+# HTTP requests (both bots)
+httpx>=0.25.0
+aiohttp>=3.9.0
+
+# Data handling (both bots)
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+
+# Scientific computing (trading_bot)
+scipy>=1.11.0
+numpy>=1.24.0

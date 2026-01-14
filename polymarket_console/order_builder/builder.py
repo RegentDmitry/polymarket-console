@@ -1,12 +1,25 @@
-from py_order_utils.builders import OrderBuilder as UtilsOrderBuilder
-from py_order_utils.signer import Signer as UtilsSigner
-from py_order_utils.model import (
-    EOA,
-    OrderData,
-    SignedOrder,
-    BUY as UtilsBuy,
-    SELL as UtilsSell,
-)
+try:
+    from py_order_utils.builders import OrderBuilder as UtilsOrderBuilder
+    from py_order_utils.signer import Signer as UtilsSigner
+    from py_order_utils.model import (
+        EOA,
+        OrderData,
+        SignedOrder,
+        BUY as UtilsBuy,
+        SELL as UtilsSell,
+    )
+    PY_ORDER_UTILS_AVAILABLE = True
+except ImportError:
+    # Optional dependency - provide stubs
+    from typing import Any
+    UtilsOrderBuilder = Any
+    UtilsSigner = Any
+    EOA = 0
+    OrderData = Any
+    SignedOrder = Any
+    UtilsBuy = "BUY"
+    UtilsSell = "SELL"
+    PY_ORDER_UTILS_AVAILABLE = False
 
 from .helpers import (
     to_token_decimals,

@@ -1,6 +1,13 @@
 from poly_eip712_structs import make_domain
 from eth_utils import keccak
-from py_order_utils.utils import prepend_zx
+
+try:
+    from py_order_utils.utils import prepend_zx
+except ImportError:
+    # Fallback implementation
+    def prepend_zx(value: str) -> str:
+        """Add 0x prefix if not present."""
+        return value if value.startswith("0x") else f"0x{value}"
 
 from .model import ClobAuth
 from ..signer import Signer

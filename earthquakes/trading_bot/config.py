@@ -27,9 +27,9 @@ class BotConfig:
     min_apy: float = 0.30   # 30% annualized
 
     # Paths
-    data_dir: Path = field(default_factory=lambda: Path("bot/data"))
-    active_dir: Path = field(default_factory=lambda: Path("bot/data/active"))
-    history_dir: Path = field(default_factory=lambda: Path("bot/data/history"))
+    data_dir: Path = field(default_factory=lambda: Path("trading_bot/data"))
+    active_dir: Path = field(default_factory=lambda: Path("trading_bot/data/active"))
+    history_dir: Path = field(default_factory=lambda: Path("trading_bot/data/history"))
 
     # API (loaded from environment)
     api_key: Optional[str] = None
@@ -68,10 +68,10 @@ def parse_args() -> BotConfig:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python -m bot                          # dry-run mode (default)
-  python -m bot --live                   # live trading with confirmation
-  python -m bot --live --auto            # live trading without confirmation
-  python -m bot --interval 1h
+  python -m trading_bot                          # dry-run mode (default)
+  python -m trading_bot --live                   # live trading with confirmation
+  python -m trading_bot --live --auto            # live trading without confirmation
+  python -m trading_bot --interval 1h
         """
     )
 
@@ -118,8 +118,8 @@ Examples:
     parser.add_argument(
         "--data-dir",
         type=Path,
-        default=Path("bot/data"),
-        help="Data directory. Default: bot/data"
+        default=Path("trading_bot/data"),
+        help="Data directory. Default: trading_bot/data"
     )
 
     args = parser.parse_args()

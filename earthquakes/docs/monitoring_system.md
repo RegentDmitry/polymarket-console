@@ -85,7 +85,7 @@ Real-time earthquake monitoring system that aggregates data from multiple seismo
 ## File Structure
 
 ```
-earthquake_bot/
+earthquakes/
 ├── extended_usgs_client.py      # Extended history client for trading bot
 ├── main.py                      # Trading bot (updated with extended history)
 │
@@ -266,7 +266,7 @@ Priority order:
 ### 1. Start Monitoring Service
 
 ```bash
-cd earthquake_bot
+cd earthquakes
 
 # Install dependencies
 pip install -r monitor/requirements.txt
@@ -284,7 +284,7 @@ python -m monitor.main --status
 ### 2. Run Trading Bot
 
 ```bash
-cd earthquake_bot
+cd earthquakes
 
 # With extended history check
 python main.py

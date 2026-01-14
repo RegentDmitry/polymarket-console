@@ -559,7 +559,7 @@ CONFIG = {
 ## File Structure
 
 ```
-earthquake_bot/
+earthquakes/
 ├── monitor/
 │   ├── __init__.py
 │   ├── main.py                 # Entry point
@@ -603,7 +603,7 @@ earthquake_bot/
 
 ```bash
 # Start the monitor
-cd earthquake_bot
+cd earthquakes
 python -m monitor.main
 
 # Or with specific sources

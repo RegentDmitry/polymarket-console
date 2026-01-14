@@ -1,0 +1,11 @@
+# Update Bot Dependencies
+
+# TUI framework
+textual>=0.47.0
+rich>=13.0.0
+
+# HTTP requests (for Polymarket API scanner)
+httpx>=0.25.0
+
+# Environment variables (optional, for .env support)
+python-dotenv>=1.0.0

@@ -1,0 +1,52 @@
+{
+  "megaquake-by-march-31": {
+    "magnitude": 8.0,
+    "start": "2025-12-29T17:54:21.619194Z",
+    "end": "2026-03-31",
+    "type": "binary"
+  },
+  "how-many-7pt0-or-above-earthquakes-in-2026": {
+    "magnitude": 7.0,
+    "start": "2025-12-31T14:04:13.75072Z",
+    "end": "2026-12-31",
+    "type": "count",
+    "outcomes": [["<5", 0, 4], ["5-7", 5, 7], ["8-10", 8, 10], ["11-13", 11, 13], ["14-16", 14, 16], ["17-19", 17, 19], ["20+", 20, null]]
+  },
+  "megaquake-by-june-30": {
+    "magnitude": 8.0,
+    "start": "2025-12-29T17:54:56.424299Z",
+    "end": "2026-06-30",
+    "type": "binary"
+  },
+  "another-7pt0-or-above-earthquake-by-555": {
+    "magnitude": 7.0,
+    "start": "2025-12-31T13:54:15.119908Z",
+    "end": "2026-03-31",
+    "type": "binary"
+  },
+  "how-many-7pt0-or-above-earthquakes-by-june-30": {
+    "magnitude": 7.0,
+    "start": "2025-12-04T18:31:11.700619Z",
+    "end": "2026-06-30",
+    "type": "count",
+    "outcomes": [["0", 0, 0], ["1", 1, 1], ["2", 2, 2], ["3", 3, 3], ["4", 4, 4], ["5", 5, 5], ["6", 6, 6], ["7", 7, 7], ["8+", 8, null]]
+  },
+  "10pt0-or-above-earthquake-before-2027": {
+    "magnitude": 10.0,
+    "start": "2025-12-08T20:58:55.915498Z",
+    "end": "2026-12-31",
+    "type": "binary"
+  },
+  "9pt0-or-above-earthquake-before-2027": {
+    "magnitude": 9.0,
+    "start": "2025-12-08T20:57:57.214803Z",
+    "end": "2026-12-31",
+    "type": "binary"
+  },
+  "megaquake-by-january-31": {
+    "magnitude": 8.0,
+    "start": "2025-12-29T17:53:59.950793Z",
+    "end": "2026-01-31",
+    "type": "binary"
+  }
+}

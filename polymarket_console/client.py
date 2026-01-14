@@ -1,8 +1,13 @@
 import logging
 import json
-from typing import Optional
+from typing import Optional, Any
 
-from py_builder_signing_sdk.config import BuilderConfig
+try:
+    from py_builder_signing_sdk.config import BuilderConfig
+    BUILDER_AVAILABLE = True
+except ImportError:
+    BuilderConfig = Any  # Optional dependency
+    BUILDER_AVAILABLE = False
 
 from .order_builder.builder import OrderBuilder
 from .headers.headers import (

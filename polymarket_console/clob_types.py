@@ -2,9 +2,11 @@ from typing import Any
 from dataclasses import dataclass, asdict
 from json import dumps
 from typing import Literal, Optional
-from py_order_utils.model import (
-    SignedOrder,
-)
+
+try:
+    from py_order_utils.model import SignedOrder
+except ImportError:
+    SignedOrder = Any  # Optional dependency
 
 from .constants import ZERO_ADDRESS
 

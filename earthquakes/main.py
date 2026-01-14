@@ -39,10 +39,27 @@ def load_market_configs() -> dict:
     # Конвертируем строки дат в datetime объекты
     configs = {}
     for slug, config in raw_config.items():
+        # Parse start date
+        start_str = config["start"].replace("Z", "+00:00")
+        start_dt = datetime.fromisoformat(start_str)
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=timezone.utc)
+
+        # Parse end date - может быть без времени ("2026-03-31")
+        end_str = config["end"]
+        if "T" not in end_str:
+            # Date only, add time and timezone
+            end_dt = datetime.fromisoformat(end_str + "T23:59:59+00:00")
+        else:
+            end_str = end_str.replace("Z", "+00:00")
+            end_dt = datetime.fromisoformat(end_str)
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=timezone.utc)
+
         configs[slug] = {
             "magnitude": config["magnitude"],
-            "start": datetime.fromisoformat(config["start"].replace("Z", "+00:00")),
-            "end": datetime.fromisoformat(config["end"].replace("Z", "+00:00")),
+            "start": start_dt,
+            "end": end_dt,
             "type": config["type"],
         }
         # Конвертируем outcomes если есть (list of lists -> list of tuples)

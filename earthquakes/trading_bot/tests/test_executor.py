@@ -68,9 +68,9 @@ class TestPolymarketExecutorSync:
     @pytest.fixture
     def executor(self, mock_client):
         """Create executor with mocked client."""
-        with patch('earthquake_bot.bot.executor.polymarket.PolymarketClient') as MockClient:
+        with patch('earthquakes.trading_bot.executor.polymarket.PolymarketClient') as MockClient:
             MockClient.return_value = mock_client
-            with patch('earthquake_bot.bot.executor.polymarket.POLYMARKET_AVAILABLE', True):
+            with patch('earthquakes.trading_bot.executor.polymarket.POLYMARKET_AVAILABLE', True):
                 exec = PolymarketExecutor()
                 exec.client = mock_client
                 exec.initialized = True
