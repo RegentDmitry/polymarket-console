@@ -478,6 +478,13 @@ class TradingBotApp(App):
                 if signal.liquidity > 0 and balance > 0:
                     # Buy all available at good prices, but not more than we have
                     signal.suggested_size = min(signal.liquidity, balance)
+
+            # Filter out BUY signals with liquidity < $1 (not worth showing)
+            MIN_LIQUIDITY = 1.0
+            entry_signals = [
+                s for s in entry_signals
+                if s.type != SignalType.BUY or s.liquidity >= MIN_LIQUIDITY
+            ]
         else:
             entry_signals, exit_signals = [], []
 
