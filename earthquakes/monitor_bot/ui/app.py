@@ -4,20 +4,24 @@ Monitor Bot TUI application using Textual.
 
 import asyncio
 import sys
-from datetime import datetime, timezone
+import logging
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 from uuid import UUID
 
 from textual.app import App, ComposeResult
-from textual.containers import Container, Vertical, Horizontal
+from textual.containers import Container, Vertical, Horizontal, VerticalScroll
 from textual.widgets import Header, Footer, Static, DataTable
 from textual.binding import Binding
 from rich.text import Text
 from rich.panel import Panel
+from rich.table import Table as RichTable
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+logger = logging.getLogger(__name__)
 
 from monitor.database import Database
 from monitor.models import SourceReport, EarthquakeEvent
@@ -76,6 +80,80 @@ class StatusBar(Static):
             status_line,
             border_style="green",
             padding=(0, 1),
+        )
+
+
+class SourcesPanel(Static):
+    """Sources monitoring panel with sync status and timers."""
+
+    def __init__(self):
+        super().__init__()
+        self.sources_status = {}  # {source_name: {last_poll, next_poll, is_syncing, interval}}
+
+    def update_source(
+        self,
+        source: str,
+        last_poll: Optional[datetime] = None,
+        next_poll: Optional[datetime] = None,
+        is_syncing: bool = False,
+        interval: int = 60,
+    ) -> None:
+        """Update source status."""
+        if source not in self.sources_status:
+            self.sources_status[source] = {}
+
+        if last_poll is not None:
+            self.sources_status[source]["last_poll"] = last_poll
+        if next_poll is not None:
+            self.sources_status[source]["next_poll"] = next_poll
+        if is_syncing is not None:
+            self.sources_status[source]["is_syncing"] = is_syncing
+        self.sources_status[source]["interval"] = interval
+
+        self.refresh()
+
+    def render(self) -> Panel:
+        """Render sources panel."""
+        now = datetime.now(timezone.utc)
+
+        table = RichTable.grid(padding=(0, 1))
+        table.add_column(justify="left", style="bold")
+        table.add_column(justify="right")
+
+        # Title
+        table.add_row("[bold cyan]Sources Monitor[/bold cyan]", "")
+        table.add_row("", "")
+
+        # Each source
+        for source_name in ["JMA", "EMSC", "GFZ", "GEONET", "USGS"]:
+            source_key = source_name.lower()
+            status = self.sources_status.get(source_key, {})
+
+            is_syncing = status.get("is_syncing", False)
+            next_poll = status.get("next_poll")
+
+            # Status indicator
+            if is_syncing:
+                indicator = "[yellow]⟳ Syncing[/yellow]"
+                timer = ""
+            elif next_poll:
+                seconds_left = (next_poll - now).total_seconds()
+                if seconds_left < 0:
+                    seconds_left = 0
+                timer = f"[dim]{int(seconds_left)}s[/dim]"
+                indicator = "[green]●[/green] Idle"
+            else:
+                indicator = "[dim]○[/dim] Waiting"
+                timer = ""
+
+            # Source line
+            table.add_row(f"{indicator} {source_name}", timer)
+
+        return Panel(
+            table,
+            title="[bold]Sources[/bold]",
+            border_style="cyan",
+            padding=(1, 2),
         )
 
 
@@ -141,9 +219,20 @@ class MonitorBotApp(App):
         margin: 1 1 0 1;
     }
 
-    #events_table {
+    #main_container {
         height: 1fr;
-        margin: 1 1 0 1;
+        margin: 0 1;
+    }
+
+    #events_table {
+        width: 3fr;
+        height: 1fr;
+    }
+
+    SourcesPanel {
+        width: 1fr;
+        height: auto;
+        max-width: 30;
     }
 
     ActivityLogPanel {
@@ -164,6 +253,7 @@ class MonitorBotApp(App):
 
         self.status_bar: Optional[StatusBar] = None
         self.events_table: Optional[DataTable] = None
+        self.sources_panel: Optional[SourcesPanel] = None
         self.log_panel: Optional[ActivityLogPanel] = None
 
         self.collectors = []
@@ -174,16 +264,24 @@ class MonitorBotApp(App):
         self.pending_events = 0
         self.quit_pending = False  # For quit confirmation
 
+        self.update_timer_task = None  # Timer for updating sources panel
+
     def compose(self) -> ComposeResult:
         yield Header()
         self.status_bar = StatusBar()
         yield self.status_bar
 
-        # Events table
-        self.events_table = DataTable(id="events_table")
-        self.events_table.cursor_type = "row"
-        self.events_table.zebra_stripes = True
-        yield self.events_table
+        # Main container with horizontal split
+        with Horizontal(id="main_container"):
+            # Events table (left, takes 3/4)
+            self.events_table = DataTable(id="events_table")
+            self.events_table.cursor_type = "row"
+            self.events_table.zebra_stripes = True
+            yield self.events_table
+
+            # Sources panel (right, takes 1/4)
+            self.sources_panel = SourcesPanel()
+            yield self.sources_panel
 
         self.log_panel = ActivityLogPanel()
         yield self.log_panel
@@ -252,7 +350,7 @@ class MonitorBotApp(App):
         )
 
         for collector in self.collectors:
-            task = asyncio.create_task(collector.run(self._handle_report))
+            task = asyncio.create_task(self._run_collector_with_tracking(collector))
             self.collector_tasks.append(task)
 
         # Update status bar
@@ -262,6 +360,9 @@ class MonitorBotApp(App):
                 total_events=self.total_events,
                 pending_events=self.pending_events,
             )
+
+        # Start update timer for sources panel
+        self.update_timer_task = asyncio.create_task(self._update_sources_timer())
 
     async def _load_recent_events(self):
         """Load recent events from database to populate UI."""
@@ -285,6 +386,57 @@ class MonitorBotApp(App):
             )
         except Exception as e:
             self.log_message(f"Could not load recent events: {e}", color="yellow")
+
+    async def _run_collector_with_tracking(self, collector):
+        """Run collector with status tracking for UI."""
+        source_name = collector.SOURCE_NAME
+        interval = collector.POLL_INTERVAL
+
+        # Initialize source in panel
+        if self.sources_panel:
+            now = datetime.now(timezone.utc)
+            self.sources_panel.update_source(
+                source_name,
+                last_poll=None,
+                next_poll=now,
+                is_syncing=False,
+                interval=interval,
+            )
+
+        # Run collector loop
+        while True:
+            try:
+                # Mark as syncing
+                if self.sources_panel:
+                    self.sources_panel.update_source(source_name, is_syncing=True)
+
+                # Do the poll
+                reports = await collector.poll_once()
+                for report in reports:
+                    await self._handle_report(report)
+
+                # Mark as idle and set next poll time
+                now = datetime.now(timezone.utc)
+                next_poll = now + timedelta(seconds=interval)
+                if self.sources_panel:
+                    self.sources_panel.update_source(
+                        source_name,
+                        last_poll=now,
+                        next_poll=next_poll,
+                        is_syncing=False,
+                    )
+
+            except Exception as e:
+                logger.error(f"[{source_name.upper()}] Error in tracking loop: {e}")
+
+            await asyncio.sleep(interval)
+
+    async def _update_sources_timer(self):
+        """Update sources panel every second to refresh timers."""
+        while True:
+            await asyncio.sleep(1)
+            if self.sources_panel:
+                self.sources_panel.refresh()
 
     def _add_event_to_table(self, event: EarthquakeEvent):
         """Add or update event in the table."""

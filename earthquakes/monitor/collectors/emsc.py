@@ -151,6 +151,20 @@ class EMSCCollector(BaseCollector):
             # Parse ISO time
             event_time = datetime.fromisoformat(time_str.replace("Z", "+00:00"))
 
+            # Get publication time (when EMSC published this)
+            # Use lastupdate if available, otherwise current time
+            reported_at = None
+            lastupdate_str = properties.get("lastupdate")
+            if lastupdate_str:
+                try:
+                    reported_at = datetime.fromisoformat(lastupdate_str.replace("Z", "+00:00"))
+                except:
+                    pass
+
+            # If no lastupdate, use current time (WebSocket push = publication time)
+            if not reported_at:
+                reported_at = datetime.now(timezone.utc)
+
             return SourceReport(
                 source=self.SOURCE_NAME,
                 source_event_id=str(event_id),
@@ -161,6 +175,7 @@ class EMSCCollector(BaseCollector):
                 depth_km=float(coords[2]) if len(coords) > 2 else None,
                 location_name=properties.get("flynn_region") or properties.get("place"),
                 event_time=event_time,
+                reported_at=reported_at,
                 received_at=datetime.now(timezone.utc),
                 raw_data=event_data,
             )
@@ -186,6 +201,19 @@ class EMSCCollector(BaseCollector):
 
             event_time = datetime.fromisoformat(time_str.replace("Z", "+00:00"))
 
+            # Get publication time from lastupdate field
+            reported_at = None
+            lastupdate_str = properties.get("lastupdate")
+            if lastupdate_str:
+                try:
+                    reported_at = datetime.fromisoformat(lastupdate_str.replace("Z", "+00:00"))
+                except:
+                    pass
+
+            # Fallback to current time
+            if not reported_at:
+                reported_at = datetime.now(timezone.utc)
+
             return SourceReport(
                 source=self.SOURCE_NAME,
                 source_event_id=str(event_id),
@@ -196,6 +224,7 @@ class EMSCCollector(BaseCollector):
                 depth_km=float(coords[2]) if len(coords) > 2 else None,
                 location_name=properties.get("flynn_region") or properties.get("place"),
                 event_time=event_time,
+                reported_at=reported_at,
                 received_at=datetime.now(timezone.utc),
                 raw_data=feature,
             )
