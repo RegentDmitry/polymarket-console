@@ -569,11 +569,6 @@ class MonitorBotApp(App):
     async def _handle_report(self, report: SourceReport):
         """Handle incoming earthquake report."""
         try:
-            # Log ALL incoming reports (before deduplication)
-            log_msg = f"[{report.source.upper()}] Received M{report.magnitude} at {report.location_name or 'Unknown'}"
-            self.log_message(log_msg, color="dim")
-            logger.info(log_msg)
-
             # Check if we already have this source event (DB might be unavailable)
             existing = None
             try:
@@ -585,9 +580,16 @@ class MonitorBotApp(App):
                 # Continue without DB - use in-memory cache
                 pass
 
+            # Log ALL incoming reports with duplicate marker
             if existing:
-                # Already processed
+                log_msg = f"[{report.source.upper()}] Received M{report.magnitude} at {report.location_name or 'Unknown'} (duplicate)"
+                self.log_message(log_msg, color="dim")
+                logger.debug(log_msg)
                 return
+            else:
+                log_msg = f"[{report.source.upper()}] Received M{report.magnitude} at {report.location_name or 'Unknown'}"
+                self.log_message(log_msg, color="dim")
+                logger.info(log_msg)
 
             # Get recent events for matching (DB might be unavailable)
             recent_events = []
