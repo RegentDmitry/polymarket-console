@@ -89,6 +89,38 @@ class EarthquakeEvent:
         """Whether this event has been published by USGS."""
         return self.usgs_id is not None
 
+    @property
+    def hours_since_detection(self) -> float:
+        """Hours since first detection."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        delta = now - self.first_detected_at
+        return delta.total_seconds() / 3600
+
+    @property
+    def usgs_status(self) -> str:
+        """
+        Get USGS confirmation status.
+
+        Returns:
+            "confirmed" - USGS has published
+            "pending" - Waiting for USGS (< 6 hours)
+            "delayed" - USGS delayed (6-24 hours)
+            "unlikely" - USGS unlikely to publish (> 24 hours)
+        """
+        if self.is_in_usgs:
+            return "confirmed"
+
+        from monitor_bot.config import config
+        hours = self.hours_since_detection
+
+        if hours < config.USGS_WARNING_HOURS:
+            return "pending"
+        elif hours < config.USGS_TIMEOUT_HOURS:
+            return "delayed"
+        else:
+            return "unlikely"
+
     def to_dict(self) -> dict:
         return {
             "event_id": str(self.event_id),

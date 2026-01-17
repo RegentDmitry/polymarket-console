@@ -457,11 +457,19 @@ class MonitorBotApp(App):
         # Detected time
         detected = event.first_detected_at.strftime("%H:%M:%S")
 
-        # USGS published time
+        # USGS published time with status
         if event.usgs_published_at:
             usgs_pub = event.usgs_published_at.strftime("%H:%M:%S")
         else:
-            usgs_pub = Text("Pending", style="italic yellow")
+            # Show status based on time since detection
+            status = event.usgs_status
+            if status == "pending":
+                usgs_pub = Text("Pending", style="italic yellow")
+            elif status == "delayed":
+                hours = int(event.hours_since_detection)
+                usgs_pub = Text(f"Delayed {hours}h", style="italic orange1")
+            elif status == "unlikely":
+                usgs_pub = Text("Unlikely", style="italic red dim")
 
         # Edge time
         if event.detection_advantage_minutes:

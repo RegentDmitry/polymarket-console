@@ -33,6 +33,10 @@ class MonitorBotConfig:
     # Edge time highlighting (minutes)
     EDGE_TIME_HIGHLIGHT = 10         # Подсветить зелёным если > 10 минут
 
+    # USGS confirmation timeouts (hours)
+    USGS_TIMEOUT_HOURS = 24          # Mark as "USGS unlikely" after 24 hours
+    USGS_WARNING_HOURS = 6           # Show warning after 6 hours without USGS
+
     # Collectors to run
     ACTIVE_COLLECTORS = ["jma", "emsc", "gfz", "geonet", "usgs"]
 
