@@ -338,9 +338,16 @@ class MonitorBotApp(App):
 
         for name in config.ACTIVE_COLLECTORS:
             if name in collector_map:
-                collector = collector_map[name]()
-                self.collectors.append(collector)
-                self.log_message(f"Initialized: {name.upper()}", color="cyan")
+                try:
+                    collector = collector_map[name]()
+                    self.collectors.append(collector)
+                    init_msg = f"Initialized: {name.upper()}"
+                    self.log_message(init_msg, color="cyan")
+                    logger.info(init_msg)
+                except Exception as e:
+                    error_msg = f"Failed to initialize {name.upper()}: {e}"
+                    self.log_message(error_msg, color="red")
+                    logger.error(error_msg)
 
         # Load existing events from database
         await self._load_recent_events()
@@ -393,6 +400,8 @@ class MonitorBotApp(App):
         """Run collector with status tracking for UI."""
         source_name = collector.SOURCE_NAME
         interval = collector.POLL_INTERVAL
+        consecutive_errors = 0
+        max_consecutive_errors = 3
 
         # Initialize source in panel
         if self.sources_panel:
@@ -405,7 +414,7 @@ class MonitorBotApp(App):
                 interval=interval,
             )
 
-        # Run collector loop
+        # Run collector loop - never crash, always retry
         while True:
             try:
                 # Mark as syncing
@@ -414,8 +423,17 @@ class MonitorBotApp(App):
 
                 # Do the poll
                 reports = await collector.poll_once()
+
+                # Process each report with individual error handling
                 for report in reports:
-                    await self._handle_report(report)
+                    try:
+                        await self._handle_report(report)
+                    except Exception as e:
+                        logger.error(f"[{source_name.upper()}] Error processing report: {e}")
+                        self.log_message(
+                            f"[{source_name.upper()}] Error processing report: {e}",
+                            color="red"
+                        )
 
                 # Mark as idle and set next poll time
                 now = datetime.now(timezone.utc)
@@ -428,8 +446,37 @@ class MonitorBotApp(App):
                         is_syncing=False,
                     )
 
+                # Reset error counter on success
+                consecutive_errors = 0
+
             except Exception as e:
-                logger.error(f"[{source_name.upper()}] Error in tracking loop: {e}")
+                consecutive_errors += 1
+                logger.error(f"[{source_name.upper()}] Error in collector (attempt {consecutive_errors}): {e}")
+
+                # Show error in UI
+                if consecutive_errors <= max_consecutive_errors:
+                    self.log_message(
+                        f"[{source_name.upper()}] Connection error, retrying... ({consecutive_errors}/{max_consecutive_errors})",
+                        color="yellow"
+                    )
+                else:
+                    # After max errors, still continue but log less verbosely
+                    if consecutive_errors == max_consecutive_errors + 1:
+                        self.log_message(
+                            f"[{source_name.upper()}] Persistent connection issues, will retry silently",
+                            color="red dim"
+                        )
+
+                # Mark as error in sources panel
+                if self.sources_panel:
+                    now = datetime.now(timezone.utc)
+                    next_poll = now + timedelta(seconds=interval)
+                    self.sources_panel.update_source(
+                        source_name,
+                        last_poll=now,
+                        next_poll=next_poll,
+                        is_syncing=False,
+                    )
 
             await asyncio.sleep(interval)
 
@@ -451,8 +498,8 @@ class MonitorBotApp(App):
         # Location (truncate if too long)
         location = (event.location_name or "Unknown")[:35]
 
-        # Sources count
-        sources = str(event.source_count)
+        # Sources list (not just count)
+        sources = self._format_sources(event)
 
         # Detected time
         detected = event.first_detected_at.strftime("%H:%M:%S")
@@ -492,6 +539,22 @@ class MonitorBotApp(App):
             key=str(event.event_id),
         )
 
+    def _format_sources(self, event: EarthquakeEvent) -> str:
+        """Format sources list from event."""
+        sources = []
+        if event.jma_id:
+            sources.append("JMA")
+        if event.emsc_id:
+            sources.append("EMSC")
+        if event.gfz_id:
+            sources.append("GFZ")
+        if event.geonet_id:
+            sources.append("GN")  # Short for space
+        if event.usgs_id:
+            sources.append("USGS")
+
+        return "+".join(sources) if sources else "?"
+
     def _format_magnitude(self, magnitude: float) -> Text:
         """Format magnitude with color based on threshold."""
         mag_str = f"M{magnitude:.1f}"
@@ -506,22 +569,38 @@ class MonitorBotApp(App):
     async def _handle_report(self, report: SourceReport):
         """Handle incoming earthquake report."""
         try:
-            # Check if we already have this source event
-            existing = await self.db.get_event_by_source_id(
-                report.source, report.source_event_id
-            )
+            # Log ALL incoming reports (before deduplication)
+            log_msg = f"[{report.source.upper()}] Received M{report.magnitude} at {report.location_name or 'Unknown'}"
+            self.log_message(log_msg, color="dim")
+            logger.info(log_msg)
+
+            # Check if we already have this source event (DB might be unavailable)
+            existing = None
+            try:
+                existing = await self.db.get_event_by_source_id(
+                    report.source, report.source_event_id
+                )
+            except Exception as db_error:
+                logger.warning(f"DB error checking existing event: {db_error}")
+                # Continue without DB - use in-memory cache
+                pass
 
             if existing:
                 # Already processed
                 return
 
-            # Get recent events for matching
-            recent_events = await self.db.get_recent_events(
-                hours=24, min_magnitude=config.MIN_MAGNITUDE_TRACK - 0.5
-            )
-
-            if recent_events is None:
-                recent_events = []
+            # Get recent events for matching (DB might be unavailable)
+            recent_events = []
+            try:
+                recent_events = await self.db.get_recent_events(
+                    hours=24, min_magnitude=config.MIN_MAGNITUDE_TRACK - 0.5
+                )
+                if recent_events is None:
+                    recent_events = []
+            except Exception as db_error:
+                logger.warning(f"DB error getting recent events: {db_error}")
+                # Fallback to in-memory cache
+                recent_events = list(self.events_cache.values())
 
             # Try to match to existing event
             matched_id = self.matcher.find_matching_event(report, recent_events)
@@ -531,45 +610,43 @@ class MonitorBotApp(App):
                 event = next(e for e in recent_events if e.event_id == matched_id)
                 event = self.matcher.update_event_from_report(event, report)
 
+                # Try to save to DB (graceful degradation if DB unavailable)
                 try:
                     await self.db.update_event(event)
                     await self.db.insert_report(report, event.event_id)
                 except Exception as db_error:
-                    self.log_message(
-                        f"DB error updating event: {db_error}",
-                        color="red"
-                    )
-                    return
+                    logger.warning(f"DB error updating event: {db_error}")
+                    # Continue without DB - still show in UI
 
                 self.events_cache[event.event_id] = event
                 self._update_event_in_table(event)
 
-                self.log_message(
+                # Show which sources confirmed this event
+                sources_str = self._format_sources(event)
+                match_msg = (
                     f"[{report.source.upper()}] Matched M{report.magnitude} "
-                    f"to existing event ({event.source_count} sources)",
-                    color="cyan",
+                    f"at {report.location_name or 'Unknown'} → {sources_str}"
                 )
+                self.log_message(match_msg, color="cyan")
+                logger.info(match_msg)
 
                 # If USGS just confirmed
                 if report.source == "usgs" and event.detection_advantage_minutes:
-                    self.log_message(
-                        f"  → USGS confirmed! Edge: {event.detection_advantage_minutes:.1f} minutes",
-                        color="green bold",
-                    )
+                    edge_msg = f"  → USGS confirmed! Edge: {event.detection_advantage_minutes:.1f} minutes"
+                    self.log_message(edge_msg, color="green bold")
+                    logger.info(edge_msg)
                     self.pending_events -= 1
             else:
                 # Create new event
                 event = self.matcher.create_event_from_report(report)
 
+                # Try to save to DB (graceful degradation if DB unavailable)
                 try:
                     await self.db.insert_event(event)
                     await self.db.insert_report(report, event.event_id)
                 except Exception as db_error:
-                    self.log_message(
-                        f"DB error creating event: {db_error}",
-                        color="red"
-                    )
-                    return
+                    logger.warning(f"DB error creating event: {db_error}")
+                    # Continue without DB - still show in UI
 
                 self.events_cache[event.event_id] = event
                 self._add_event_to_table(event)
@@ -580,17 +657,13 @@ class MonitorBotApp(App):
 
                 # Log with emphasis
                 if event.is_significant:
-                    self.log_message(
-                        f"[{report.source.upper()}] 🔴 NEW M{report.magnitude} "
-                        f"at {report.location_name or 'Unknown'}",
-                        color="red bold",
-                    )
+                    new_msg = f"[{report.source.upper()}] 🔴 NEW M{report.magnitude} at {report.location_name or 'Unknown'}"
+                    self.log_message(new_msg, color="red bold")
+                    logger.warning(new_msg)  # WARNING level for significant events
                 else:
-                    self.log_message(
-                        f"[{report.source.upper()}] New M{report.magnitude} "
-                        f"at {report.location_name or 'Unknown'}",
-                        color="cyan",
-                    )
+                    new_msg = f"[{report.source.upper()}] New M{report.magnitude} at {report.location_name or 'Unknown'}"
+                    self.log_message(new_msg, color="cyan")
+                    logger.info(new_msg)
 
             # Update status bar
             if self.status_bar:
@@ -641,6 +714,14 @@ class MonitorBotApp(App):
 
     def on_key(self, event) -> None:
         """Handle key presses for quit confirmation."""
+        # Russian layout support for quit (й = q) and clear (с = c)
+        if event.character == "й" and not self.quit_pending:
+            self.action_quit()
+            return
+        elif event.character == "с":
+            self.action_clear_log()
+            return
+
         # Handle quit confirmation
         if self.quit_pending:
             if event.key == "enter":
