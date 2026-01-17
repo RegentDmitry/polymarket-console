@@ -120,8 +120,10 @@ class SourcesPanel(Static):
         table.add_column(justify="left", style="bold")
         table.add_column(justify="right")
 
-        # Title
+        # Title with current time
+        current_time = now.strftime("%H:%M:%S UTC")
         table.add_row("[bold cyan]Sources Monitor[/bold cyan]", "")
+        table.add_row(f"[dim]{current_time}[/dim]", "")
         table.add_row("", "")
 
         # Each source
@@ -290,7 +292,7 @@ class MonitorBotApp(App):
     async def on_mount(self) -> None:
         """Initialize the app when mounted."""
         self.title = "Earthquake Monitor Bot"
-        self.sub_title = f"Tracking M{config.MIN_MAGNITUDE_TRACK}+"
+        self.sub_title = f"Tracking M{config.MIN_MAGNITUDE_TRACK}+ • All times in UTC"
 
         # Setup events table
         if self.events_table:
