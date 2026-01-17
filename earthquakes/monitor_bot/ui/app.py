@@ -172,6 +172,7 @@ class MonitorBotApp(App):
 
         self.total_events = 0
         self.pending_events = 0
+        self.quit_pending = False  # For quit confirmation
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -269,6 +270,9 @@ class MonitorBotApp(App):
                 hours=24, min_magnitude=config.MIN_MAGNITUDE_TRACK
             )
 
+            if events is None:
+                events = []
+
             for event in events:
                 self.events_cache[event.event_id] = event
                 self._add_event_to_table(event)
@@ -354,6 +358,9 @@ class MonitorBotApp(App):
                 hours=24, min_magnitude=config.MIN_MAGNITUDE_TRACK - 0.5
             )
 
+            if recent_events is None:
+                recent_events = []
+
             # Try to match to existing event
             matched_id = self.matcher.find_matching_event(report, recent_events)
 
@@ -361,8 +368,16 @@ class MonitorBotApp(App):
                 # Update existing event
                 event = next(e for e in recent_events if e.event_id == matched_id)
                 event = self.matcher.update_event_from_report(event, report)
-                await self.db.update_event(event)
-                await self.db.insert_report(report, event.event_id)
+
+                try:
+                    await self.db.update_event(event)
+                    await self.db.insert_report(report, event.event_id)
+                except Exception as db_error:
+                    self.log_message(
+                        f"DB error updating event: {db_error}",
+                        color="red"
+                    )
+                    return
 
                 self.events_cache[event.event_id] = event
                 self._update_event_in_table(event)
@@ -383,8 +398,16 @@ class MonitorBotApp(App):
             else:
                 # Create new event
                 event = self.matcher.create_event_from_report(report)
-                await self.db.insert_event(event)
-                await self.db.insert_report(report, event.event_id)
+
+                try:
+                    await self.db.insert_event(event)
+                    await self.db.insert_report(report, event.event_id)
+                except Exception as db_error:
+                    self.log_message(
+                        f"DB error creating event: {db_error}",
+                        color="red"
+                    )
+                    return
 
                 self.events_cache[event.event_id] = event
                 self._add_event_to_table(event)
@@ -445,9 +468,26 @@ class MonitorBotApp(App):
             self.log_message("Log cleared", color="dim")
 
     def action_quit(self) -> None:
-        """Quit the app."""
-        self.log_message("Shutting down...", color="yellow")
-        self.exit()
+        """Action: Quit the app (with confirmation)."""
+        if not self.quit_pending:
+            self.quit_pending = True
+            self.notify("Quit? Press ENTER to confirm, any other key to cancel")
+        else:
+            # Повторное нажатие Q -> отменяем выход
+            self.quit_pending = False
+            self.notify("Quit cancelled")
+
+    def on_key(self, event) -> None:
+        """Handle key presses for quit confirmation."""
+        # Handle quit confirmation
+        if self.quit_pending:
+            if event.key == "enter":
+                self.log_message("Shutting down...", color="yellow bold")
+                self.exit()
+            else:
+                self.quit_pending = False
+                self.notify("Quit cancelled")
+            return
 
 
 def run_monitor_bot() -> None:

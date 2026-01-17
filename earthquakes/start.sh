@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Earthquake Bots Launcher
-# Interactive menu to start trading_bot or update_bot
+# Interactive menu to start trading_bot, update_bot, or monitor_bot
 
 set -e
 
@@ -34,9 +34,10 @@ echo "  1) Trading Bot (dry-run)"
 echo "  2) Trading Bot (live, with confirmation)"
 echo "  3) Trading Bot (live, auto mode)"
 echo "  4) Update Bot"
-echo "  5) Exit"
+echo "  5) Monitor Bot (earthquake monitoring + PostgreSQL)"
+echo "  6) Exit"
 echo ""
-read -p "Enter choice [1-5]: " choice
+read -p "Enter choice [1-6]: " choice
 
 case $choice in
     1)
@@ -81,6 +82,24 @@ case $choice in
         python -m update_bot
         ;;
     5)
+        echo ""
+        # Check PostgreSQL connection
+        echo -e "${GREEN}Launching Monitor Bot...${NC}"
+        echo ""
+        echo -e "${CYAN}ℹ️  Make sure PostgreSQL is running and database is created:${NC}"
+        echo "  createdb -h 172.24.192.1 -U postgres earthquake_monitor"
+        echo "  psql -h 172.24.192.1 -U postgres -d earthquake_monitor -f monitor_bot/schema.sql"
+        echo ""
+        read -p "Continue? (Y/n) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Nn]$ ]]; then
+            echo -e "${RED}Cancelled.${NC}"
+            exit 1
+        fi
+        source .venv/bin/activate
+        python -m monitor_bot
+        ;;
+    6)
         echo ""
         echo -e "${BLUE}Goodbye!${NC}"
         exit 0

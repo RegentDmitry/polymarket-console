@@ -26,7 +26,7 @@ class MonitorBotConfig:
         return f"postgresql://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
 
     # Magnitude thresholds
-    MIN_MAGNITUDE_TRACK = 6.0       # Track M6.0+ (показывает работу системы)
+    MIN_MAGNITUDE_TRACK = 4.5       # Track M4.5+ (для быстрого тестирования - 10-15 событий/день)
     MIN_MAGNITUDE_SIGNIFICANT = 7.0  # Highlight M7.0+ (красный цвет)
     MIN_MAGNITUDE_WARNING = 6.5      # Warning color M6.5+ (оранжевый)
 
@@ -56,7 +56,7 @@ class MonitorBotConfig:
     EMSC_WS_URL = "wss://www.seismicportal.eu/standing_order/websocket"
     GFZ_URL = "https://geofon.gfz-potsdam.de/fdsnws/event/1/query"
     GEONET_URL = "https://api.geonet.org.nz/quake"
-    USGS_URL = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_hour.geojson"
+    USGS_URL = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_day.geojson"  # 24 часа для тестирования
 
 
 config = MonitorBotConfig()

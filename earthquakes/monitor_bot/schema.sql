@@ -132,7 +132,7 @@ SELECT
         ELSE NULL
     END as detection_advantage_minutes
 FROM earthquake_events e
-WHERE e.best_magnitude >= 6.0
+WHERE e.best_magnitude >= 4.5
 ORDER BY e.event_time DESC;
 
 -- View: source performance statistics

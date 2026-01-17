@@ -31,7 +31,7 @@ class Config:
     USGS_POLL_INTERVAL = 60
 
     # Magnitude thresholds
-    MIN_MAGNITUDE_TRACK = 6.5      # Track M6.5+ events
+    MIN_MAGNITUDE_TRACK = 4.5      # Track M4.5+ events (для тестирования)
     MIN_MAGNITUDE_SIGNIFICANT = 7.0  # Mark as significant
 
     # Event matching thresholds
@@ -43,7 +43,7 @@ class Config:
     EMSC_WS_URL = "wss://www.seismicportal.eu/standing_order/websocket"
     GFZ_URL = "https://geofon.gfz-potsdam.de/fdsnws/event/1/query"
     GEONET_URL = "https://api.geonet.org.nz/quake"
-    USGS_URL = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_hour.geojson"
+    USGS_URL = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_day.geojson"
 
 
 config = Config()

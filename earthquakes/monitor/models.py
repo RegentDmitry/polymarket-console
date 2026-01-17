@@ -65,10 +65,23 @@ class EarthquakeEvent:
 
     @property
     def detection_advantage_minutes(self) -> Optional[float]:
-        """Minutes between our detection and USGS publication."""
+        """
+        Minutes between our detection and USGS publication.
+
+        Positive = we detected before USGS published (information advantage)
+        Negative = USGS published before we detected (no advantage, historical data)
+
+        Returns None for negative values (historical data loaded after USGS publication).
+        """
         if self.usgs_published_at and self.first_detected_at:
             delta = (self.usgs_published_at - self.first_detected_at).total_seconds()
-            return delta / 60
+            minutes = delta / 60
+
+            # Only return positive edge (real-time detection advantage)
+            # Negative means historical data loaded after USGS already published
+            if minutes > 0:
+                return minutes
+
         return None
 
     @property

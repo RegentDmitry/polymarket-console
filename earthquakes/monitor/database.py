@@ -116,26 +116,39 @@ class Database:
         min_magnitude: float = 6.5,
     ) -> list[EarthquakeEvent]:
         """Get recent events for matching."""
-        query = """
-            SELECT
-                event_id, best_magnitude, best_magnitude_type,
-                latitude, longitude, depth_km, location_name,
-                event_time, first_detected_at, usgs_published_at,
-                usgs_id, jma_id, emsc_id, gfz_id, geonet_id,
-                source_count, is_significant
-            FROM earthquake_events
-            WHERE event_time > NOW() - INTERVAL '%s hours'
-              AND best_magnitude >= %s
-            ORDER BY event_time DESC
-        """
-
         if self._pool:
-            rows = await self.fetch(
-                query.replace("%s", "$1").replace("%s", "$2", 1),
-                hours, min_magnitude
-            )
-        else:
+            # asyncpg uses $1, $2 placeholders
+            query = """
+                SELECT
+                    event_id, best_magnitude, best_magnitude_type,
+                    latitude, longitude, depth_km, location_name,
+                    event_time, first_detected_at, usgs_published_at,
+                    usgs_id, jma_id, emsc_id, gfz_id, geonet_id,
+                    source_count, is_significant
+                FROM earthquake_events
+                WHERE event_time > NOW() - $1 * INTERVAL '1 hour'
+                  AND best_magnitude >= $2
+                ORDER BY event_time DESC
+            """
             rows = await self.fetch(query, hours, min_magnitude)
+        else:
+            # psycopg2 uses %s placeholders
+            query = """
+                SELECT
+                    event_id, best_magnitude, best_magnitude_type,
+                    latitude, longitude, depth_km, location_name,
+                    event_time, first_detected_at, usgs_published_at,
+                    usgs_id, jma_id, emsc_id, gfz_id, geonet_id,
+                    source_count, is_significant
+                FROM earthquake_events
+                WHERE event_time > NOW() - %s * INTERVAL '1 hour'
+                  AND best_magnitude >= %s
+                ORDER BY event_time DESC
+            """
+            rows = await self.fetch(query, hours, min_magnitude)
+
+        if rows is None:
+            return []
 
         return [self._row_to_event(row) for row in rows]
 

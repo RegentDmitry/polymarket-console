@@ -104,6 +104,9 @@ class EventMatcher:
         event_id = uuid4()
         now = datetime.now(timezone.utc)
 
+        # Use reported_at if available (for historical data), otherwise current time
+        first_detected = report.reported_at if report.reported_at else now
+
         event = EarthquakeEvent(
             event_id=event_id,
             best_magnitude=report.magnitude,
@@ -113,7 +116,7 @@ class EventMatcher:
             depth_km=report.depth_km,
             location_name=report.location_name,
             event_time=report.event_time,
-            first_detected_at=now,
+            first_detected_at=first_detected,
             source_count=1,
             is_significant=report.magnitude >= config.MIN_MAGNITUDE_SIGNIFICANT,
         )
