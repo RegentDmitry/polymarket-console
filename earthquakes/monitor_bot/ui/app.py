@@ -437,17 +437,25 @@ class MonitorBotApp(App):
 
         try:
             # Filter: only events that are TRADING READY
-            # 1. Not yet confirmed by USGS (trading advantage)
-            # 2. Reliable enough based on source and magnitude
+            # 1. Event occurred recently (within retention window)
+            # 2. Not yet confirmed by USGS (trading advantage)
+            # 3. Reliable enough based on source and magnitude
             #
             # Trading bot trusts this JSON completely - no additional checks needed
-            cutoff = now - timedelta(hours=config.JSON_RETENTION_HOURS)
-            trading_events = [
-                e for e in self.events_cache.values()
-                if e.first_detected_at > cutoff
-                and e.usgs_id is None  # Not in USGS yet (trading advantage)
-                and self._is_trading_ready(e)  # Reliable enough to trade
-            ]
+            event_time_cutoff = now - timedelta(hours=config.JSON_RETENTION_HOURS)
+            trading_events = []
+            for e in self.events_cache.values():
+                # Normalize event_time to UTC for comparison
+                event_time_utc = e.event_time
+                if event_time_utc.tzinfo is not None:
+                    event_time_utc = event_time_utc.astimezone(timezone.utc)
+                else:
+                    event_time_utc = event_time_utc.replace(tzinfo=timezone.utc)
+
+                if (event_time_utc > event_time_cutoff  # Recent event
+                    and e.usgs_id is None  # Not in USGS yet (trading advantage)
+                    and self._is_trading_ready(e)):  # Reliable enough to trade
+                    trading_events.append(e)
 
             # Prepare snapshot
             snapshot = {
