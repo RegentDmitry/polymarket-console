@@ -207,8 +207,11 @@ class JMACollector(BaseCollector):
         Parse JMA 'cod' field for coordinates.
 
         Format examples:
-        - "+34.5+135.2-10/" -> lat=34.5, lon=135.2, depth=10
-        - "+38.9+142.1+30/" -> lat=38.9, lon=142.1, depth=30 (+ means above sea level, rare)
+        - "+34.5+135.2-10000/" -> lat=34.5, lon=135.2, depth=10 km
+        - "+3518.9+13312.8-11000/" -> lat=35°18.9'=35.315, lon=133°12.8'=133.213, depth=11 km
+
+        Note: Depth is in METERS, we convert to km.
+        Note: Some coords are in degrees-minutes format (DDMM.M), we detect and convert.
         """
         try:
             if not cod:
@@ -234,7 +237,7 @@ class JMACollector(BaseCollector):
             if lon_start == -1:
                 return None
 
-            lat = lat_sign * float(cod[:lon_start])
+            lat_raw = float(cod[:lon_start])
 
             # Parse longitude
             lon_sign = 1 if cod[lon_start] == "+" else -1
@@ -248,13 +251,34 @@ class JMACollector(BaseCollector):
                     break
 
             if depth_start == -1:
-                lon = lon_sign * float(cod)
-                depth = None
+                lon_raw = float(cod)
+                depth_meters = None
             else:
-                lon = lon_sign * float(cod[:depth_start])
-                depth_sign = 1 if cod[depth_start] == "+" else -1
-                depth = depth_sign * float(cod[depth_start + 1:])
+                lon_raw = float(cod[:depth_start])
+                # Depth in meters (negative = below sea level = normal)
+                depth_meters = abs(float(cod[depth_start + 1:]))
 
-            return (lat, lon, depth)
+            # Convert degrees-minutes to decimal degrees if needed
+            # DDMM.M format has values > 90 for lat or > 180 for lon
+            lat = self._convert_dm_to_decimal(lat_raw) if lat_raw > 90 else lat_raw
+            lon = self._convert_dm_to_decimal(lon_raw) if lon_raw > 180 else lon_raw
+
+            lat = lat_sign * lat
+            lon = lon_sign * lon
+
+            # Convert depth from meters to km
+            depth_km = depth_meters / 1000.0 if depth_meters is not None else None
+
+            return (lat, lon, depth_km)
         except Exception:
             return None
+
+    def _convert_dm_to_decimal(self, dm_value: float) -> float:
+        """
+        Convert degrees-minutes (DDMM.M) to decimal degrees.
+
+        Example: 3518.9 -> 35°18.9' -> 35 + 18.9/60 = 35.315
+        """
+        degrees = int(dm_value / 100)
+        minutes = dm_value - (degrees * 100)
+        return degrees + minutes / 60.0
