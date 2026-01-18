@@ -32,8 +32,9 @@ from monitor.collectors import (
     JMACollector,
     EMSCCollector,
     GFZCollector,
-    GeoNetCollector,
     USGSCollector,
+    IRISCollector,
+    INGVCollector,
 )
 from monitor_bot.config import config
 
@@ -129,7 +130,7 @@ class SourcesPanel(Static):
         table.add_row("", "")
 
         # Each source
-        for source_name in ["JMA", "EMSC", "GFZ", "GEONET", "USGS"]:
+        for source_name in ["JMA", "EMSC", "GFZ", "USGS", "IRIS", "INGV"]:
             source_key = source_name.lower()
             status = self.sources_status.get(source_key, {})
 
@@ -338,8 +339,9 @@ class MonitorBotApp(App):
             "jma": JMACollector,
             "emsc": EMSCCollector,
             "gfz": GFZCollector,
-            "geonet": GeoNetCollector,
             "usgs": USGSCollector,
+            "iris": IRISCollector,
+            "ingv": INGVCollector,
         }
 
         for name in config.ACTIVE_COLLECTORS:
@@ -358,8 +360,10 @@ class MonitorBotApp(App):
         # Load existing events (from JSON if available, otherwise DB)
         await self._load_recent_events()
 
-        # Start periodic JSON snapshot saving
-        self.json_save_task = asyncio.create_task(self._save_snapshot_periodically())
+        # NOTE: Periodic JSON saving REMOVED for trading optimization.
+        # JSON is now saved instantly on new events (force=True).
+        # Trading strategy requires minimal latency - every second of Edge Time matters.
+        # self.json_save_task = asyncio.create_task(self._save_snapshot_periodically())
 
         # Start collectors
         self.log_message("")
@@ -407,39 +411,49 @@ class MonitorBotApp(App):
 
         return events
 
-    def _save_snapshot_now(self, reason: str = "update"):
+    def _save_snapshot_now(self, reason: str = "update", force: bool = False):
         """
-        Save JSON snapshot immediately (with debouncing).
+        Save JSON snapshot immediately.
 
         Called when significant events occur:
-        - New earthquake detected
-        - USGS confirmed event (edge time available)
-        - Event matched to new source
+        - New earthquake detected (force=True, NO debouncing!)
+        - USGS confirmed event (force=True, critical for trading!)
+        - Event matched to new source (force=False, debounced)
 
-        Debouncing: не чаще раз в 10 секунд (защита от спама).
+        Trading strategy: Every second matters for Edge Time advantage.
+        New events must be saved INSTANTLY for trading bot to act.
+
+        Args:
+            reason: Description of why save is triggered
+            force: If True, skip debouncing (for new events/USGS confirms)
         """
         now = datetime.now(timezone.utc)
         time_since_last_save = (now - self.last_json_save).total_seconds()
 
-        # Debounce: skip if saved less than 10 seconds ago
-        if time_since_last_save < 10:
+        # Debounce ONLY for non-critical updates (source matching)
+        # New events and USGS confirmations skip debouncing (force=True)
+        if not force and time_since_last_save < 10:
             return
 
         try:
-            # Filter: only pending USGS events (not yet confirmed by USGS)
-            # Trading bot already has access to USGS API, so we only export
-            # events that are NOT in USGS yet - this gives trading advantage
+            # Filter: only events that are TRADING READY
+            # 1. Not yet confirmed by USGS (trading advantage)
+            # 2. Reliable enough based on source and magnitude
+            #
+            # Trading bot trusts this JSON completely - no additional checks needed
             cutoff = now - timedelta(hours=config.JSON_RETENTION_HOURS)
-            pending_events = [
+            trading_events = [
                 e for e in self.events_cache.values()
-                if e.first_detected_at > cutoff and e.usgs_id is None
+                if e.first_detected_at > cutoff
+                and e.usgs_id is None  # Not in USGS yet (trading advantage)
+                and self._is_trading_ready(e)  # Reliable enough to trade
             ]
 
             # Prepare snapshot
             snapshot = {
                 "last_updated": now.isoformat(),
-                "event_count": len(pending_events),
-                "events": [e.to_dict() for e in pending_events],
+                "event_count": len(trading_events),
+                "events": [e.to_dict() for e in trading_events],
             }
 
             # Ensure directory exists
@@ -454,7 +468,7 @@ class MonitorBotApp(App):
             os.replace(tmp_file, config.JSON_CACHE_FILE)
 
             self.last_json_save = now
-            logger.info(f"Saved {len(pending_events)} pending USGS events to JSON ({reason})")
+            logger.info(f"Saved {len(trading_events)} trading-ready events to JSON ({reason})")
 
         except Exception as e:
             logger.error(f"Error saving JSON snapshot: {e}")
@@ -509,7 +523,7 @@ class MonitorBotApp(App):
 
         # Save initial snapshot if we loaded events
         if events:
-            self._save_snapshot_now(reason="initial load")
+            self._save_snapshot_now(reason="initial load", force=True)
 
     async def _run_collector_with_tracking(self, collector):
         """Run collector with status tracking for UI."""
@@ -669,12 +683,58 @@ class MonitorBotApp(App):
             sources.append("EMSC")
         if event.gfz_id:
             sources.append("GFZ")
-        if event.geonet_id:
-            sources.append("GN")  # Short for space
+        if event.iris_id:
+            sources.append("IRIS")
+        if event.ingv_id:
+            sources.append("INGV")
         if event.usgs_id:
             sources.append("USGS")
 
         return "+".join(sources) if sources else "?"
+
+    def _is_trading_ready(self, event: EarthquakeEvent) -> bool:
+        """
+        Check if event is reliable enough for trading.
+
+        Based on historical analysis (30 days, USGS confirmation rates):
+        - M5.0+ from ANY source: 98-100% → READY
+        - M4.5+ from IRIS: 100% → READY
+        - M4.5+ from JMA: 100% → READY
+        - M4.5+ from INGV: 100% → READY
+        - M4.5+ from GFZ: 95% → READY
+        - M4.5-4.9 from EMSC only: 87% → NOT READY (wait for confirmation)
+        - 2+ sources confirm: ~100% → READY
+
+        Returns:
+            True if event should be exported to JSON for trading bot
+        """
+        mag = event.best_magnitude
+
+        # M5.0+ is always reliable from any source
+        if mag >= 5.0:
+            return True
+
+        # 2+ sources = confirmed
+        if event.source_count >= 2:
+            return True
+
+        # Check which single source reported this event
+        # High-reliability sources for M4.5+
+        if event.iris_id:  # IRIS: 100% for M4.5+
+            return True
+        if event.jma_id:  # JMA: 100% for M4.5+
+            return True
+        if event.ingv_id:  # INGV: 100% for M4.5+
+            return True
+        if event.gfz_id:  # GFZ: 95% for M4.5+ (acceptable)
+            return True
+
+        # EMSC-only M4.5-4.9: 87% reliability - wait for confirmation
+        if event.emsc_id and mag < 5.0:
+            return False
+
+        # Unknown source - be conservative
+        return False
 
     def _format_magnitude(self, magnitude: float) -> Text:
         """Format magnitude with color based on threshold."""
@@ -716,7 +776,10 @@ class MonitorBotApp(App):
                     elif report.source == "gfz" and event.gfz_id == report.source_event_id:
                         existing = event
                         break
-                    elif report.source == "geonet" and event.geonet_id == report.source_event_id:
+                    elif report.source == "iris" and event.iris_id == report.source_event_id:
+                        existing = event
+                        break
+                    elif report.source == "ingv" and event.ingv_id == report.source_event_id:
                         existing = event
                         break
 
@@ -793,11 +856,18 @@ class MonitorBotApp(App):
                     self.pending_events -= 1
 
                     # Save JSON immediately - trading bot needs this!
-                    self._save_snapshot_now(reason=f"USGS confirmed M{event.best_magnitude}")
+                    # force=True: NO debouncing, INSTANT save!
+                    self._save_snapshot_now(reason=f"USGS confirmed M{event.best_magnitude}", force=True)
 
-                # Also save for other significant matches (new source confirmation)
-                elif event.source_count >= 2 and report.source != "usgs":
-                    self._save_snapshot_now(reason=f"source matched ({sources_str})")
+                # Check if event became trading-ready after this confirmation
+                # This is critical for EMSC-only events that get confirmed by another source
+                elif report.source != "usgs" and self._is_trading_ready(event):
+                    if event.source_count == 2:
+                        # First confirmation - event just became trading-ready!
+                        confirm_msg = f"  → Confirmed by {report.source.upper()}! Now trading-ready"
+                        self.log_message(confirm_msg, color="green")
+                        logger.info(confirm_msg)
+                    self._save_snapshot_now(reason=f"confirmed ({sources_str})", force=True)
             else:
                 # Create new event
                 event = self.matcher.create_event_from_report(report)
@@ -828,8 +898,16 @@ class MonitorBotApp(App):
                     self.log_message(new_msg, color="cyan")
                     logger.info(new_msg)
 
-                # Save JSON for new events - trading bot needs fresh data!
-                self._save_snapshot_now(reason=f"new event M{event.best_magnitude}")
+                # Save JSON only if event is trading-ready
+                # EMSC-only M4.5-4.9 must wait for confirmation (87% reliability)
+                if self._is_trading_ready(event):
+                    # Reliable source - save immediately for trading bot
+                    self._save_snapshot_now(reason=f"new event M{event.best_magnitude}", force=True)
+                else:
+                    # Not trading-ready yet (likely EMSC-only M4.5-4.9)
+                    wait_msg = f"  → Waiting for confirmation (source: {report.source.upper()}, M{report.magnitude})"
+                    self.log_message(wait_msg, color="yellow")
+                    logger.info(wait_msg)
 
             # Update status bar
             if self.status_bar:

@@ -44,7 +44,7 @@ class MonitorBotConfig:
     USGS_WARNING_HOURS = 6           # Show warning after 6 hours without USGS
 
     # Collectors to run
-    ACTIVE_COLLECTORS = ["jma", "emsc", "gfz", "geonet", "usgs"]
+    ACTIVE_COLLECTORS = ["jma", "emsc", "gfz", "usgs", "iris", "ingv"]
 
     # UI settings
     MAX_EVENTS_DISPLAY = 20          # Максимум событий в таблице
@@ -54,7 +54,6 @@ class MonitorBotConfig:
     JMA_POLL_INTERVAL = 30
     EMSC_RECONNECT_INTERVAL = 60
     GFZ_POLL_INTERVAL = 60
-    GEONET_POLL_INTERVAL = 60
     USGS_POLL_INTERVAL = 60
 
     # Event matching thresholds
@@ -65,7 +64,6 @@ class MonitorBotConfig:
     JMA_URL = "https://www.jma.go.jp/bosai/quake/data/list.json"
     EMSC_WS_URL = "wss://www.seismicportal.eu/standing_order/websocket"
     GFZ_URL = "https://geofon.gfz-potsdam.de/fdsnws/event/1/query"
-    GEONET_URL = "https://api.geonet.org.nz/quake"
     USGS_URL = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_day.geojson"  # 24 часа для тестирования
 
 

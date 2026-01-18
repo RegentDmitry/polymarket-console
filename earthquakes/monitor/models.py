@@ -59,7 +59,8 @@ class EarthquakeEvent:
     jma_id: Optional[str] = None
     emsc_id: Optional[str] = None
     gfz_id: Optional[str] = None
-    geonet_id: Optional[str] = None
+    iris_id: Optional[str] = None
+    ingv_id: Optional[str] = None
     source_count: int = 1
     is_significant: bool = False
 
@@ -139,7 +140,8 @@ class EarthquakeEvent:
             "jma_id": self.jma_id,
             "emsc_id": self.emsc_id,
             "gfz_id": self.gfz_id,
-            "geonet_id": self.geonet_id,
+            "iris_id": self.iris_id,
+            "ingv_id": self.ingv_id,
             # Metadata
             "source_count": self.source_count,
             "is_significant": self.is_significant,
@@ -166,7 +168,8 @@ class EarthquakeEvent:
             jma_id=data.get("jma_id"),
             emsc_id=data.get("emsc_id"),
             gfz_id=data.get("gfz_id"),
-            geonet_id=data.get("geonet_id"),
+            iris_id=data.get("iris_id"),
+            ingv_id=data.get("ingv_id"),
             source_count=data.get("source_count", 1),
             is_significant=data.get("is_significant", False),
         )

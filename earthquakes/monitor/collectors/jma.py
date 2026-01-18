@@ -62,12 +62,15 @@ class JMACollector(BaseCollector):
     def _parse_quake(self, quake: dict) -> Optional[SourceReport]:
         """Parse JMA quake data to SourceReport."""
         try:
-            # JMA magnitude field
+            # JMA magnitude field - skip entries without magnitude (intensity reports)
             magnitude = quake.get("mag")
-            if magnitude is None:
+            if magnitude is None or magnitude == "" or magnitude == "-":
                 return None
 
-            magnitude = float(magnitude)
+            try:
+                magnitude = float(magnitude)
+            except (ValueError, TypeError):
+                return None
 
             # Parse event time
             # JMA uses format like "2025-01-04T18:21:55+09:00"
@@ -79,14 +82,22 @@ class JMACollector(BaseCollector):
             if event_time.tzinfo is None:
                 event_time = event_time.replace(tzinfo=timezone.utc)
 
-            # Coordinates
+            # Coordinates - try direct fields first, then parse from 'cod'
             lat = quake.get("lat")
             lon = quake.get("lon")
+            depth = quake.get("dep")
+
+            # If lat/lon not directly available, parse from 'cod' field
+            # Format: "+34.5+135.2-10/" or similar
+            if lat is None or lon is None:
+                cod = quake.get("cod", "")
+                if cod:
+                    parsed = self._parse_cod(cod)
+                    if parsed:
+                        lat, lon, depth = parsed
+
             if lat is None or lon is None:
                 return None
-
-            # Depth (JMA uses 'dep' in km)
-            depth = quake.get("dep")
 
             # Event ID
             event_id = quake.get("eid") or quake.get("id")
@@ -112,4 +123,61 @@ class JMACollector(BaseCollector):
             )
         except Exception as e:
             logger.warning(f"[JMA] Parse error: {e}, data: {quake}")
+            return None
+
+    def _parse_cod(self, cod: str) -> Optional[tuple]:
+        """
+        Parse JMA 'cod' field for coordinates.
+
+        Format examples:
+        - "+34.5+135.2-10/" -> lat=34.5, lon=135.2, depth=10
+        - "+38.9+142.1+30/" -> lat=38.9, lon=142.1, depth=30 (+ means above sea level, rare)
+        """
+        try:
+            if not cod:
+                return None
+
+            # Remove trailing slash and spaces
+            cod = cod.strip().rstrip("/").split()[0] if cod.strip() else ""
+            if not cod:
+                return None
+
+            # Find positions of + and - signs
+            # First character is always sign for latitude
+            lat_sign = 1 if cod[0] == "+" else -1
+            cod = cod[1:]  # Remove first sign
+
+            # Find the second sign (start of longitude)
+            lon_start = -1
+            for i, c in enumerate(cod):
+                if c in ["+", "-"]:
+                    lon_start = i
+                    break
+
+            if lon_start == -1:
+                return None
+
+            lat = lat_sign * float(cod[:lon_start])
+
+            # Parse longitude
+            lon_sign = 1 if cod[lon_start] == "+" else -1
+            cod = cod[lon_start + 1:]
+
+            # Find the third sign (start of depth)
+            depth_start = -1
+            for i, c in enumerate(cod):
+                if c in ["+", "-"]:
+                    depth_start = i
+                    break
+
+            if depth_start == -1:
+                lon = lon_sign * float(cod)
+                depth = None
+            else:
+                lon = lon_sign * float(cod[:depth_start])
+                depth_sign = 1 if cod[depth_start] == "+" else -1
+                depth = depth_sign * float(cod[depth_start + 1:])
+
+            return (lat, lon, depth)
+        except Exception:
             return None

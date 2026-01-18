@@ -27,8 +27,9 @@ from .collectors import (
     JMACollector,
     EMSCCollector,
     GFZCollector,
-    GeoNetCollector,
     USGSCollector,
+    IRISCollector,
+    INGVCollector,
 )
 
 # Setup logging
@@ -47,8 +48,9 @@ class EarthquakeMonitor:
         "jma": JMACollector,
         "emsc": EMSCCollector,
         "gfz": GFZCollector,
-        "geonet": GeoNetCollector,
         "usgs": USGSCollector,
+        "iris": IRISCollector,
+        "ingv": INGVCollector,
     }
 
     def __init__(self, sources: Optional[list[str]] = None):

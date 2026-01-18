@@ -6,14 +6,16 @@ from .base import BaseCollector
 from .jma import JMACollector
 from .emsc import EMSCCollector
 from .gfz import GFZCollector
-from .geonet import GeoNetCollector
 from .usgs import USGSCollector
+from .iris import IRISCollector
+from .ingv import INGVCollector
 
 __all__ = [
     "BaseCollector",
     "JMACollector",
     "EMSCCollector",
     "GFZCollector",
-    "GeoNetCollector",
     "USGSCollector",
+    "IRISCollector",
+    "INGVCollector",
 ]

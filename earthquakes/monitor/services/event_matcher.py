@@ -171,8 +171,10 @@ class EventMatcher:
             event.emsc_id = source_id
         elif report.source == "gfz":
             event.gfz_id = source_id
-        elif report.source == "geonet":
-            event.geonet_id = source_id
+        elif report.source == "iris":
+            event.iris_id = source_id
+        elif report.source == "ingv":
+            event.ingv_id = source_id
 
     def _select_best_magnitude(
         self,
