@@ -185,24 +185,41 @@ class EventMatcher:
         Select best magnitude estimate.
 
         Priority:
-        1. USGS Mw (authoritative)
-        2. Average of Mw estimates
-        3. Keep higher magnitude (conservative for trading)
+        1. USGS (authoritative, always use latest)
+        2. Same source update → use latest (refined estimate)
+        3. Mw type preferred over other types
+        4. Multiple sources → use higher magnitude (conservative)
         """
-        # If new report is USGS with Mw, use it
-        if new_report.source == "usgs" and new_report.magnitude_type in ("Mw", "mww", "mwb", "mwc"):
+        # USGS is always authoritative - use their value
+        if new_report.source == "usgs":
             return new_report.magnitude, new_report.magnitude_type
 
-        # If existing is USGS Mw, keep it
-        if event.usgs_id and event.best_magnitude_type in ("Mw", "mww", "mwb", "mwc"):
+        # If we already have USGS, keep it (don't override with non-USGS)
+        if event.usgs_id:
             return event.best_magnitude, event.best_magnitude_type
 
-        # If new report is Mw and current isn't, prefer Mw
-        if new_report.magnitude_type in ("Mw", "mww", "mwb", "mwc"):
-            if event.best_magnitude_type not in ("Mw", "mww", "mwb", "mwc"):
+        # Check if this is an UPDATE from the same source
+        # Same source updates should use the latest value (refined estimate)
+        is_same_source_update = (
+            (new_report.source == "jma" and event.jma_id) or
+            (new_report.source == "emsc" and event.emsc_id) or
+            (new_report.source == "gfz" and event.gfz_id) or
+            (new_report.source == "iris" and event.iris_id) or
+            (new_report.source == "ingv" and event.ingv_id)
+        )
+
+        if is_same_source_update:
+            # Same source → use latest value (more accurate refined estimate)
+            return new_report.magnitude, new_report.magnitude_type
+
+        # Different source - use priority rules
+        # Prefer Mw type (moment magnitude is most accurate for large quakes)
+        mw_types = ("Mw", "mww", "mwb", "mwc")
+        if new_report.magnitude_type in mw_types:
+            if event.best_magnitude_type not in mw_types:
                 return new_report.magnitude, new_report.magnitude_type
 
-        # Default: keep higher magnitude (conservative)
+        # Multiple different sources → keep higher magnitude (conservative for trading)
         if new_report.magnitude > event.best_magnitude:
             return new_report.magnitude, new_report.magnitude_type
 
