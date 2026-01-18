@@ -457,6 +457,9 @@ class MonitorBotApp(App):
                     and self._is_trading_ready(e)):  # Reliable enough to trade
                     trading_events.append(e)
 
+            # Sort: strongest first, then by time (newest first)
+            trading_events.sort(key=lambda e: (-e.best_magnitude, -e.event_time.timestamp()))
+
             # Prepare snapshot
             snapshot = {
                 "last_updated": now.isoformat(),
