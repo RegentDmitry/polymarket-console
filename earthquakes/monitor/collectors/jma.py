@@ -50,14 +50,71 @@ class JMACollector(BaseCollector):
                 logger.error(f"[JMA] Error fetching data: {e}")
                 return
 
+        # JMA publishes multiple versions of the same event with different magnitudes
+        # Group by event time + location (within 2 minutes, 50km) and keep highest magnitude
+        reports = []
         for quake in data:
             try:
                 report = self._parse_quake(quake)
                 if report and self._filter_by_magnitude(report.magnitude):
-                    yield report
+                    reports.append(report)
             except Exception as e:
                 logger.warning(f"[JMA] Error parsing quake: {e}")
                 continue
+
+        # Deduplicate JMA reports - keep highest magnitude for same event
+        deduplicated = self._deduplicate_jma_reports(reports)
+        for report in deduplicated:
+            yield report
+
+    def _deduplicate_jma_reports(self, reports: list[SourceReport]) -> list[SourceReport]:
+        """
+        Deduplicate JMA reports by grouping similar events.
+
+        JMA publishes multiple versions of the same earthquake with different
+        magnitude estimates. Group by time (2 min) + location (50 km) and keep
+        the report with highest magnitude.
+        """
+        if not reports:
+            return []
+
+        from ..services.event_matcher import haversine_distance
+
+        # Group similar reports
+        groups: list[list[SourceReport]] = []
+
+        for report in reports:
+            matched_group = None
+            for group in groups:
+                # Compare with first report in group
+                ref = group[0]
+                time_diff = abs((report.event_time - ref.event_time).total_seconds())
+                distance = haversine_distance(
+                    report.latitude, report.longitude,
+                    ref.latitude, ref.longitude
+                )
+                # Tight matching for JMA: 2 minutes, 50 km
+                if time_diff < 120 and distance < 50:
+                    matched_group = group
+                    break
+
+            if matched_group:
+                matched_group.append(report)
+            else:
+                groups.append([report])
+
+        # From each group, pick report with highest magnitude
+        result = []
+        for group in groups:
+            best = max(group, key=lambda r: r.magnitude)
+            if len(group) > 1:
+                logger.debug(
+                    f"[JMA] Deduplicated {len(group)} reports for {best.location_name}: "
+                    f"mags={[r.magnitude for r in group]} → M{best.magnitude}"
+                )
+            result.append(best)
+
+        return result
 
     def _parse_quake(self, quake: dict) -> Optional[SourceReport]:
         """Parse JMA quake data to SourceReport."""
