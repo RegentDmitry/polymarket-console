@@ -620,6 +620,12 @@ class MonitorBotApp(App):
                 usgs_pub = Text(f"Delayed {hours}h", style="italic orange1")
             elif status == "unlikely":
                 usgs_pub = Text("Unlikely", style="italic red dim")
+            elif status == "confirmed":
+                # Event is in USGS but published_at time not available
+                usgs_pub = Text("Confirmed", style="green")
+            else:
+                # Fallback for unknown status
+                usgs_pub = Text("-", style="dim")
 
         # Edge time
         if event.detection_advantage_minutes:
@@ -695,20 +701,26 @@ class MonitorBotApp(App):
                 logger.info(log_msg)
 
             # Get recent events for matching (DB might be unavailable)
+            logger.info(f"[{report.source.upper()}] Starting to get recent events for matching...")
             recent_events = []
             try:
                 recent_events = await self.db.get_recent_events(
                     hours=24, min_magnitude=config.MIN_MAGNITUDE_TRACK - 0.5
                 )
+                logger.info(f"[{report.source.upper()}] DB returned {len(recent_events) if recent_events else 'None'} events")
                 if recent_events is None:
                     recent_events = []
             except Exception as db_error:
                 logger.warning(f"DB error getting recent events: {db_error}")
                 # Fallback to in-memory cache
                 recent_events = list(self.events_cache.values())
+                logger.info(f"[{report.source.upper()}] Using cache fallback: {len(recent_events)} events")
+
+            logger.info(f"[{report.source.upper()}] Matching against {len(recent_events)} events in cache")
 
             # Try to match to existing event
             matched_id = self.matcher.find_matching_event(report, recent_events)
+            logger.info(f"[{report.source.upper()}] Match result: {matched_id}")
 
             if matched_id:
                 # Update existing event
