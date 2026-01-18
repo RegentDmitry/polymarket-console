@@ -383,13 +383,23 @@ class MonitorBotApp(App):
         self.update_timer_task = asyncio.create_task(self._update_sources_timer())
 
     async def _load_from_json(self) -> list[EarthquakeEvent]:
-        """Load events from JSON cache file."""
+        """
+        Load events from JSON cache file.
+
+        Only loads pending USGS events (usgs_id == null).
+        Events already confirmed by USGS are skipped.
+        """
         with open(config.JSON_CACHE_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
         events = []
         for event_data in data.get("events", []):
             try:
+                # Skip events already confirmed by USGS
+                if event_data.get("usgs_id") is not None:
+                    logger.debug(f"Skipping USGS-confirmed event: {event_data.get('location_name')}")
+                    continue
+
                 event = EarthquakeEvent.from_dict(event_data)
                 events.append(event)
             except Exception as e:
