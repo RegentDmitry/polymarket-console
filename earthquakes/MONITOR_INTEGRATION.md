@@ -32,11 +32,13 @@ Monitor Bot теперь экспортирует данные в JSON для и
 earthquakes/monitor_bot/data/events_cache.json
 ```
 
+**Содержит только события НЕ подтверждённые USGS** - это даёт информационное преимущество!
+
 **Формат:**
 ```json
 {
   "last_updated": "2026-01-17T15:30:00+00:00",
-  "event_count": 15,
+  "event_count": 3,
   "events": [
     {
       "event_id": "uuid-here",
@@ -46,14 +48,14 @@ earthquakes/monitor_bot/data/events_cache.json
       "longitude": -130.2,
       "event_time": "2026-01-17T14:50:00+00:00",
       "first_detected_at": "2026-01-17T14:52:43+00:00",
-      "usgs_published_at": "2026-01-17T14:58:50+00:00",
-      "detection_advantage_minutes": 6.2,
-      "usgs_id": "us7000p123",
+      "usgs_published_at": null,
+      "detection_advantage_minutes": null,
+      "usgs_id": null,
       "jma_id": null,
       "emsc_id": "1234567",
       "gfz_id": null,
       "geonet_id": null,
-      "source_count": 2,
+      "source_count": 1,
       "is_significant": false
     }
   ]
@@ -110,19 +112,21 @@ for event in events:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `usgs_id` | str | USGS event ID (null if not published yet) |
-| `detection_advantage_minutes` | float\|null | Minutes before USGS published (null = no edge) |
-| `best_magnitude` | float | Best magnitude estimate |
-| `source_count` | int | Number of sources that detected this |
+| `usgs_id` | null | **Always null** - JSON contains only pending events NOT in USGS |
+| `detection_advantage_minutes` | null | **Always null** - calculated only when USGS confirms |
+| `best_magnitude` | float | Best magnitude estimate from available sources |
+| `source_count` | int | Number of sources that detected this (1+) |
 | `jma_id`, `emsc_id`, etc. | str\|null | Source IDs (null if not detected by that source) |
+| `first_detected_at` | ISO 8601 | When we first detected this event |
+| `event_time` | ISO 8601 | Estimated earthquake occurrence time |
 
 ## Update Triggers (Event-Driven)
 
 JSON обновляется **мгновенно** при:
-1. ✅ **Новое землетрясение обнаружено** → Trading bot видит сразу
-2. ✅ **USGS подтвердил событие** → Edge Time доступен!
-3. ✅ **Событие получило подтверждение от нового источника** (source_count++)
-4. 🔄 **Fallback: каждые 5 минут** (периодическое обновление метаданных)
+1. ✅ **Новое землетрясение обнаружено** (не в USGS) → Trading bot видит сразу
+2. ✅ **Событие получило подтверждение от нового источника** (source_count++)
+3. ❌ **Событие удаляется из JSON когда USGS подтверждает** (больше нет преимущества)
+4. 🔄 **Fallback: каждые 5 минут** (периодическое обновление)
 
 **Debouncing:** Не чаще раз в 10 секунд (защита от спама при буре событий)
 

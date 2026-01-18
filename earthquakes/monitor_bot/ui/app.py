@@ -416,18 +416,20 @@ class MonitorBotApp(App):
             return
 
         try:
-            # Filter: only last 24 hours
+            # Filter: only pending USGS events (not yet confirmed by USGS)
+            # Trading bot already has access to USGS API, so we only export
+            # events that are NOT in USGS yet - this gives trading advantage
             cutoff = now - timedelta(hours=config.JSON_RETENTION_HOURS)
-            recent_events = [
+            pending_events = [
                 e for e in self.events_cache.values()
-                if e.first_detected_at > cutoff
+                if e.first_detected_at > cutoff and e.usgs_id is None
             ]
 
             # Prepare snapshot
             snapshot = {
                 "last_updated": now.isoformat(),
-                "event_count": len(recent_events),
-                "events": [e.to_dict() for e in recent_events],
+                "event_count": len(pending_events),
+                "events": [e.to_dict() for e in pending_events],
             }
 
             # Ensure directory exists
@@ -442,7 +444,7 @@ class MonitorBotApp(App):
             os.replace(tmp_file, config.JSON_CACHE_FILE)
 
             self.last_json_save = now
-            logger.info(f"Saved {len(recent_events)} events to JSON ({reason})")
+            logger.info(f"Saved {len(pending_events)} pending USGS events to JSON ({reason})")
 
         except Exception as e:
             logger.error(f"Error saving JSON snapshot: {e}")
