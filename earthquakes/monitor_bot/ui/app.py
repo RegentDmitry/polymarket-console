@@ -678,16 +678,35 @@ class MonitorBotApp(App):
     async def _handle_report(self, report: SourceReport):
         """Handle incoming earthquake report."""
         try:
-            # Check if we already have this source event (DB might be unavailable)
+            # Check if we already have this source event
             existing = None
-            try:
-                existing = await self.db.get_event_by_source_id(
-                    report.source, report.source_event_id
-                )
-            except Exception as db_error:
-                logger.warning(f"DB error checking existing event: {db_error}")
-                # Continue without DB - use in-memory cache
-                pass
+
+            if config.USE_DATABASE:
+                # Use database for duplicate checking
+                try:
+                    existing = await self.db.get_event_by_source_id(
+                        report.source, report.source_event_id
+                    )
+                except Exception as db_error:
+                    logger.warning(f"DB error checking existing event: {db_error}")
+            else:
+                # Use in-memory cache for duplicate checking
+                for event in self.events_cache.values():
+                    if report.source == "usgs" and event.usgs_id == report.source_event_id:
+                        existing = event
+                        break
+                    elif report.source == "jma" and event.jma_id == report.source_event_id:
+                        existing = event
+                        break
+                    elif report.source == "emsc" and event.emsc_id == report.source_event_id:
+                        existing = event
+                        break
+                    elif report.source == "gfz" and event.gfz_id == report.source_event_id:
+                        existing = event
+                        break
+                    elif report.source == "geonet" and event.geonet_id == report.source_event_id:
+                        existing = event
+                        break
 
             # Log ALL incoming reports with duplicate marker
             if existing:
@@ -700,21 +719,27 @@ class MonitorBotApp(App):
                 self.log_message(log_msg, color="dim")
                 logger.info(log_msg)
 
-            # Get recent events for matching (DB might be unavailable)
+            # Get recent events for matching
             logger.info(f"[{report.source.upper()}] Starting to get recent events for matching...")
-            recent_events = []
-            try:
-                recent_events = await self.db.get_recent_events(
-                    hours=24, min_magnitude=config.MIN_MAGNITUDE_TRACK - 0.5
-                )
-                logger.info(f"[{report.source.upper()}] DB returned {len(recent_events) if recent_events else 'None'} events")
-                if recent_events is None:
-                    recent_events = []
-            except Exception as db_error:
-                logger.warning(f"DB error getting recent events: {db_error}")
-                # Fallback to in-memory cache
+
+            if config.USE_DATABASE:
+                # Use database
+                try:
+                    recent_events = await self.db.get_recent_events(
+                        hours=24, min_magnitude=config.MIN_MAGNITUDE_TRACK - 0.5
+                    )
+                    logger.info(f"[{report.source.upper()}] DB returned {len(recent_events) if recent_events else 'None'} events")
+                    if recent_events is None:
+                        recent_events = []
+                except Exception as db_error:
+                    logger.warning(f"DB error getting recent events: {db_error}")
+                    # Fallback to in-memory cache
+                    recent_events = list(self.events_cache.values())
+                    logger.info(f"[{report.source.upper()}] Using cache fallback: {len(recent_events)} events")
+            else:
+                # Use in-memory cache directly
                 recent_events = list(self.events_cache.values())
-                logger.info(f"[{report.source.upper()}] Using cache fallback: {len(recent_events)} events")
+                logger.info(f"[{report.source.upper()}] Using in-memory cache: {len(recent_events)} events")
 
             logger.info(f"[{report.source.upper()}] Matching against {len(recent_events)} events in cache")
 
