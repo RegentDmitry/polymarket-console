@@ -103,16 +103,25 @@ class JMACollector(BaseCollector):
             else:
                 groups.append([report])
 
-        # From each group, pick report with highest magnitude
+        # From each group, pick the LATEST report (most refined estimate)
+        # JMA publishes updates with more accurate magnitudes over time
         result = []
         for group in groups:
-            best = max(group, key=lambda r: r.magnitude)
+            # Sort by reported_at (publication time), take latest
+            # Fall back to received_at if reported_at is None
+            def get_report_time(r):
+                if r.reported_at:
+                    return r.reported_at
+                return r.received_at
+
+            latest = max(group, key=get_report_time)
             if len(group) > 1:
-                logger.debug(
-                    f"[JMA] Deduplicated {len(group)} reports for {best.location_name}: "
-                    f"mags={[r.magnitude for r in group]} → M{best.magnitude}"
+                mags = [f"M{r.magnitude}" for r in sorted(group, key=get_report_time)]
+                logger.info(
+                    f"[JMA] Deduplicated {len(group)} versions for {latest.location_name}: "
+                    f"{' → '.join(mags)} (using latest: M{latest.magnitude})"
                 )
-            result.append(best)
+            result.append(latest)
 
         return result
 
@@ -165,6 +174,16 @@ class JMACollector(BaseCollector):
             # Location name (English if available)
             location = quake.get("en_anm") or quake.get("anm") or "Japan region"
 
+            # Report publication time (rdt) - used for deduplication
+            # Later reports are more accurate (refined magnitude estimates)
+            reported_at = None
+            rdt_str = quake.get("rdt")
+            if rdt_str:
+                try:
+                    reported_at = datetime.fromisoformat(rdt_str)
+                except (ValueError, TypeError):
+                    pass
+
             return SourceReport(
                 source=self.SOURCE_NAME,
                 source_event_id=str(event_id),
@@ -175,6 +194,7 @@ class JMACollector(BaseCollector):
                 depth_km=float(depth) if depth else None,
                 location_name=location,
                 event_time=event_time,
+                reported_at=reported_at,
                 received_at=datetime.now(timezone.utc),
                 raw_data=quake,
             )
