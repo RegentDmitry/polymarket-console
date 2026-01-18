@@ -643,8 +643,8 @@ class MonitorBotApp(App):
             key=lambda e: (-e.best_magnitude, -e.event_time.timestamp())
         )
 
-        # Limit to max display
-        for event in sorted_events[:config.MAX_EVENTS_DISPLAY]:
+        # Add all events sorted
+        for event in sorted_events:
             self._add_event_row(event)
 
     def _add_event_row(self, event: EarthquakeEvent):
