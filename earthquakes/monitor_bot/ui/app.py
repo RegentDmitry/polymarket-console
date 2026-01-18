@@ -5,6 +5,8 @@ Monitor Bot TUI application using Textual.
 import asyncio
 import sys
 import logging
+import json
+import os
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
@@ -267,6 +269,7 @@ class MonitorBotApp(App):
         self.quit_pending = False  # For quit confirmation
 
         self.update_timer_task = None  # Timer for updating sources panel
+        self.json_save_task = None  # Task for periodic JSON snapshot saves
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -312,18 +315,20 @@ class MonitorBotApp(App):
         )
         self.log_message("")
 
-        # Connect to database
-        try:
-            await self.db.connect()
-            self.log_message(
-                f"Connected to PostgreSQL: {config.DB_HOST}:{config.DB_PORT}/{config.DB_NAME}",
-                color="green",
-            )
-        except Exception as e:
-            self.log_message(f"Database connection failed: {e}", color="red bold")
-            self.log_message(
-                "Monitoring will continue but data will not be saved!", color="yellow"
-            )
+        # Storage initialization
+        if config.USE_DATABASE:
+            # Connect to database (optional)
+            try:
+                await self.db.connect()
+                self.log_message(
+                    f"Connected to PostgreSQL: {config.DB_HOST}:{config.DB_PORT}/{config.DB_NAME}",
+                    color="green",
+                )
+            except Exception as e:
+                self.log_message(f"Database connection failed: {e}", color="yellow")
+                self.log_message("Continuing with JSON-only mode", color="yellow")
+        else:
+            self.log_message("Database disabled (JSON-only mode)", color="cyan")
 
         self.log_message("")
 
@@ -349,8 +354,11 @@ class MonitorBotApp(App):
                     self.log_message(error_msg, color="red")
                     logger.error(error_msg)
 
-        # Load existing events from database
+        # Load existing events (from JSON if available, otherwise DB)
         await self._load_recent_events()
+
+        # Start periodic JSON snapshot saving
+        self.json_save_task = asyncio.create_task(self._save_snapshot_periodically())
 
         # Start collectors
         self.log_message("")
@@ -373,28 +381,95 @@ class MonitorBotApp(App):
         # Start update timer for sources panel
         self.update_timer_task = asyncio.create_task(self._update_sources_timer())
 
+    async def _load_from_json(self) -> list[EarthquakeEvent]:
+        """Load events from JSON cache file."""
+        with open(config.JSON_CACHE_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        events = []
+        for event_data in data.get("events", []):
+            try:
+                event = EarthquakeEvent.from_dict(event_data)
+                events.append(event)
+            except Exception as e:
+                logger.warning(f"Failed to deserialize event: {e}")
+
+        return events
+
+    async def _save_snapshot_periodically(self):
+        """Periodically save events cache to JSON file (atomic write)."""
+        while True:
+            try:
+                await asyncio.sleep(config.JSON_SAVE_INTERVAL)
+
+                # Filter: only last 24 hours
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=config.JSON_RETENTION_HOURS)
+                recent_events = [
+                    e for e in self.events_cache.values()
+                    if e.first_detected_at > cutoff
+                ]
+
+                # Prepare snapshot
+                snapshot = {
+                    "last_updated": datetime.now(timezone.utc).isoformat(),
+                    "event_count": len(recent_events),
+                    "events": [e.to_dict() for e in recent_events],
+                }
+
+                # Ensure directory exists
+                config.JSON_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+                # Atomic write (tmp file → rename)
+                tmp_file = f"{config.JSON_CACHE_FILE}.tmp"
+                with open(tmp_file, 'w', encoding='utf-8') as f:
+                    json.dump(snapshot, f, indent=2, ensure_ascii=False)
+
+                # Atomic rename (this is the magic!)
+                os.replace(tmp_file, config.JSON_CACHE_FILE)
+
+                logger.info(f"Saved {len(recent_events)} events to JSON cache")
+
+            except Exception as e:
+                logger.error(f"Error saving JSON snapshot: {e}")
+
     async def _load_recent_events(self):
-        """Load recent events from database to populate UI."""
-        try:
-            events = await self.db.get_recent_events(
-                hours=24, min_magnitude=config.MIN_MAGNITUDE_TRACK
-            )
+        """Load recent events from JSON cache or database to populate UI."""
+        events = []
 
-            if events is None:
-                events = []
+        # Try loading from JSON cache first
+        if config.JSON_CACHE_FILE.exists():
+            try:
+                events = await self._load_from_json()
+                self.log_message(
+                    f"Loaded {len(events)} events from JSON cache", color="cyan"
+                )
+            except Exception as e:
+                self.log_message(f"Could not load from JSON: {e}", color="yellow")
+                logger.warning(f"JSON load failed: {e}")
 
-            for event in events:
-                self.events_cache[event.event_id] = event
-                self._add_event_to_table(event)
+        # Fallback to database if JSON failed and DB is enabled
+        if not events and config.USE_DATABASE:
+            try:
+                events = await self.db.get_recent_events(
+                    hours=24, min_magnitude=config.MIN_MAGNITUDE_TRACK
+                )
+                if events is None:
+                    events = []
 
-            self.total_events = len(events)
-            self.pending_events = sum(1 for e in events if not e.is_in_usgs)
+                self.log_message(
+                    f"Loaded {len(events)} events from database", color="cyan"
+                )
+            except Exception as e:
+                self.log_message(f"Could not load from database: {e}", color="yellow")
+                logger.warning(f"Database load failed: {e}")
 
-            self.log_message(
-                f"Loaded {len(events)} events from last 24 hours", color="cyan"
-            )
-        except Exception as e:
-            self.log_message(f"Could not load recent events: {e}", color="yellow")
+        # Populate UI
+        for event in events:
+            self.events_cache[event.event_id] = event
+            self._add_event_to_table(event)
+
+        self.total_events = len(events)
+        self.pending_events = sum(1 for e in events if not e.is_in_usgs)
 
     async def _run_collector_with_tracking(self, collector):
         """Run collector with status tracking for UI."""
@@ -612,13 +687,14 @@ class MonitorBotApp(App):
                 event = next(e for e in recent_events if e.event_id == matched_id)
                 event = self.matcher.update_event_from_report(event, report)
 
-                # Try to save to DB (graceful degradation if DB unavailable)
-                try:
-                    await self.db.update_event(event)
-                    await self.db.insert_report(report, event.event_id)
-                except Exception as db_error:
-                    logger.warning(f"DB error updating event: {db_error}")
-                    # Continue without DB - still show in UI
+                # Optionally save to DB
+                if config.USE_DATABASE:
+                    try:
+                        await self.db.update_event(event)
+                        await self.db.insert_report(report, event.event_id)
+                    except Exception as db_error:
+                        logger.warning(f"DB error updating event: {db_error}")
+                        # Continue without DB - still show in UI
 
                 self.events_cache[event.event_id] = event
                 self._update_event_in_table(event)
@@ -642,13 +718,14 @@ class MonitorBotApp(App):
                 # Create new event
                 event = self.matcher.create_event_from_report(report)
 
-                # Try to save to DB (graceful degradation if DB unavailable)
-                try:
-                    await self.db.insert_event(event)
-                    await self.db.insert_report(report, event.event_id)
-                except Exception as db_error:
-                    logger.warning(f"DB error creating event: {db_error}")
-                    # Continue without DB - still show in UI
+                # Optionally save to DB
+                if config.USE_DATABASE:
+                    try:
+                        await self.db.insert_event(event)
+                        await self.db.insert_report(report, event.event_id)
+                    except Exception as db_error:
+                        logger.warning(f"DB error creating event: {db_error}")
+                        # Continue without DB - still show in UI
 
                 self.events_cache[event.event_id] = event
                 self._add_event_to_table(event)

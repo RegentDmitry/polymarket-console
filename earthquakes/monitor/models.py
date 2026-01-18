@@ -122,6 +122,7 @@ class EarthquakeEvent:
             return "unlikely"
 
     def to_dict(self) -> dict:
+        """Serialize event to dictionary for JSON export."""
         return {
             "event_id": str(self.event_id),
             "best_magnitude": self.best_magnitude,
@@ -133,8 +134,39 @@ class EarthquakeEvent:
             "event_time": self.event_time.isoformat(),
             "first_detected_at": self.first_detected_at.isoformat(),
             "usgs_published_at": self.usgs_published_at.isoformat() if self.usgs_published_at else None,
+            # Source IDs
             "usgs_id": self.usgs_id,
+            "jma_id": self.jma_id,
+            "emsc_id": self.emsc_id,
+            "gfz_id": self.gfz_id,
+            "geonet_id": self.geonet_id,
+            # Metadata
             "source_count": self.source_count,
             "is_significant": self.is_significant,
             "detection_advantage_minutes": self.detection_advantage_minutes,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'EarthquakeEvent':
+        """Deserialize event from dictionary (JSON import)."""
+        from uuid import UUID
+
+        return cls(
+            event_id=UUID(data["event_id"]),
+            best_magnitude=data["best_magnitude"],
+            best_magnitude_type=data.get("best_magnitude_type"),
+            latitude=data["latitude"],
+            longitude=data["longitude"],
+            depth_km=data.get("depth_km"),
+            location_name=data.get("location_name"),
+            event_time=datetime.fromisoformat(data["event_time"]),
+            first_detected_at=datetime.fromisoformat(data["first_detected_at"]),
+            usgs_published_at=datetime.fromisoformat(data["usgs_published_at"]) if data.get("usgs_published_at") else None,
+            usgs_id=data.get("usgs_id"),
+            jma_id=data.get("jma_id"),
+            emsc_id=data.get("emsc_id"),
+            gfz_id=data.get("gfz_id"),
+            geonet_id=data.get("geonet_id"),
+            source_count=data.get("source_count", 1),
+            is_significant=data.get("is_significant", False),
+        )

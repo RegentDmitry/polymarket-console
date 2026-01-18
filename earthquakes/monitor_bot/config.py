@@ -14,7 +14,13 @@ load_dotenv(env_path)
 class MonitorBotConfig:
     """Monitor Bot configuration."""
 
-    # Database
+    # Storage options
+    USE_DATABASE = os.getenv("USE_DATABASE", "false").lower() == "true"  # PostgreSQL опционально
+    JSON_CACHE_FILE = Path(__file__).parent / "data" / "events_cache.json"
+    JSON_SAVE_INTERVAL = 300  # Save to JSON every 5 minutes
+    JSON_RETENTION_HOURS = 24  # Keep only last 24 hours in JSON
+
+    # Database (используется только если USE_DATABASE=true)
     DB_HOST = os.getenv("DB_HOST", "172.24.192.1")
     DB_PORT = int(os.getenv("DB_PORT", "5432"))
     DB_NAME = os.getenv("DB_NAME", "earthquake_monitor")
