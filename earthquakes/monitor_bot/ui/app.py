@@ -647,6 +647,9 @@ class MonitorBotApp(App):
         for event in sorted_events:
             self._add_event_row(event)
 
+        # Scroll to top to show strongest events
+        self.events_table.scroll_home(animate=False)
+
     def _add_event_row(self, event: EarthquakeEvent):
         """Add single event row to table (no sorting)."""
         if not self.events_table:
