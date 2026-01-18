@@ -524,10 +524,12 @@ class MonitorBotApp(App):
                 self.log_message(f"Could not load from database: {e}", color="yellow")
                 logger.warning(f"Database load failed: {e}")
 
-        # Populate UI
+        # Populate cache
         for event in events:
             self.events_cache[event.event_id] = event
-            self._add_event_to_table(event)
+
+        # Rebuild table sorted
+        self._rebuild_events_table()
 
         self.total_events = len(events)
         self.pending_events = sum(1 for e in events if not e.is_in_usgs)
@@ -627,8 +629,26 @@ class MonitorBotApp(App):
             if self.sources_panel:
                 self.sources_panel.refresh()
 
-    def _add_event_to_table(self, event: EarthquakeEvent):
-        """Add or update event in the table."""
+    def _rebuild_events_table(self):
+        """Rebuild entire table with sorted events."""
+        if not self.events_table:
+            return
+
+        # Clear all rows
+        self.events_table.clear()
+
+        # Sort: strongest first, then newest first
+        sorted_events = sorted(
+            self.events_cache.values(),
+            key=lambda e: (-e.best_magnitude, -e.event_time.timestamp())
+        )
+
+        # Limit to max display
+        for event in sorted_events[:config.MAX_EVENTS_DISPLAY]:
+            self._add_event_row(event)
+
+    def _add_event_row(self, event: EarthquakeEvent):
+        """Add single event row to table (no sorting)."""
         if not self.events_table:
             return
 
@@ -893,7 +913,7 @@ class MonitorBotApp(App):
                         # Continue without DB - still show in UI
 
                 self.events_cache[event.event_id] = event
-                self._add_event_to_table(event)
+                self._rebuild_events_table()
 
                 self.total_events += 1
                 if not event.is_in_usgs:
@@ -933,18 +953,8 @@ class MonitorBotApp(App):
 
     def _update_event_in_table(self, event: EarthquakeEvent):
         """Update existing event in table."""
-        if not self.events_table:
-            return
-
-        key = str(event.event_id)
-
-        # Remove old row and add updated one
-        try:
-            self.events_table.remove_row(key)
-        except KeyError:
-            pass  # Row not found, will add new
-
-        self._add_event_to_table(event)
+        # Rebuild entire table to maintain sort order
+        self._rebuild_events_table()
 
     def log_message(self, message: str, color: str = ""):
         """Add message to activity log."""
