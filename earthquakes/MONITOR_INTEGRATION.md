@@ -116,9 +116,20 @@ for event in events:
 | `source_count` | int | Number of sources that detected this |
 | `jma_id`, `emsc_id`, etc. | str\|null | Source IDs (null if not detected by that source) |
 
+## Update Triggers (Event-Driven)
+
+JSON обновляется **мгновенно** при:
+1. ✅ **Новое землетрясение обнаружено** → Trading bot видит сразу
+2. ✅ **USGS подтвердил событие** → Edge Time доступен!
+3. ✅ **Событие получило подтверждение от нового источника** (source_count++)
+4. 🔄 **Fallback: каждые 5 минут** (периодическое обновление метаданных)
+
+**Debouncing:** Не чаще раз в 10 секунд (защита от спама при буре событий)
+
 ## Performance
 
-- **Read frequency:** Safe to read every 30-60 seconds
+- **Update latency:** < 1 секунда при значимом событии
+- **Read frequency:** Safe to read every 30-60 seconds (или чаще!)
 - **Atomic writes:** No risk of reading corrupted data
 - **File size:** ~10-50KB for 24 hours of M4.5+ events
 - **Read time:** < 1ms
@@ -164,8 +175,9 @@ python monitor_cache.py
 - Or USGS published before other sources detected
 
 **Q: How often is JSON updated?**
-- Every 5 minutes (configurable via `JSON_SAVE_INTERVAL`)
-- Plus on graceful shutdown
+- **Event-driven:** Мгновенно при новом событии или USGS подтверждении
+- **Fallback:** Каждые 5 минут (configurable via `JSON_SAVE_INTERVAL`)
+- **Debouncing:** Не чаще раз в 10 секунд (защита от спама)
 
 **Q: Is it safe to read during write?**
 - Yes! Atomic writes guarantee you always read complete file

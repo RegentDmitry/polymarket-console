@@ -270,6 +270,7 @@ class MonitorBotApp(App):
 
         self.update_timer_task = None  # Timer for updating sources panel
         self.json_save_task = None  # Task for periodic JSON snapshot saves
+        self.last_json_save = datetime.now(timezone.utc)  # Debouncing для JSON saves
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -396,41 +397,64 @@ class MonitorBotApp(App):
 
         return events
 
+    def _save_snapshot_now(self, reason: str = "update"):
+        """
+        Save JSON snapshot immediately (with debouncing).
+
+        Called when significant events occur:
+        - New earthquake detected
+        - USGS confirmed event (edge time available)
+        - Event matched to new source
+
+        Debouncing: не чаще раз в 10 секунд (защита от спама).
+        """
+        now = datetime.now(timezone.utc)
+        time_since_last_save = (now - self.last_json_save).total_seconds()
+
+        # Debounce: skip if saved less than 10 seconds ago
+        if time_since_last_save < 10:
+            return
+
+        try:
+            # Filter: only last 24 hours
+            cutoff = now - timedelta(hours=config.JSON_RETENTION_HOURS)
+            recent_events = [
+                e for e in self.events_cache.values()
+                if e.first_detected_at > cutoff
+            ]
+
+            # Prepare snapshot
+            snapshot = {
+                "last_updated": now.isoformat(),
+                "event_count": len(recent_events),
+                "events": [e.to_dict() for e in recent_events],
+            }
+
+            # Ensure directory exists
+            config.JSON_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+            # Atomic write (tmp file → rename)
+            tmp_file = f"{config.JSON_CACHE_FILE}.tmp"
+            with open(tmp_file, 'w', encoding='utf-8') as f:
+                json.dump(snapshot, f, indent=2, ensure_ascii=False)
+
+            # Atomic rename (this is the magic!)
+            os.replace(tmp_file, config.JSON_CACHE_FILE)
+
+            self.last_json_save = now
+            logger.info(f"Saved {len(recent_events)} events to JSON ({reason})")
+
+        except Exception as e:
+            logger.error(f"Error saving JSON snapshot: {e}")
+
     async def _save_snapshot_periodically(self):
-        """Periodically save events cache to JSON file (atomic write)."""
+        """Periodically save events cache to JSON file (fallback)."""
         while True:
             try:
                 await asyncio.sleep(config.JSON_SAVE_INTERVAL)
-
-                # Filter: only last 24 hours
-                cutoff = datetime.now(timezone.utc) - timedelta(hours=config.JSON_RETENTION_HOURS)
-                recent_events = [
-                    e for e in self.events_cache.values()
-                    if e.first_detected_at > cutoff
-                ]
-
-                # Prepare snapshot
-                snapshot = {
-                    "last_updated": datetime.now(timezone.utc).isoformat(),
-                    "event_count": len(recent_events),
-                    "events": [e.to_dict() for e in recent_events],
-                }
-
-                # Ensure directory exists
-                config.JSON_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-                # Atomic write (tmp file → rename)
-                tmp_file = f"{config.JSON_CACHE_FILE}.tmp"
-                with open(tmp_file, 'w', encoding='utf-8') as f:
-                    json.dump(snapshot, f, indent=2, ensure_ascii=False)
-
-                # Atomic rename (this is the magic!)
-                os.replace(tmp_file, config.JSON_CACHE_FILE)
-
-                logger.info(f"Saved {len(recent_events)} events to JSON cache")
-
+                self._save_snapshot_now(reason="periodic")
             except Exception as e:
-                logger.error(f"Error saving JSON snapshot: {e}")
+                logger.error(f"Error in periodic save: {e}")
 
     async def _load_recent_events(self):
         """Load recent events from JSON cache or database to populate UI."""
@@ -470,6 +494,10 @@ class MonitorBotApp(App):
 
         self.total_events = len(events)
         self.pending_events = sum(1 for e in events if not e.is_in_usgs)
+
+        # Save initial snapshot if we loaded events
+        if events:
+            self._save_snapshot_now(reason="initial load")
 
     async def _run_collector_with_tracking(self, collector):
         """Run collector with status tracking for UI."""
@@ -708,12 +736,19 @@ class MonitorBotApp(App):
                 self.log_message(match_msg, color="cyan")
                 logger.info(match_msg)
 
-                # If USGS just confirmed
+                # If USGS just confirmed → CRITICAL for trading!
                 if report.source == "usgs" and event.detection_advantage_minutes:
                     edge_msg = f"  → USGS confirmed! Edge: {event.detection_advantage_minutes:.1f} minutes"
                     self.log_message(edge_msg, color="green bold")
                     logger.info(edge_msg)
                     self.pending_events -= 1
+
+                    # Save JSON immediately - trading bot needs this!
+                    self._save_snapshot_now(reason=f"USGS confirmed M{event.best_magnitude}")
+
+                # Also save for other significant matches (new source confirmation)
+                elif event.source_count >= 2 and report.source != "usgs":
+                    self._save_snapshot_now(reason=f"source matched ({sources_str})")
             else:
                 # Create new event
                 event = self.matcher.create_event_from_report(report)
@@ -743,6 +778,9 @@ class MonitorBotApp(App):
                     new_msg = f"[{report.source.upper()}] New M{report.magnitude} at {report.location_name or 'Unknown'}"
                     self.log_message(new_msg, color="cyan")
                     logger.info(new_msg)
+
+                # Save JSON for new events - trading bot needs fresh data!
+                self._save_snapshot_now(reason=f"new event M{event.best_magnitude}")
 
             # Update status bar
             if self.status_bar:
