@@ -192,8 +192,8 @@ class ScannerPanel(Static):
 class PositionsPanel(Static):
     """Right panel showing open positions."""
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self.positions: List[Position] = []
         self.current_prices: dict[str, float] = {}
         self.total_invested = 0.0
@@ -260,8 +260,8 @@ class PositionsPanel(Static):
 class RecentTradesPanel(Static):
     """Panel showing recent trades."""
 
-    def __init__(self, history: HistoryStorage):
-        super().__init__()
+    def __init__(self, history: HistoryStorage, **kwargs):
+        super().__init__(**kwargs)
         self.history = history
         self.realized_pnl_today = 0.0
 
@@ -286,8 +286,8 @@ class RecentTradesPanel(Static):
 class ExtraEventsPanel(Static):
     """Panel showing extra earthquake events from monitor_bot (not yet in USGS)."""
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self.monitor_data: Optional[MonitorData] = None
 
     def update_data(self, data: MonitorData) -> None:
@@ -345,7 +345,7 @@ class TradingBotApp(App):
         height: 25%;
     }
 
-    ScannerPanel, PositionsPanel, RecentTradesPanel, ExtraEventsPanel {
+    ScannerPanel {
         height: 100%;
     }
     """
@@ -400,9 +400,9 @@ class TradingBotApp(App):
             with Vertical(id="left-panel"):
                 yield ScannerPanel()
             with Vertical(id="right-panel"):
-                yield PositionsPanel()
-                yield RecentTradesPanel(self.history_storage)
-                yield ExtraEventsPanel()
+                yield PositionsPanel(id="positions-panel")
+                yield RecentTradesPanel(self.history_storage, id="trades-panel")
+                yield ExtraEventsPanel(id="extra-events-panel")
         yield Footer()
 
     def on_mount(self) -> None:
