@@ -23,6 +23,7 @@ from ..storage.positions import PositionStorage
 from ..storage.history import HistoryStorage
 from ..executor.polymarket import PolymarketExecutor, OrderResult
 from ..logger import get_logger
+from ..monitor_data import load_monitor_data, format_extra_events, MonitorData
 
 
 class StatusBar(Static):
@@ -282,6 +283,26 @@ class RecentTradesPanel(Static):
         return Panel(content, title="RECENT TRADES", border_style="cyan")
 
 
+class ExtraEventsPanel(Static):
+    """Panel showing extra earthquake events from monitor_bot (not yet in USGS)."""
+
+    def __init__(self):
+        super().__init__()
+        self.monitor_data: Optional[MonitorData] = None
+
+    def update_data(self, data: MonitorData) -> None:
+        self.monitor_data = data
+        self.refresh()
+
+    def render(self) -> Panel:
+        if self.monitor_data is None:
+            content = "[dim]Loading...[/dim]"
+        else:
+            content = format_extra_events(self.monitor_data)
+
+        return Panel(content, title="EXTRA EVENTS (not in USGS)", border_style="yellow")
+
+
 class TradingBotApp(App):
     """Main trading bot TUI application."""
 
@@ -313,14 +334,18 @@ class TradingBotApp(App):
     }
 
     #positions-panel {
-        height: 60%;
+        height: 45%;
     }
 
     #trades-panel {
-        height: 40%;
+        height: 30%;
     }
 
-    ScannerPanel, PositionsPanel, RecentTradesPanel {
+    #extra-events-panel {
+        height: 25%;
+    }
+
+    ScannerPanel, PositionsPanel, RecentTradesPanel, ExtraEventsPanel {
         height: 100%;
     }
     """
@@ -377,6 +402,7 @@ class TradingBotApp(App):
             with Vertical(id="right-panel"):
                 yield PositionsPanel()
                 yield RecentTradesPanel(self.history_storage)
+                yield ExtraEventsPanel()
         yield Footer()
 
     def on_mount(self) -> None:
@@ -504,6 +530,11 @@ class TradingBotApp(App):
         # Update trades panel
         trades_panel = self.query_one(RecentTradesPanel)
         trades_panel.update_trades()
+
+        # Update extra events panel (from monitor_bot)
+        extra_events_panel = self.query_one(ExtraEventsPanel)
+        monitor_data = load_monitor_data()
+        extra_events_panel.update_data(monitor_data)
 
         # Update status bar
         self.update_status_bar(positions, self._current_prices)
