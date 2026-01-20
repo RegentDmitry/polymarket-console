@@ -17,7 +17,7 @@ class BotConfig:
     dry_run: bool = True     # True = don't execute trades, just show signals (default)
 
     # Scan settings
-    scan_interval: int = 300  # seconds (5 minutes default)
+    scan_interval: int = 60  # seconds (1 minute default)
 
     # Position limits
     max_positions: int = 20
@@ -68,18 +68,18 @@ def parse_args() -> BotConfig:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python -m trading_bot                          # dry-run mode (default)
+  python -m trading_bot                          # dry-run mode, 1m interval (default)
   python -m trading_bot --live                   # live trading with confirmation
   python -m trading_bot --live --auto            # live trading without confirmation
-  python -m trading_bot --interval 1h
+  python -m trading_bot --interval 5m            # scan every 5 minutes
         """
     )
 
     parser.add_argument(
         "--interval", "-i",
         type=str,
-        default="5m",
-        help="Scan interval (e.g., 30s, 5m, 1h). Default: 5m"
+        default="1m",
+        help="Scan interval (e.g., 30s, 1m, 5m, 1h). Default: 1m"
     )
 
     parser.add_argument(

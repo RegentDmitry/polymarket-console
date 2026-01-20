@@ -306,6 +306,8 @@ class ExtraEventsPanel(Static):
 class TradingBotApp(App):
     """Main trading bot TUI application."""
 
+    TITLE = "Earthquake Trading Bot"
+
     CSS = """
     Screen {
         layout: vertical;
@@ -315,6 +317,7 @@ class TradingBotApp(App):
         height: 3;
         border: solid green;
         padding: 0 1;
+        margin-top: 0;
     }
 
     #main-container {
@@ -395,6 +398,7 @@ class TradingBotApp(App):
         self._last_scan_time: Optional[datetime] = None
 
     def compose(self) -> ComposeResult:
+        yield Header()
         yield Static(id="status-bar")
         with Horizontal(id="main-container"):
             with Vertical(id="left-panel"):
@@ -407,9 +411,12 @@ class TradingBotApp(App):
 
     def on_mount(self) -> None:
         """Called when app is mounted."""
+        # Set header subtitle
+        mode = "DRY RUN" if self.config.dry_run else ("AUTO" if self.config.auto_mode else "CONFIRM")
+        self.sub_title = f"Mode: {mode} • Scan: {format_interval(self.config.scan_interval)}"
+
         # Log startup
         logger = get_logger()
-        mode = "DRY RUN" if self.config.dry_run else ("AUTO" if self.config.auto_mode else "CONFIRM")
         logger.log_startup(mode, self.config.scan_interval, self.config.min_edge, self.config.min_apy)
 
         # Sync positions with Polymarket API (unless dry run)
@@ -757,6 +764,10 @@ class TradingBotApp(App):
         self.config.auto_mode = not self.config.auto_mode
         mode = "AUTO" if self.config.auto_mode else "CONFIRM"
         self.notify(f"Mode changed to {mode}")
+
+        # Update header subtitle
+        display_mode = "DRY RUN" if self.config.dry_run else mode
+        self.sub_title = f"Mode: {display_mode} • Scan: {format_interval(self.config.scan_interval)}"
 
         # Refresh status bar
         positions = self._get_all_positions()
