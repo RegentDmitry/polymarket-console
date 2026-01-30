@@ -114,32 +114,48 @@ class MarketsUpdater:
                     new_config[slug] = current_config[slug]
                 continue
 
-            markets = self.scanner.extract_market_metadata(event)
+            # Check if event is closed
+            if event.get("closed", False):
+                continue
 
-            # Use first market from event (typically there's only one)
-            for market_slug, market_info in markets.items():
-                # Skip closed markets
-                if market_info.closed or not market_info.active:
-                    continue
+            markets = event.get("markets", [])
+            if not markets:
+                continue
 
-                # Prepare config entry
-                entry = {
-                    "magnitude": market_info.magnitude,
-                    "start": market_info.end_date_iso or event.get("createdAt", ""),
-                    "end": market_info.end_date_iso or "",
-                    "type": market_info.market_type,
-                }
+            # Get event-level data
+            event_slug = event.get("slug", slug)
+            event_created = event.get("createdAt", "")
 
-                if market_info.outcomes:
-                    entry["outcomes"] = market_info.outcomes
+            # Check if this is a count-type event (multiple markets)
+            is_count_event = len(markets) > 2
 
-                # Check if this is new or updated
-                if market_slug not in current_config:
-                    added += 1
-                elif current_config[market_slug] != entry:
-                    updated += 1
+            if is_count_event:
+                # Count event - create single entry for entire event
+                result = self._process_count_event(event, event_slug, event_created, current_config, new_config)
+                if result:
+                    if result == "added":
+                        added += 1
+                    elif result == "updated":
+                        updated += 1
+            else:
+                # Binary event - create entry for each market
+                for market in markets:
+                    if market.get("closed", False) or not market.get("active", True):
+                        continue
 
-                new_config[market_slug] = entry
+                    market_slug = market.get("slug", "")
+                    if not market_slug:
+                        continue
+
+                    entry = self._create_binary_entry(market, event_created)
+
+                    # Check if this is new or updated
+                    if market_slug not in current_config:
+                        added += 1
+                    elif current_config[market_slug] != entry:
+                        updated += 1
+
+                    new_config[market_slug] = entry
 
         # Count removed markets
         removed = len(current_config) - len(new_config)
@@ -148,6 +164,196 @@ class MarketsUpdater:
         self.save_config(new_config)
 
         return (added, updated, removed)
+
+    def _create_binary_entry(self, market: dict, event_created: str) -> dict:
+        """Create config entry for binary market."""
+        import json
+
+        question = market.get("question", "")
+        magnitude = self.scanner._infer_magnitude(question)
+        end_date = market.get("endDateIso", "")
+        condition_id = market.get("conditionId", "")
+
+        # Parse token IDs
+        token_ids_raw = market.get("clobTokenIds", "[]")
+        outcomes_raw = market.get("outcomes", "[]")
+
+        try:
+            token_ids_list = json.loads(token_ids_raw)
+            outcomes_list = json.loads(outcomes_raw)
+
+            # Create token_ids dict
+            token_ids = {}
+            for i, outcome in enumerate(outcomes_list):
+                if i < len(token_ids_list):
+                    token_ids[outcome] = token_ids_list[i]
+        except:
+            token_ids = {}
+
+        entry = {
+            "magnitude": magnitude,
+            "start": event_created or end_date,
+            "end": end_date,
+            "type": "binary"
+        }
+
+        if condition_id:
+            entry["condition_id"] = condition_id
+
+        if token_ids:
+            entry["token_ids"] = token_ids
+
+        return entry
+
+    def _process_count_event(self, event: dict, event_slug: str, event_created: str,
+                            current_config: dict, new_config: dict) -> Optional[str]:
+        """
+        Process count-type event and add to new_config.
+
+        Returns:
+            "added" if new market was added
+            "updated" if market was updated
+            None if no change
+        """
+        import json
+
+        markets = event.get("markets", [])
+        if not markets:
+            return None
+
+        # Get magnitude from first market
+        first_market = markets[0]
+        question = first_market.get("question", "")
+        magnitude = self.scanner._infer_magnitude(question)
+        end_date = first_market.get("endDateIso", "")
+
+        # Build outcomes list and condition_ids/token_ids dicts
+        outcomes = []
+        condition_ids = {}
+        token_ids = {}
+
+        for market in markets:
+            if market.get("closed", False):
+                continue
+
+            question = market.get("question", "")
+            condition_id = market.get("conditionId", "")
+
+            # Parse outcome from question
+            outcome_label = self._parse_outcome_from_question(question)
+            outcome_range = self._parse_outcome_range(question)
+
+            if outcome_label and outcome_range:
+                outcomes.append([outcome_label] + outcome_range)
+
+                if condition_id:
+                    condition_ids[outcome_label] = condition_id
+
+                # Parse token IDs for this outcome
+                try:
+                    token_ids_list = json.loads(market.get("clobTokenIds", "[]"))
+                    outcomes_list = json.loads(market.get("outcomes", "[]"))
+
+                    outcome_token_ids = {}
+                    for i, outcome in enumerate(outcomes_list):
+                        if i < len(token_ids_list):
+                            outcome_token_ids[outcome] = token_ids_list[i]
+
+                    if outcome_token_ids:
+                        token_ids[outcome_label] = outcome_token_ids
+                except:
+                    pass
+
+        # Create entry
+        entry = {
+            "magnitude": magnitude,
+            "start": event_created or end_date,
+            "end": end_date,
+            "type": "count"
+        }
+
+        if outcomes:
+            entry["outcomes"] = outcomes
+
+        if condition_ids:
+            entry["condition_ids"] = condition_ids
+
+        if token_ids:
+            entry["token_ids"] = token_ids
+
+        # Check if new or updated
+        result = None
+        if event_slug not in current_config:
+            result = "added"
+        elif current_config.get(event_slug) != entry:
+            result = "updated"
+
+        new_config[event_slug] = entry
+        return result
+
+    def _parse_outcome_from_question(self, question: str) -> Optional[str]:
+        """Extract outcome label from question text."""
+        import re
+
+        question_lower = question.lower()
+
+        # Patterns for different outcome formats
+        if "fewer than" in question_lower or "<" in question:
+            match = re.search(r'(?:fewer than|<)\s*(\d+)', question_lower)
+            if match:
+                return f"<{match.group(1)}"
+
+        if "or more" in question_lower or "+" in question:
+            match = re.search(r'(\d+)\s*(?:or more|\+)', question_lower)
+            if match:
+                return f"{match.group(1)}+"
+
+        if "exactly" in question_lower:
+            match = re.search(r'exactly\s*(\d+)', question_lower)
+            if match:
+                return match.group(1)
+
+        if "between" in question_lower:
+            match = re.search(r'between\s*(\d+)\s*and\s*(\d+)', question_lower)
+            if match:
+                return f"{match.group(1)}-{match.group(2)}"
+
+        return None
+
+    def _parse_outcome_range(self, question: str) -> Optional[list]:
+        """Parse outcome range [min, max] from question text."""
+        import re
+
+        question_lower = question.lower()
+
+        # Fewer than / less than
+        if "fewer than" in question_lower or "<" in question:
+            match = re.search(r'(?:fewer than|<)\s*(\d+)', question_lower)
+            if match:
+                max_val = int(match.group(1))
+                return [0, max_val - 1]
+
+        # Or more / +
+        if "or more" in question_lower or "+" in question:
+            match = re.search(r'(\d+)\s*(?:or more|\+)', question_lower)
+            if match:
+                min_val = int(match.group(1))
+                return [min_val, None]
+
+        # Exactly
+        if "exactly" in question_lower:
+            match = re.search(r'exactly\s*(\d+)', question_lower)
+            if match:
+                val = int(match.group(1))
+                return [val, val]
+
+        # Between
+        if "between" in question_lower:
+            match = re.search(r'between\s*(\d+)\s*and\s*(\d+)', question_lower)
+            if match:
+                return [int(match.group(1)), int(match.group(2))]
+
+        return None
 
     def discover_and_update(self) -> tuple[int, int, int]:
         """
@@ -159,19 +365,26 @@ class MarketsUpdater:
         current_config = self.load_current_config()
         current_slugs = set(current_config.keys())
 
-        # Search for earthquake markets
+        # Search for earthquake events
         events = self.scanner.search_markets_by_keyword("earthquake")
 
-        new_slugs = set()
+        # Collect event slugs and individual market slugs
+        event_slugs = set()
         for event in events:
+            event_slug = event.get("slug", "")
+            if event_slug:
+                event_slugs.add(event_slug)
+
+            # Also add individual market slugs for binary markets
             markets = event.get("markets", [])
-            for market in markets:
-                slug = market.get("slug", "")
-                if slug:
-                    new_slugs.add(slug)
+            if len(markets) <= 2:  # Binary event
+                for market in markets:
+                    market_slug = market.get("slug", "")
+                    if market_slug:
+                        event_slugs.add(market_slug)
 
         # Combine current and discovered slugs
-        all_slugs = list(current_slugs | new_slugs)
+        all_slugs = list(current_slugs | event_slugs)
 
         return self.update_from_slugs(all_slugs)
 
