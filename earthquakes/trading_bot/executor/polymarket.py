@@ -392,8 +392,11 @@ class PolymarketExecutor:
             import math
             # Round price to 2 decimal places (Polymarket requirement)
             price = round(price, 2)
-            if price <= 0 or price >= 1:
+            if price <= 0:
                 return None
+            # Cap at 0.99 — Polymarket max valid price
+            if price >= 1:
+                price = 0.99
             # Round size DOWN to avoid exceeding available balance
             size = math.floor(size * 100) / 100
             # Ensure on-chain approval for selling (one-time)

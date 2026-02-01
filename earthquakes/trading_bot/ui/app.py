@@ -598,6 +598,9 @@ class TradingBotApp(App):
         else:
             entry_signals, exit_signals = [], []
 
+        if self._shutting_down:
+            return
+
         # Check for resolved markets
         if self.executor.initialized and positions:
             resolved_ids = set()
@@ -682,12 +685,18 @@ class TradingBotApp(App):
         monitor_data = load_monitor_data()
         extra_events_panel.update_data(monitor_data)
 
+        if self._shutting_down:
+            return
+
         # Update MATIC balance (for gas fees display)
         if self.executor.initialized:
             self._matic_balance = self.executor.get_matic_balance()
 
         # Update status bar
         self.update_status_bar(positions, self._current_prices)
+
+        if self._shutting_down:
+            return
 
         # Manage sell limit orders (place/update at fair price)
         fair_prices = getattr(self, '_current_fair_prices', {})
@@ -752,6 +761,20 @@ class TradingBotApp(App):
         except Exception as e:
             logger.log_warning(f"Error initializing sell orders: {e}")
 
+    def _get_token_balance(self, token_id: str) -> Optional[float]:
+        """Get on-chain token balance from API (in token units)."""
+        try:
+            from polymarket_console.clob_types import BalanceAllowanceParams, AssetType
+            params = BalanceAllowanceParams(
+                asset_type=AssetType.CONDITIONAL,
+                token_id=token_id,
+            )
+            bal = self.executor.client.client.get_balance_allowance(params)
+            raw = float(bal.get("balance", 0))
+            return raw / 1e6
+        except Exception:
+            return None
+
     def _manage_sell_orders(self, positions: List[Position], fair_prices: dict[str, float]):
         """Place/update sell limit orders at fair price for all positions."""
         if self.config.dry_run or not self.executor.initialized or self._shutting_down:
@@ -771,6 +794,9 @@ class TradingBotApp(App):
                 if mapped_slug:
                     fair = fair_prices.get(mapped_slug)
             if not fair or fair <= 0 or fair >= 1:
+                logger.log_info(
+                    f"SELL SKIP (no fair): {pos.market_slug[:40]} fair={fair}"
+                )
                 continue
 
             if self._shutting_down:
@@ -778,23 +804,45 @@ class TradingBotApp(App):
 
             existing = self.sell_order_store.get(pos.id)
 
-            # Check if existing order was filled
+            # Check if existing order was filled or cancelled
             if existing and existing["order_id"] not in open_ids:
-                # Order filled! Close position
-                pnl = pos.tokens * existing["price"] - pos.entry_size
-                logger.log_info(
-                    f"SELL FILLED: {pos.market_slug[:40]} @ {existing['price']:.1%} "
-                    f"P&L: ${pnl:+.2f}"
-                )
-                self.position_storage.close_position(
-                    pos.id, existing["price"], existing["order_id"]
-                )
-                self.sell_order_store.remove(pos.id)
-                self.notify(
-                    f"SOLD: {pos.market_slug[:30]} @ {existing['price']:.1%} P&L: ${pnl:+.2f}",
-                    markup=False,
-                )
-                continue
+                # Order gone from open orders — check if filled or cancelled
+                is_filled = False
+                try:
+                    order_info = self.executor.client.client.get_order(existing["order_id"])
+                    status = order_info.get("status", "").upper() if order_info else ""
+                    size_matched = float(order_info.get("size_matched", 0)) if order_info else 0
+                    logger.log_info(
+                        f"SELL ORDER status: {existing['order_id'][:16]}... "
+                        f"status={status} matched={size_matched}"
+                    )
+                    is_filled = status == "MATCHED" or size_matched > 0
+                except Exception as e:
+                    logger.log_warning(f"SELL ORDER check failed: {e}")
+
+                if is_filled:
+                    pnl = pos.tokens * existing["price"] - pos.entry_size
+                    logger.log_info(
+                        f"SELL FILLED: {pos.market_slug[:40]} @ {existing['price']:.1%} "
+                        f"P&L: ${pnl:+.2f}"
+                    )
+                    self.position_storage.close_position(
+                        pos.id, existing["price"], existing["order_id"]
+                    )
+                    self.sell_order_store.remove(pos.id)
+                    self.notify(
+                        f"SOLD: {pos.market_slug[:30]} @ {existing['price']:.1%} P&L: ${pnl:+.2f}",
+                        markup=False,
+                    )
+                    continue
+                else:
+                    if status == "LIVE":
+                        # Still live but not in open_ids yet (race condition) — skip
+                        continue
+                    # Cancelled or expired — remove and re-place on next iteration
+                    logger.log_info(f"SELL ORDER cancelled/expired: {pos.market_slug[:40]} status={status}")
+                    self.sell_order_store.remove(pos.id)
+                    # Fall through to place new order below
 
             # Check if fair price changed enough to update order
             if existing:
@@ -817,14 +865,58 @@ class TradingBotApp(App):
                     mapped_slug = self.scanner._condition_id_to_slug.get(key)
                     if mapped_slug:
                         token_id = self.scanner._token_ids.get(mapped_slug)
+            # Fallback: fetch token_id from API by condition_id
+            if not token_id and pos.market_id and self.executor.client:
+                try:
+                    market_data = self.executor.client.get_clob_market(pos.market_id)
+                    if market_data:
+                        tokens = market_data.get("tokens", [])
+                        for t in tokens:
+                            if t.get("outcome", "").upper() == pos.outcome.upper():
+                                token_id = t.get("token_id")
+                                # Cache for future use
+                                if self.scanner and token_id:
+                                    self.scanner._token_ids[pos.market_slug] = token_id
+                                break
+                except Exception as e:
+                    logger.log_warning(f"SELL token_id API lookup failed: {e}")
             if not token_id:
+                logger.log_info(
+                    f"SELL SKIP (no token_id): {pos.market_slug[:40]} "
+                    f"mid={pos.market_id[:16] if pos.market_id else 'none'}"
+                )
                 continue
 
+            # Check how much is already reserved in sell orders for this token_id
+            already_reserved = sum(
+                info["size"] for pid, info in self.sell_order_store.load_all().items()
+                if info.get("token_id") == token_id
+            )
+            # Get on-chain balance for this token
+            on_chain = self._get_token_balance(token_id)
+            if on_chain is not None:
+                available = on_chain - already_reserved
+                import math
+                sell_size = min(pos.tokens, math.floor(available * 100) / 100)
+                if sell_size < 0.01:
+                    logger.log_info(
+                        f"SELL SKIP (no balance): {pos.market_slug[:40]} "
+                        f"on_chain={on_chain:.2f} reserved={already_reserved:.2f}"
+                    )
+                    continue  # No room left for this token
+            else:
+                sell_size = pos.tokens
+
             # Place new sell limit at fair price
-            order_id = self.executor.place_sell_limit(token_id, fair, pos.tokens)
+            order_id = self.executor.place_sell_limit(token_id, fair, sell_size)
             if order_id:
                 self.sell_order_store.save(
-                    pos.id, order_id, fair, token_id, pos.tokens, pos.market_slug
+                    pos.id, order_id, fair, token_id, sell_size, pos.market_slug
+                )
+            else:
+                logger.log_info(
+                    f"SELL SKIP (place failed): {pos.market_slug[:40]} "
+                    f"fair={fair:.4f} size={sell_size:.2f}"
                 )
 
     async def process_signals(self, entry_signals: List[Signal],
@@ -991,14 +1083,7 @@ class TradingBotApp(App):
 
     def action_quit(self) -> None:
         """Quit the application (with confirmation)."""
-        if self.quit_pending:
-            self._shutting_down = True
-            if self.scan_timer:
-                self.scan_timer.stop()
-            if self.countdown_timer:
-                self.countdown_timer.stop()
-            self.exit()
-        else:
+        if not self.quit_pending:
             self.quit_pending = True
             self.notify("Quit? Press ENTER to confirm, any other key to cancel")
 
@@ -1006,6 +1091,11 @@ class TradingBotApp(App):
         """Handle key presses for quit confirmation."""
         if self.quit_pending:
             if event.key == "enter":
+                self._shutting_down = True
+                if self.scan_timer:
+                    self.scan_timer.stop()
+                if self.countdown_timer:
+                    self.countdown_timer.stop()
                 self.exit()
             else:
                 self.quit_pending = False

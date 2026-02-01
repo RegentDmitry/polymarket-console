@@ -138,6 +138,16 @@ class EarthquakeScanner(BaseScanner):
                 if opp.condition_id:
                     self._condition_id_to_slug[f"{opp.condition_id}-{opp.side}"] = unique_slug
 
+                # Also cache the opposite side (1 - fair_price) for positions on the other side
+                opposite_side = "NO" if opp.side == "YES" else "YES"
+                opposite_slug = f"{opp.event}-{opp.outcome}-{opposite_side}"
+                if opposite_slug not in self._fair_prices:
+                    self._fair_prices[opposite_slug] = 1 - opp.fair_price
+                if opp.condition_id:
+                    opp_key = f"{opp.condition_id}-{opposite_side}"
+                    if opp_key not in self._condition_id_to_slug:
+                        self._condition_id_to_slug[opp_key] = opposite_slug
+
                 # Create market for cache
                 market = Market(
                     id=opp.condition_id or unique_slug,
