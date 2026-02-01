@@ -8,7 +8,7 @@ import asyncio
 
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
-from textual.widgets import Header, Footer, Static, DataTable, Log
+from textual.widgets import Footer, Static, DataTable, Log
 from textual.binding import Binding
 from textual.timer import Timer
 from rich.text import Text
@@ -21,6 +21,7 @@ from ..models.signal import Signal, SignalType
 from ..models.market import Market
 from ..storage.positions import PositionStorage
 from ..storage.history import HistoryStorage
+from ..storage.sell_orders import SellOrderStore
 from ..executor.polymarket import PolymarketExecutor, OrderResult
 from ..logger import get_logger
 from ..monitor_data import load_monitor_data, format_extra_events, MonitorData
@@ -33,6 +34,7 @@ class StatusBar(Static):
         super().__init__()
         self.config = config
         self.balance = 0.0
+        self.matic_balance = 0.0
         self.positions_count = 0
         self.invested = 0.0
         self.unrealized_pnl = 0.0
@@ -41,8 +43,10 @@ class StatusBar(Static):
 
     def update_status(self, balance: float, positions_count: int, invested: float,
                       unrealized_pnl: float, unrealized_pnl_pct: float,
-                      last_scan_time: Optional[datetime] = None) -> None:
+                      last_scan_time: Optional[datetime] = None,
+                      matic_balance: float = 0.0) -> None:
         self.balance = balance
+        self.matic_balance = matic_balance
         self.positions_count = positions_count
         self.invested = invested
         self.unrealized_pnl = unrealized_pnl
@@ -61,8 +65,11 @@ class StatusBar(Static):
             scan_time = "--:--:--"
 
         # First line
+        matic_str = f"{self.matic_balance:.4f}" if self.matic_balance < 1 else f"{self.matic_balance:.2f}"
+
         line1 = (
             f"  Balance: ${self.balance:,.2f}  |  "
+            f"MATIC: {matic_str}  |  "
             f"Positions: {self.positions_count}  |  "
             f"Invested: ${self.invested:,.2f}  |  "
             f"Scanned: {scan_time}"
@@ -193,8 +200,8 @@ class ScannerPanel(Static):
         return Panel(content, title="MARKET SCANNER", border_style="blue")
 
 
-class PositionsPanel(Static):
-    """Right panel showing open positions."""
+class PositionsPanel(VerticalScroll):
+    """Right panel showing open positions with scroll."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -204,9 +211,21 @@ class PositionsPanel(Static):
         self.unrealized_pnl = 0.0
         self.unrealized_pnl_pct = 0.0
 
-    def update_positions(self, positions: List[Position], current_prices: dict[str, float]) -> None:
+    def compose(self) -> ComposeResult:
+        yield Static(id="positions-content")
+
+    def on_mount(self) -> None:
+        self.border_title = "MY POSITIONS"
+
+    def update_positions(self, positions: List[Position], current_prices: dict[str, float],
+                         fair_prices: dict[str, float] = None,
+                         bid_prices: dict[str, float] = None,
+                         sell_orders: dict[str, dict] = None) -> None:
         self.positions = positions
         self.current_prices = current_prices
+        self.fair_prices = fair_prices or {}
+        self.bid_prices = bid_prices or {}
+        self.sell_orders = sell_orders or {}  # position_id -> {price, order_id, ...}
 
         # Calculate totals
         self.total_invested = sum(p.entry_size for p in positions)
@@ -215,42 +234,73 @@ class PositionsPanel(Static):
         self.unrealized_pnl = total_value - self.total_invested
         self.unrealized_pnl_pct = self.unrealized_pnl / self.total_invested if self.total_invested > 0 else 0
 
-        self.refresh()
+        self._rebuild()
 
-    def render(self) -> Panel:
+    def _rebuild(self) -> None:
         lines = []
 
         if not self.positions:
-            # No positions - show empty state
             lines.append("[dim]No open positions[/dim]")
             lines.append("")
-            lines.append("-" * 62)
+            lines.append("-" * 98)
             lines.append(f"Total invested:  $0.00")
             lines.append(f"Unrealized P&L:  $0.00 (+0.0%)")
         else:
-            # Simple text table (Rich Table breaks on narrow width)
-            lines.append("[bold]Market        Entry  Fair  Curr   Cost    Value    P&L[/bold]")
+            # Column widths — Market takes all remaining space
+            EW = 6   # Entry
+            FW = 6   # Fair
+            BW = 6   # Bid
+            SW = 6   # Sell
+            CW = 6   # Curr
+            OW = 8   # Cost
+            VW = 9   # Value
+            PW = 9   # P&L
+            fixed = EW + FW + BW + SW + CW + OW + VW + PW + 8  # 8 spaces between columns
+            panel_width = self.size.width - 2  # minus border
+            MW = max(10, panel_width - fixed)
 
-            for pos in self.positions[:10]:  # Max 10 positions
+            header = (
+                f"{'Market':<{MW}} {'Entry':>{EW}} {'Fair':>{FW}} {'Bid':>{BW}} {'Sell':>{SW}} {'Curr':>{CW}}"
+                f" {'Cost':>{OW}} {'Value':>{VW}} {'P&L':>{PW}}"
+            )
+            lines.append(f"[bold]{header}[/bold]")
+
+            for pos in self.positions:
                 current = self.current_prices.get(pos.market_slug, pos.entry_price)
-                fair = pos.fair_price_at_entry
+                fair = self.fair_prices.get(pos.market_slug, pos.fair_price_at_entry)
+                bid = self.bid_prices.get(pos.market_slug)
+                sell_order = self.sell_orders.get(pos.id)
                 cost = pos.entry_size
                 value = pos.current_value(current)
                 pnl = value - cost
 
-                # Color P&L
-                if pnl > 0:
-                    pnl_str = f"[green]+${pnl:.2f}[/green]"
-                elif pnl < 0:
-                    pnl_str = f"[red]-${abs(pnl):.2f}[/red]"
+                bid_str = f"{bid:>{BW}.1%}" if bid is not None else f"{'--':>{BW}}"
+                sell_str = f"{sell_order['price']:>{SW}.1%}" if sell_order else f"{'--':>{SW}}"
+
+                # Format P&L without markup for alignment
+                if pnl > 0.005:
+                    pnl_raw = f"+${pnl:.2f}"
+                elif pnl < -0.005:
+                    pnl_raw = f"-${abs(pnl):.2f}"
                 else:
-                    pnl_str = f"${pnl:.2f}"
+                    pnl_raw = f"+$0.00"
 
-                # Truncate market slug
-                slug = pos.market_slug[:12] if len(pos.market_slug) > 12 else pos.market_slug
+                slug = pos.market_slug[:MW] if len(pos.market_slug) > MW else pos.market_slug
 
-                lines.append(f"{slug:<12} {pos.entry_price:>5.1%} {fair:>5.1%} {current:>5.1%} ${cost:>5.0f}  ${value:>6.2f} {pnl_str:>8}")
-            lines.append("-" * 62)
+                row_prefix = (
+                    f"{slug:<{MW}} {pos.entry_price:>{EW}.1%} {fair:>{FW}.1%} {bid_str} {sell_str} {current:>{CW}.1%}"
+                    f" ${cost:>{OW-1}.2f} ${value:>{VW-1}.2f}"
+                )
+                pnl_col = f"{pnl_raw:>{PW}}"
+
+                if pnl > 0.005:
+                    lines.append(f"{row_prefix} [green]{pnl_col}[/green]")
+                elif pnl < -0.005:
+                    lines.append(f"{row_prefix} [red]{pnl_col}[/red]")
+                else:
+                    lines.append(f"{row_prefix} {pnl_col}")
+
+            lines.append("-" * (MW + EW + FW + BW + SW + CW + OW + VW + PW + 8))
             lines.append(f"Total invested:  ${self.total_invested:.2f}")
 
             pnl_str = f"+${self.unrealized_pnl:.2f}" if self.unrealized_pnl >= 0 else f"-${abs(self.unrealized_pnl):.2f}"
@@ -258,7 +308,10 @@ class PositionsPanel(Static):
             lines.append(f"Unrealized P&L:  {pnl_str} ({pnl_pct})")
 
         content = "\n".join(lines)
-        return Panel(content, title="MY POSITIONS", border_style="green")
+        try:
+            self.query_one("#positions-content", Static).update(content)
+        except Exception:
+            pass
 
 
 class RecentTradesPanel(Static):
@@ -317,6 +370,13 @@ class TradingBotApp(App):
         layout: vertical;
     }
 
+    #app-header {
+        dock: top;
+        height: 1;
+        background: #1a3a5c;
+        color: #87ceeb;
+    }
+
     #status-bar {
         height: 3;
         border: solid green;
@@ -330,27 +390,29 @@ class TradingBotApp(App):
     }
 
     #left-panel {
-        width: 50%;
+        width: 40%;
         height: 100%;
         overflow-y: auto;
     }
 
     #right-panel {
-        width: 50%;
+        width: 60%;
         height: 100%;
         layout: vertical;
     }
 
     #positions-panel {
-        height: 45%;
+        height: 60%;
+        border: solid green;
+        border-title-color: green;
     }
 
     #trades-panel {
-        height: 30%;
+        height: 20%;
     }
 
     #extra-events-panel {
-        height: 25%;
+        height: 20%;
     }
 
     ScannerPanel {
@@ -384,6 +446,7 @@ class TradingBotApp(App):
         self.executor = executor or PolymarketExecutor()
 
         self.scanning = False
+        self._shutting_down = False
         self.scan_timer: Optional[Timer] = None
         self.countdown_timer: Optional[Timer] = None
         self.next_scan_seconds = config.scan_interval
@@ -402,8 +465,11 @@ class TradingBotApp(App):
         self._current_prices: dict[str, float] = {}
         self._last_scan_time: Optional[datetime] = None
 
+        # Sell order management
+        self.sell_order_store = SellOrderStore()
+
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield Static(self.title, id="app-header")
         yield Static(id="status-bar")
         with Horizontal(id="main-container"):
             with Vertical(id="left-panel"):
@@ -418,7 +484,8 @@ class TradingBotApp(App):
         """Called when app is mounted."""
         # Set header subtitle
         mode = "DRY RUN" if self.config.dry_run else ("AUTO" if self.config.auto_mode else "CONFIRM")
-        self.sub_title = f"Mode: {mode} • Scan: {format_interval(self.config.scan_interval)}"
+        header = self.query_one("#app-header", Static)
+        header.update(f" ◉  {self.title} • {mode} • Scan: {format_interval(self.config.scan_interval)}")
 
         # Log startup
         logger = get_logger()
@@ -429,6 +496,9 @@ class TradingBotApp(App):
             synced = self.executor.sync_positions(self.position_storage)
             if synced:
                 self.notify(f"Synced {len(synced)} positions from Polymarket")
+
+            # Clean up stale sell orders (filled or cancelled while bot was off)
+            self._init_sell_orders()
 
         # Initialize status bar
         status = self.query_one("#status-bar", Static)
@@ -460,7 +530,10 @@ class TradingBotApp(App):
         """Refresh positions panel with current data."""
         positions = self._get_all_positions()
         positions_panel = self.query_one(PositionsPanel)
-        positions_panel.update_positions(positions, self._current_prices)
+        fair_prices = getattr(self, '_current_fair_prices', {})
+        bid_prices = self.scanner._bid_prices if self.scanner else {}
+        sell_orders = self.sell_order_store.load_all()
+        positions_panel.update_positions(positions, self._current_prices, fair_prices, bid_prices, sell_orders)
 
     def update_countdown(self) -> None:
         """Update countdown to next scan."""
@@ -497,7 +570,10 @@ class TradingBotApp(App):
 
             # Create progress callback that updates UI from thread
             def update_status(status: str) -> None:
-                self.call_from_thread(scanner_panel.set_scan_status, status)
+                try:
+                    self.call_from_thread(scanner_panel.set_scan_status, status)
+                except RuntimeError:
+                    pass  # App is shutting down
 
             def do_scan_with_progress():
                 return self.scanner.scan(positions, progress_callback=update_status)
@@ -522,6 +598,50 @@ class TradingBotApp(App):
         else:
             entry_signals, exit_signals = [], []
 
+        # Check for resolved markets
+        if self.executor.initialized and positions:
+            resolved_ids = set()
+            # Group positions by condition_id to avoid duplicate API calls
+            cid_positions: dict[str, list] = {}
+            for pos in positions:
+                if pos.market_id:
+                    cid_positions.setdefault(pos.market_id, []).append(pos)
+
+            def check_resolutions():
+                results = []
+                for cid, cid_poss in cid_positions.items():
+                    try:
+                        is_resolved, winning_outcome = self.executor.check_market_resolved(cid)
+                        if is_resolved and winning_outcome:
+                            for p in cid_poss:
+                                won = p.outcome.upper() == winning_outcome.upper()
+                                results.append((p, won))
+                    except Exception:
+                        pass
+                return results
+
+            loop2 = asyncio.get_event_loop()
+            resolution_results = await loop2.run_in_executor(None, check_resolutions)
+
+            for pos, won in resolution_results:
+                result_str = "WON" if won else "LOST"
+                pnl = pos.tokens - pos.entry_size if won else -pos.entry_size
+                logger = get_logger()
+                logger.log_info(
+                    f"RESOLVED {result_str}: {pos.market_slug[:40]} - "
+                    f"P&L: ${pnl:+.2f}"
+                )
+                self.position_storage.resolve_position(pos.id, won)
+                resolved_ids.add(pos.id)
+                self.notify(
+                    f"Market resolved ({result_str}): {pos.market_slug[:30]} P&L: ${pnl:+.2f}",
+                    markup=False,
+                )
+
+            if resolved_ids:
+                # Refresh positions list after resolving
+                positions = self._get_all_positions()
+
         # Record scan time
         self._last_scan_time = datetime.now()
 
@@ -531,8 +651,26 @@ class TradingBotApp(App):
         self.scanning = False
         self.refresh_bindings()  # Re-enable R in footer
 
-        # Update positions panel with current prices
+        # Update positions panel with current prices and fair prices
         self._current_prices = {s.market_slug: s.current_price for s in entry_signals}
+        self._current_fair_prices = {s.market_slug: s.fair_price for s in entry_signals}
+
+        # Map current/fair prices for synced positions (different slugs, same condition_id)
+        cid_to_price = {}
+        cid_to_fair = {}
+        for s in entry_signals:
+            if s.market_id:
+                key = f"{s.market_id}-{s.outcome}"
+                cid_to_price[key] = s.current_price
+                cid_to_fair[key] = s.fair_price
+        for pos in positions:
+            if pos.market_id:
+                key = f"{pos.market_id}-{pos.outcome.upper()}"
+                if pos.market_slug not in self._current_prices and key in cid_to_price:
+                    self._current_prices[pos.market_slug] = cid_to_price[key]
+                if key in cid_to_fair:
+                    self._current_fair_prices[pos.market_slug] = cid_to_fair[key]
+
         self._refresh_positions_panel()
 
         # Update trades panel
@@ -544,8 +682,25 @@ class TradingBotApp(App):
         monitor_data = load_monitor_data()
         extra_events_panel.update_data(monitor_data)
 
+        # Update MATIC balance (for gas fees display)
+        if self.executor.initialized:
+            self._matic_balance = self.executor.get_matic_balance()
+
         # Update status bar
         self.update_status_bar(positions, self._current_prices)
+
+        # Manage sell limit orders (place/update at fair price)
+        fair_prices = getattr(self, '_current_fair_prices', {})
+        if fair_prices and positions:
+            loop3 = asyncio.get_event_loop()
+            await loop3.run_in_executor(
+                None, self._manage_sell_orders, positions, fair_prices
+            )
+            # Refresh positions and balance after potential fills
+            positions = self._get_all_positions()
+            self._refresh_positions_panel()
+            current_prices = self.scanner.get_current_prices() if self.scanner else {}
+            self.update_status_bar(positions, current_prices)
 
         # Handle signals based on mode
         await self.process_signals(entry_signals, exit_signals)
@@ -561,6 +716,7 @@ class TradingBotApp(App):
 
         # Get real balance from executor
         balance = self.executor.get_balance()
+        matic = getattr(self, '_matic_balance', 0.0)
 
         status_bar = StatusBar(self.config)
         status_bar.update_status(
@@ -570,15 +726,114 @@ class TradingBotApp(App):
             unrealized_pnl=unrealized_pnl,
             unrealized_pnl_pct=unrealized_pnl_pct,
             last_scan_time=self._last_scan_time,
+            matic_balance=matic,
         )
 
         status = self.query_one("#status-bar", Static)
         status.update(status_bar.render())
 
+    def _init_sell_orders(self):
+        """Clean up stale sell orders at startup."""
+        logger = get_logger()
+        try:
+            open_ids = self.executor.get_open_order_ids()
+            all_orders = self.sell_order_store.load_all()
+            for pos_id, info in list(all_orders.items()):
+                if info["order_id"] not in open_ids:
+                    # Order was filled or cancelled while bot was off
+                    pos = self.position_storage.load(pos_id)
+                    if pos:
+                        logger.log_info(f"SELL ORDER gone (filled?): {info['market_slug'][:40]} @ {info['price']:.1%}")
+                        # Don't auto-close — could have been cancelled. Will re-place on next scan.
+                    self.sell_order_store.remove(pos_id)
+            remaining = len(self.sell_order_store.load_all())
+            if remaining:
+                logger.log_info(f"Loaded {remaining} active sell orders")
+        except Exception as e:
+            logger.log_warning(f"Error initializing sell orders: {e}")
+
+    def _manage_sell_orders(self, positions: List[Position], fair_prices: dict[str, float]):
+        """Place/update sell limit orders at fair price for all positions."""
+        if self.config.dry_run or not self.executor.initialized or self._shutting_down:
+            return
+
+        logger = get_logger()
+        try:
+            open_ids = self.executor.get_open_order_ids()
+        except Exception:
+            return
+
+        for pos in positions:
+            fair = fair_prices.get(pos.market_slug)
+            if not fair and pos.market_id and self.scanner:
+                key = f"{pos.market_id}-{pos.outcome.upper()}"
+                mapped_slug = self.scanner._condition_id_to_slug.get(key)
+                if mapped_slug:
+                    fair = fair_prices.get(mapped_slug)
+            if not fair or fair <= 0 or fair >= 1:
+                continue
+
+            if self._shutting_down:
+                return
+
+            existing = self.sell_order_store.get(pos.id)
+
+            # Check if existing order was filled
+            if existing and existing["order_id"] not in open_ids:
+                # Order filled! Close position
+                pnl = pos.tokens * existing["price"] - pos.entry_size
+                logger.log_info(
+                    f"SELL FILLED: {pos.market_slug[:40]} @ {existing['price']:.1%} "
+                    f"P&L: ${pnl:+.2f}"
+                )
+                self.position_storage.close_position(
+                    pos.id, existing["price"], existing["order_id"]
+                )
+                self.sell_order_store.remove(pos.id)
+                self.notify(
+                    f"SOLD: {pos.market_slug[:30]} @ {existing['price']:.1%} P&L: ${pnl:+.2f}",
+                    markup=False,
+                )
+                continue
+
+            # Check if fair price changed enough to update order
+            if existing:
+                if abs(existing["price"] - fair) < 0.005:
+                    continue  # Fair unchanged
+                # Cancel old order
+                self.executor.cancel_order(existing["order_id"])
+                self.sell_order_store.remove(pos.id)
+                logger.log_info(
+                    f"SELL ORDER updated: {pos.market_slug[:40]} "
+                    f"{existing['price']:.1%} -> {fair:.1%}"
+                )
+
+            # Get token_id for this position (try slug, then condition_id mapping)
+            token_id = None
+            if self.scanner:
+                token_id = self.scanner._token_ids.get(pos.market_slug)
+                if not token_id and pos.market_id:
+                    key = f"{pos.market_id}-{pos.outcome.upper()}"
+                    mapped_slug = self.scanner._condition_id_to_slug.get(key)
+                    if mapped_slug:
+                        token_id = self.scanner._token_ids.get(mapped_slug)
+            if not token_id:
+                continue
+
+            # Place new sell limit at fair price
+            order_id = self.executor.place_sell_limit(token_id, fair, pos.tokens)
+            if order_id:
+                self.sell_order_store.save(
+                    pos.id, order_id, fair, token_id, pos.tokens, pos.market_slug
+                )
+
     async def process_signals(self, entry_signals: List[Signal],
                               exit_signals: List[Signal]) -> None:
         """Process trading signals based on mode."""
-        actionable = [s for s in entry_signals if s.type == SignalType.BUY] + exit_signals
+        # Filter out BUY signals if balance is too low
+        balance = self.executor.get_balance() if self.executor.initialized else 0
+        buy_signals = [s for s in entry_signals if s.type == SignalType.BUY] if balance >= 1.0 else []
+        actionable = buy_signals + exit_signals
 
         if not actionable:
             return
@@ -588,9 +843,16 @@ class TradingBotApp(App):
             for signal in actionable:
                 await self.execute_signal(signal)
         else:
-            # CONFIRM mode - queue all signals and ask one at a time
-            self._pending_signals_queue = actionable.copy()
-            self._show_next_pending_signal()
+            # CONFIRM mode - auto-execute sells, confirm only buys
+            needs_confirm = []
+            for signal in actionable:
+                if signal.type == SignalType.BUY:
+                    needs_confirm.append(signal)
+                else:
+                    await self.execute_signal(signal)
+            if needs_confirm:
+                self._pending_signals_queue = needs_confirm
+                self._show_next_pending_signal()
 
     def _show_next_pending_signal(self) -> None:
         """Show the next signal in queue for confirmation."""
@@ -682,12 +944,15 @@ class TradingBotApp(App):
 
                 logger.log_trade_executed(
                     "BUY", signal.market_slug, signal.outcome,
-                    signal.current_price, position.size, position.entry_size
+                    signal.current_price, position.tokens, position.entry_size
                 )
                 logger.log_position_opened(position)
 
-                # Refresh positions panel immediately
+                # Update current price for the new position and refresh UI
+                self._current_prices[signal.market_slug] = signal.current_price
                 self._refresh_positions_panel()
+                positions = self._get_all_positions()
+                self.update_status_bar(positions, self._current_prices)
             else:
                 self.notify(f"BUY failed: {result.error}", markup=False)
                 logger.log_trade_failed("BUY", signal.market_slug, result.error or "Unknown error")
@@ -716,8 +981,10 @@ class TradingBotApp(App):
                     )
                     logger.log_position_closed(closed_position, signal.current_price, pnl)
                 self.notify(f"SELL order placed: {result.order_id}", markup=False)
-                # Refresh positions panel immediately
+                # Refresh positions panel and balance immediately
                 self._refresh_positions_panel()
+                positions = self._get_all_positions()
+                self.update_status_bar(positions, self._current_prices)
             else:
                 self.notify(f"SELL failed: {result.error}", markup=False)
                 logger.log_trade_failed("SELL", signal.market_slug, result.error or "Unknown error")
@@ -725,6 +992,11 @@ class TradingBotApp(App):
     def action_quit(self) -> None:
         """Quit the application (with confirmation)."""
         if self.quit_pending:
+            self._shutting_down = True
+            if self.scan_timer:
+                self.scan_timer.stop()
+            if self.countdown_timer:
+                self.countdown_timer.stop()
             self.exit()
         else:
             self.quit_pending = True

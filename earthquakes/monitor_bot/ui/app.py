@@ -14,7 +14,7 @@ from uuid import UUID
 
 from textual.app import App, ComposeResult
 from textual.containers import Container, Vertical, Horizontal, VerticalScroll
-from textual.widgets import Header, Footer, Static, DataTable
+from textual.widgets import Footer, Static, DataTable
 from textual.binding import Binding
 from rich.text import Text
 from rich.panel import Panel
@@ -218,6 +218,13 @@ class MonitorBotApp(App):
         background: $surface;
     }
 
+    #app-header {
+        dock: top;
+        height: 1;
+        background: #1a3a5c;
+        color: #87ceeb;
+    }
+
     StatusBar {
         dock: top;
         height: auto;
@@ -274,7 +281,7 @@ class MonitorBotApp(App):
         self.last_json_save = datetime.now(timezone.utc)  # Debouncing для JSON saves
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield Static(id="app-header")
         self.status_bar = StatusBar()
         yield self.status_bar
 
@@ -296,8 +303,8 @@ class MonitorBotApp(App):
 
     async def on_mount(self) -> None:
         """Initialize the app when mounted."""
-        self.title = "Earthquake Monitor Bot"
-        self.sub_title = f"Tracking M{config.MIN_MAGNITUDE_TRACK}+ • All times in UTC"
+        header = self.query_one("#app-header", Static)
+        header.update(f" ◉  Earthquake Monitor Bot • Tracking M{config.MIN_MAGNITUDE_TRACK}+ • All times in UTC")
 
         # Setup events table
         if self.events_table:

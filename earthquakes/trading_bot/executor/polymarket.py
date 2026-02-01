@@ -102,8 +102,9 @@ class PolymarketExecutor:
             return OrderResult(success=False, error="No token ID"), None
 
         try:
-            # 1. Get current balance
-            balance = self.get_balance()
+            # 1. Get current balance (with 2% safety margin for rounding/fees)
+            raw_balance = self.get_balance()
+            balance = raw_balance * 0.98
             if balance <= 0:
                 return OrderResult(success=False, error="No balance available"), None
 
@@ -118,9 +119,10 @@ class PolymarketExecutor:
             if not asks:
                 return OrderResult(success=False, error="No asks in orderbook"), None
 
-            # 3. Calculate available liquidity at target price or better
+            # 3. Calculate available liquidity up to fair price
+            # Buy at any price below fair_price (we still have positive edge)
             # asks are sorted by price ascending (best price first)
-            target_price = signal.current_price
+            target_price = signal.fair_price if signal.fair_price else signal.current_price
             available_size = 0.0  # in tokens
             total_cost = 0.0      # in USD
 
@@ -148,13 +150,49 @@ class PolymarketExecutor:
                     error=f"No liquidity at price {target_price:.2%} or better"
                 ), None
 
-            # 4. Place order for the calculated size
-            result = self.client.create_limit_order(
-                token_id=token_id,
-                side="BUY",
-                price=target_price,
-                size=available_size,
-            )
+            # Polymarket minimum order size is $1
+            MIN_ORDER_SIZE = 1.0
+            if total_cost < MIN_ORDER_SIZE:
+                return OrderResult(
+                    success=False,
+                    error=f"Order too small (${total_cost:.2f}), min $1"
+                ), None
+
+            # 4. Place order at the worst (highest) price we're willing to pay
+            # This ensures it sweeps all levels up to fair price
+            order_price = target_price
+            avg_price = total_cost / available_size if available_size > 0 else target_price
+
+            # Try placing order, retry with half size on balance error
+            last_error = None
+            for attempt in range(3):
+                try:
+                    result = self.client.create_limit_order(
+                        token_id=token_id,
+                        side="BUY",
+                        price=order_price,
+                        size=available_size,
+                    )
+                    last_error = None
+                    break
+                except Exception as e:
+                    err_str = str(e)
+                    if "not enough balance" in err_str and attempt < 2:
+                        # Reduce size by half and retry
+                        available_size = available_size / 2
+                        total_cost = total_cost / 2
+                        avg_price = total_cost / available_size if available_size > 0 else target_price
+                        if total_cost < MIN_ORDER_SIZE:
+                            return OrderResult(
+                                success=False,
+                                error=f"Balance insufficient even at ${total_cost:.2f}"
+                            ), None
+                        last_error = err_str
+                    else:
+                        raise
+
+            if last_error:
+                return OrderResult(success=False, error=last_error), None
 
             order_id = result.get("orderID") or result.get("order_id")
 
@@ -166,7 +204,7 @@ class PolymarketExecutor:
                     market_name=signal.market_name,
                     outcome=signal.outcome,
                     resolution_date=market.end_date,
-                    entry_price=target_price,
+                    entry_price=avg_price,
                     entry_time=datetime.utcnow().isoformat() + "Z",
                     entry_size=total_cost,
                     tokens=available_size,
@@ -179,7 +217,7 @@ class PolymarketExecutor:
                 return OrderResult(
                     success=True,
                     order_id=order_id,
-                    filled_price=target_price,
+                    filled_price=avg_price,
                     filled_size=total_cost,
                     tokens=available_size,
                 ), position
@@ -239,6 +277,21 @@ class PolymarketExecutor:
         except Exception as e:
             return OrderResult(success=False, error=str(e))
 
+    def get_matic_balance(self) -> float:
+        """Get MATIC (POL) balance on Polygon for gas fees."""
+        if not self.client or not self.client.pk:
+            return 0.0
+        try:
+            import os
+            from web3 import Web3
+            rpc = os.getenv("POLYGON_RPC", "https://polygon-rpc.com")
+            w3 = Web3(Web3.HTTPProvider(rpc))
+            account = w3.eth.account.from_key(self.client.pk)
+            balance_wei = w3.eth.get_balance(account.address)
+            return float(w3.from_wei(balance_wei, "ether"))
+        except Exception:
+            return 0.0
+
     def get_open_orders(self) -> list:
         """Get all open orders."""
         if not self.client:
@@ -262,6 +315,148 @@ class PolymarketExecutor:
             print(f"Error canceling order {order_id}: {e}")
             return False
 
+    def ensure_sell_approval(self):
+        """Ensure CTF token approval for both exchange contracts (one-time on-chain tx)."""
+        if not self.client or getattr(self, '_sell_approved', False):
+            return
+        logger = get_logger()
+        try:
+            import os
+            from web3 import Web3
+
+            pk = self.client.pk
+            if not pk:
+                return
+
+            rpc = os.getenv("POLYGON_RPC", "https://polygon-rpc.com")
+            w3 = Web3(Web3.HTTPProvider(rpc))
+
+            account = w3.eth.account.from_key(pk)
+            ctf_address = w3.to_checksum_address("0x4D97DCd97eC945f40cF65F87097ACe5EA0476045")
+
+            # Minimal ABI for setApprovalForAll and isApprovedForAll
+            abi = [
+                {"inputs": [{"name": "operator", "type": "address"}, {"name": "approved", "type": "bool"}],
+                 "name": "setApprovalForAll", "outputs": [], "stateMutability": "nonpayable", "type": "function"},
+                {"inputs": [{"name": "owner", "type": "address"}, {"name": "operator", "type": "address"}],
+                 "name": "isApprovedForAll", "outputs": [{"name": "", "type": "bool"}],
+                 "stateMutability": "view", "type": "function"},
+            ]
+            ctf = w3.eth.contract(address=ctf_address, abi=abi)
+
+            exchanges = [
+                "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",  # normal exchange
+                "0xC5d563A36AE78145C45a50134d48A1215220f80a",  # neg_risk exchange
+                "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296",  # neg_risk adapter
+            ]
+
+            all_approved = True
+            for ex in exchanges:
+                ex_addr = w3.to_checksum_address(ex)
+                approved = ctf.functions.isApprovedForAll(account.address, ex_addr).call()
+                logger.log_info(f"CTF approval check {ex[:10]}... = {approved}")
+                if not approved:
+                    matic = float(w3.from_wei(w3.eth.get_balance(account.address), "ether"))
+                    if matic < 0.001:
+                        logger.log_warning(f"Cannot approve CTF: no MATIC for gas (balance: {matic:.6f})")
+                        all_approved = False
+                        continue
+                    logger.log_info(f"Approving CTF for exchange {ex[:10]}... (MATIC: {matic:.4f})")
+                    nonce = w3.eth.get_transaction_count(account.address)
+                    tx = ctf.functions.setApprovalForAll(ex_addr, True).build_transaction({
+                        "from": account.address,
+                        "nonce": nonce,
+                        "gas": 100000,
+                        "gasPrice": w3.eth.gas_price,
+                        "chainId": 137,
+                    })
+                    signed = w3.eth.account.sign_transaction(tx, pk)
+                    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+                    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+                    logger.log_info(f"CTF approval tx: {tx_hash.hex()} status={receipt['status']}")
+
+            self._sell_approved = all_approved
+            if not all_approved:
+                logger.log_warning("CTF approval incomplete - will retry next time")
+                return
+
+        except Exception as e:
+            logger.log_warning(f"CTF approval error: {e}")
+
+    def place_sell_limit(self, token_id: str, price: float, size: float) -> Optional[str]:
+        """Place a GTC sell limit order. Returns order_id or None."""
+        if not self.client:
+            return None
+        logger = get_logger()
+        try:
+            import math
+            # Round price to 2 decimal places (Polymarket requirement)
+            price = round(price, 2)
+            if price <= 0 or price >= 1:
+                return None
+            # Round size DOWN to avoid exceeding available balance
+            size = math.floor(size * 100) / 100
+            # Ensure on-chain approval for selling (one-time)
+            self.ensure_sell_approval()
+            # Update conditional token allowance on API and check balance
+            try:
+                from polymarket_console.clob_types import BalanceAllowanceParams, AssetType
+                params = BalanceAllowanceParams(
+                    asset_type=AssetType.CONDITIONAL,
+                    token_id=token_id,
+                )
+                self.client.client.update_balance_allowance(params)
+                # Check what API sees for this token
+                bal = self.client.client.get_balance_allowance(params)
+                logger.log_info(
+                    f"SELL token={token_id[:12]}... balance={bal}"
+                )
+            except Exception as e:
+                logger.log_warning(f"SELL allowance update failed: {e}")
+            # Try placing the order, retry once after short delay if balance error
+            import time
+            for attempt in range(2):
+                try:
+                    result = self.client.create_limit_order(
+                        token_id=token_id,
+                        side="SELL",
+                        price=price,
+                        size=round(size, 2),
+                    )
+                    order_id = result.get("orderID") or result.get("order_id")
+                    if order_id:
+                        logger.log_info(f"SELL LIMIT placed: {price:.1%} size={size:.2f} order={order_id[:12]}")
+                    return order_id
+                except Exception as e:
+                    if attempt == 0 and "balance" in str(e).lower():
+                        logger.log_info(f"SELL retry after allowance refresh (attempt {attempt+1})")
+                        time.sleep(2)
+                        # Refresh allowance again
+                        try:
+                            from polymarket_console.clob_types import BalanceAllowanceParams, AssetType
+                            params = BalanceAllowanceParams(
+                                asset_type=AssetType.CONDITIONAL,
+                                token_id=token_id,
+                            )
+                            self.client.client.update_balance_allowance(params)
+                        except Exception:
+                            pass
+                        continue
+                    raise
+        except Exception as e:
+            logger.log_warning(f"SELL LIMIT failed: {e}")
+            return None
+
+    def get_open_order_ids(self) -> set[str]:
+        """Get set of currently open order IDs from API."""
+        orders = self.get_open_orders()
+        result = set()
+        for o in orders:
+            oid = o.get("id") or o.get("order_id") or o.get("orderID")
+            if oid:
+                result.add(oid)
+        return result
+
     def cancel_all_orders(self) -> bool:
         """Cancel all open orders."""
         if not self.client:
@@ -273,6 +468,24 @@ class PolymarketExecutor:
         except Exception as e:
             print(f"Error canceling all orders: {e}")
             return False
+
+    def check_market_resolved(self, condition_id: str) -> tuple[bool, Optional[str]]:
+        """Check if a market has resolved.
+
+        Returns:
+            (is_resolved, winning_outcome) - e.g. (True, "Yes") or (False, None)
+        """
+        if not self.client:
+            return False, None
+        try:
+            market = self.client.get_clob_market(condition_id)
+            if not market:
+                return False, None
+            closed = market.get("closed", False)
+            outcome = market.get("outcome")  # "Yes" / "No" / None
+            return bool(closed), outcome
+        except Exception:
+            return False, None
 
     def get_api_positions(self) -> list[dict]:
         """
@@ -319,7 +532,16 @@ class PolymarketExecutor:
         logger.log_info(f"Found {len(api_positions)} positions on Polymarket")
 
         new_positions = []
-        existing_slugs = {p.market_slug for p in storage.load_all_active()}
+        active_positions = storage.load_all_active()
+
+        # If we already have earthquake positions, skip sync entirely —
+        # the bot tracks its own trades, synced duplicates cause double-counting
+        has_earthquake = any(p.strategy == "earthquake" for p in active_positions)
+        if has_earthquake:
+            logger.log_info("SYNC SKIP: earthquake positions exist, skipping API sync to avoid duplicates")
+            return []
+
+        existing_slugs = {p.market_slug for p in active_positions}
 
         for api_pos in api_positions:
             # Extract position data
@@ -332,7 +554,7 @@ class PolymarketExecutor:
                 continue
 
             # Build market slug from API data
-            condition_id = market_info.get("conditionId", "")
+            condition_id = api_pos.get("conditionId", "") or market_info.get("conditionId", "") or market_info.get("condition_id", "")
             outcome = api_pos.get("outcome", "Yes")
             slug = api_pos.get("slug", condition_id)
 

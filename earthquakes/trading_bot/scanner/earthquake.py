@@ -60,6 +60,7 @@ class EarthquakeScanner(BaseScanner):
         # Cache for fair prices and token_ids (for exit checks)
         self._fair_prices: dict[str, float] = {}  # market_slug -> fair_price
         self._token_ids: dict[str, str] = {}  # market_slug -> token_id
+        self._bid_prices: dict[str, float] = {}  # market_slug -> bid_price
 
     @property
     def name(self) -> str:
@@ -111,6 +112,7 @@ class EarthquakeScanner(BaseScanner):
             self._markets_cache = []
             self._fair_prices = {}
             self._token_ids = {}
+            self._condition_id_to_slug = {}  # condition_id -> unique_slug mapping
 
             # Run the same analysis as main_tested.py
             self._opportunities = run_analysis(
@@ -132,6 +134,9 @@ class EarthquakeScanner(BaseScanner):
                 self._fair_prices[unique_slug] = opp.fair_price
                 if opp.token_id:
                     self._token_ids[unique_slug] = opp.token_id
+                # Map condition_id+side to slug for synced positions lookup
+                if opp.condition_id:
+                    self._condition_id_to_slug[f"{opp.condition_id}-{opp.side}"] = unique_slug
 
                 # Create market for cache
                 market = Market(
@@ -156,7 +161,10 @@ class EarthquakeScanner(BaseScanner):
                 liquidity = getattr(opp, 'usable_liquidity', 0.0) or 0.0
                 kelly = getattr(opp, 'kelly', 0.0) or 0.0
 
-                if meets_edge and meets_apy:
+                # Skip if liquidity below Polymarket minimum order ($1)
+                meets_liquidity = liquidity >= 1.0
+
+                if meets_edge and meets_apy and meets_liquidity:
                     signal = Signal(
                         type=SignalType.BUY,
                         market_id=opp.condition_id or unique_slug,
@@ -224,15 +232,33 @@ class EarthquakeScanner(BaseScanner):
             logger.log_info(f"Checking exits for {len(positions)} positions...")
 
         for position in positions:
-            # Get current fair price from cache
-            fair_price = self._fair_prices.get(position.market_slug)
+            # Get current fair price from cache - try slug first, then condition_id
+            lookup_slug = position.market_slug
+            fair_price = self._fair_prices.get(lookup_slug)
+
+            if fair_price is None and position.market_id:
+                # Try matching by condition_id (for synced positions with different slugs)
+                # Normalize outcome case (synced: Yes/No, scanner: YES/NO)
+                key = f"{position.market_id}-{position.outcome.upper()}"
+                mapped_slug = self._condition_id_to_slug.get(key)
+                if mapped_slug:
+                    lookup_slug = mapped_slug
+                    fair_price = self._fair_prices.get(lookup_slug)
+
             if fair_price is None:
                 # Market not in current scan results - skip
+                logger.log_info(
+                    f"EXIT SKIP (no fair price): {position.market_slug[:40]} "
+                    f"mid={position.market_id[:20] if position.market_id else 'none'}"
+                )
                 continue
 
             # Get token_id for this position
-            token_id = self._token_ids.get(position.market_slug)
+            token_id = self._token_ids.get(lookup_slug)
             if not token_id:
+                logger.log_info(
+                    f"EXIT SKIP (no token_id): {lookup_slug[:40]}"
+                )
                 continue
 
             # Get bid price from orderbook
@@ -243,9 +269,17 @@ class EarthquakeScanner(BaseScanner):
             bid_price = spread_info.get("best_bid", 0)
             bid_liquidity = spread_info.get("bid_liquidity", 0)
 
+            # Cache bid price for UI display
+            self._bid_prices[position.market_slug] = bid_price
+
             if bid_price <= 0:
                 # No bids - can't sell
                 continue
+
+            logger.log_info(
+                f"EXIT CHECK: {position.market_slug[:40]} - "
+                f"bid {bid_price:.1%} vs fair {fair_price:.1%}"
+            )
 
             # Check sell condition: bid >= fair
             if bid_price >= fair_price:

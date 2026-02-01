@@ -8,7 +8,7 @@ import asyncio
 
 from textual.app import App, ComposeResult
 from textual.containers import Container, Vertical
-from textual.widgets import Header, Footer, Static
+from textual.widgets import Footer, Static
 from textual.binding import Binding
 from rich.text import Text
 from rich.panel import Panel
@@ -142,6 +142,13 @@ class UpdateBotApp(App):
         background: $surface;
     }
 
+    #app-header {
+        dock: top;
+        height: 1;
+        background: #1a3a5c;
+        color: #87ceeb;
+    }
+
     StatusBar {
         dock: top;
         height: auto;
@@ -178,7 +185,7 @@ class UpdateBotApp(App):
         self.quit_pending = False  # For quit confirmation
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield Static(id="app-header")
         self.status_bar = StatusBar(self.config)
         yield self.status_bar
         self.log_panel = UpdateLogPanel()
@@ -187,8 +194,8 @@ class UpdateBotApp(App):
 
     def on_mount(self) -> None:
         """Initialize the app when mounted."""
-        self.title = "Earthquake Markets Update Bot"
-        self.sub_title = f"Interval: {format_interval(self.config.update_interval)}"
+        header = self.query_one("#app-header", Static)
+        header.update(f" ◉  Earthquake Markets Update Bot • Interval: {format_interval(self.config.update_interval)}")
 
         # Log startup
         self.log_message("Update Bot Started", color="green", bold=True)
