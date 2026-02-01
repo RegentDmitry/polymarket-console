@@ -1,0 +1,21 @@
+{
+  "id": "564c1c79",
+  "market_id": "0xbf0cfb3d367aecf9df47b54d98140e1da078841e53666c6c66f192bafb555e32",
+  "market_slug": "how-many-6pt5-or-above-earthquakes-february-2-feb-8-0-NO",
+  "market_name": "0 (NO)",
+  "outcome": "NO",
+  "resolution_date": null,
+  "entry_price": 0.53,
+  "entry_time": "2026-02-01T07:35:43.512587Z",
+  "entry_size": 16.43,
+  "tokens": 31.0,
+  "exit_price": null,
+  "exit_time": null,
+  "exit_size": null,
+  "status": "open",
+  "strategy": "earthquake",
+  "fair_price_at_entry": 0.564670791058191,
+  "edge_at_entry": 0.03467079105819093,
+  "entry_order_id": "0x8ccadd25aeeebf54c4b91dce9ed9072a7150a85b8a5ac16597e747944800421f",
+  "exit_order_id": null
+}
