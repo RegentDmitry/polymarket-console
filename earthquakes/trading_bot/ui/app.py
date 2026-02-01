@@ -249,18 +249,17 @@ class PositionsPanel(VerticalScroll):
             # Column widths — Market takes all remaining space
             EW = 6   # Entry
             FW = 6   # Fair
-            BW = 6   # Bid
-            SW = 6   # Sell
             CW = 6   # Curr
+            SW = 6   # Sell
             OW = 8   # Cost
             VW = 9   # Value
             PW = 9   # P&L
-            fixed = EW + FW + BW + SW + CW + OW + VW + PW + 8  # 8 spaces between columns
+            fixed = EW + FW + CW + SW + OW + VW + PW + 7  # 7 spaces between columns
             panel_width = self.size.width - 2  # minus border
             MW = max(10, panel_width - fixed)
 
             header = (
-                f"{'Market':<{MW}} {'Entry':>{EW}} {'Fair':>{FW}} {'Bid':>{BW}} {'Sell':>{SW}} {'Curr':>{CW}}"
+                f"{'Market':<{MW}} {'Entry':>{EW}} {'Fair':>{FW}} {'Curr':>{CW}} {'Sell':>{SW}}"
                 f" {'Cost':>{OW}} {'Value':>{VW}} {'P&L':>{PW}}"
             )
             lines.append(f"[bold]{header}[/bold]")
@@ -268,13 +267,11 @@ class PositionsPanel(VerticalScroll):
             for pos in self.positions:
                 current = self.current_prices.get(pos.market_slug, pos.entry_price)
                 fair = self.fair_prices.get(pos.market_slug, pos.fair_price_at_entry)
-                bid = self.bid_prices.get(pos.market_slug)
                 sell_order = self.sell_orders.get(pos.id)
                 cost = pos.entry_size
                 value = pos.current_value(current)
                 pnl = value - cost
 
-                bid_str = f"{bid:>{BW}.1%}" if bid is not None else f"{'--':>{BW}}"
                 sell_str = f"{sell_order['price']:>{SW}.1%}" if sell_order else f"{'--':>{SW}}"
 
                 # Format P&L without markup for alignment
@@ -288,7 +285,7 @@ class PositionsPanel(VerticalScroll):
                 slug = pos.market_slug[:MW] if len(pos.market_slug) > MW else pos.market_slug
 
                 row_prefix = (
-                    f"{slug:<{MW}} {pos.entry_price:>{EW}.1%} {fair:>{FW}.1%} {bid_str} {sell_str} {current:>{CW}.1%}"
+                    f"{slug:<{MW}} {pos.entry_price:>{EW}.1%} {fair:>{FW}.1%} {current:>{CW}.1%} {sell_str}"
                     f" ${cost:>{OW-1}.2f} ${value:>{VW-1}.2f}"
                 )
                 pnl_col = f"{pnl_raw:>{PW}}"
@@ -300,7 +297,7 @@ class PositionsPanel(VerticalScroll):
                 else:
                     lines.append(f"{row_prefix} {pnl_col}")
 
-            lines.append("-" * (MW + EW + FW + BW + SW + CW + OW + VW + PW + 8))
+            lines.append("-" * (MW + EW + FW + CW + SW + OW + VW + PW + 7))
             lines.append(f"Total invested:  ${self.total_invested:.2f}")
 
             pnl_str = f"+${self.unrealized_pnl:.2f}" if self.unrealized_pnl >= 0 else f"-${abs(self.unrealized_pnl):.2f}"
