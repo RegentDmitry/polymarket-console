@@ -53,39 +53,70 @@ class PolymarketScanner:
             print(f"Error fetching {slug}: {e}")
             return None
 
-    def search_markets_by_keyword(self, keyword: str = "earthquake") -> List[dict]:
+    def search_markets_by_keywords(self, keywords: Optional[List[str]] = None) -> List[dict]:
         """
-        Search for markets by keyword.
+        Search for earthquake/megaquake markets with pagination.
 
         Args:
-            keyword: Search keyword
+            keywords: List of search keywords (default: ["earthquake", "megaquake"])
 
         Returns:
-            List of matching events
+            List of matching events (deduplicated, filtered to real earthquake markets)
         """
+        if keywords is None:
+            keywords = ["earthquake", "megaquake"]
+
+        # Slugs that match keywords but are NOT earthquake markets (sports teams etc.)
+        SLUG_BLACKLIST_PATTERNS = ["quakers", "sje-", "mls-", "cwbb-", "cbb-"]
+
         try:
-            response = httpx.get(
-                f"{GAMMA_API_URL}/events",
-                params={"closed": "false"},  # Only open markets
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            events = response.json()
-
-            # Filter events that contain earthquake-related keywords
+            seen_ids = set()
             earthquake_events = []
-            for event in events:
-                title = event.get("title", "").lower()
-                description = event.get("description", "").lower()
+            offset = 0
+            batch_size = 500
 
-                if keyword.lower() in title or keyword.lower() in description:
-                    earthquake_events.append(event)
+            while True:
+                response = httpx.get(
+                    f"{GAMMA_API_URL}/events",
+                    params={"closed": "false", "limit": batch_size, "offset": offset},
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                events = response.json()
+                if not events:
+                    break
+
+                for event in events:
+                    title = event.get("title", "").lower()
+                    slug = event.get("slug", "").lower()
+
+                    # Skip blacklisted slugs (sports teams etc.)
+                    if any(bp in slug for bp in SLUG_BLACKLIST_PATTERNS):
+                        continue
+
+                    # Check if slug or title contains any keyword
+                    for keyword in keywords:
+                        kw = keyword.lower()
+                        if kw in slug or kw in title:
+                            event_id = event.get("id", event.get("slug"))
+                            if event_id not in seen_ids:
+                                seen_ids.add(event_id)
+                                earthquake_events.append(event)
+                            break
+
+                offset += len(events)
+                if len(events) < batch_size:
+                    break
 
             return earthquake_events
 
         except Exception as e:
             print(f"Error searching markets: {e}")
             return []
+
+    def search_markets_by_keyword(self, keyword: str = "earthquake") -> List[dict]:
+        """Search for markets by keyword (legacy, calls search_markets_by_keywords)."""
+        return self.search_markets_by_keywords([keyword])
 
     def extract_market_metadata(self, event: dict) -> Dict[str, MarketInfo]:
         """
@@ -138,8 +169,12 @@ class PolymarketScanner:
             return 8.0
         elif "7pt0" in question_lower or "7.0" in question_lower:
             return 7.0
+        elif "6pt5" in question_lower or "6.5" in question_lower:
+            return 6.5
         elif "6pt0" in question_lower or "6.0" in question_lower:
             return 6.0
+        elif "5pt0" in question_lower or "5.0" in question_lower:
+            return 5.0
 
         return 7.0  # Default
 

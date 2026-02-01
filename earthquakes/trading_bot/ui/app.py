@@ -7,7 +7,7 @@ from typing import List, Optional
 import asyncio
 
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.widgets import Header, Footer, Static, DataTable, Log
 from textual.binding import Binding
 from textual.timer import Timer
@@ -103,28 +103,32 @@ class ScannerPanel(Static):
         self.exit_signals = exit_signals
         if last_scan_time:
             self.last_scan_time = last_scan_time
-        self.refresh()
+        self._rebuild()
 
     def set_next_scan(self, seconds: int) -> None:
         self.next_scan_seconds = seconds
-        self.refresh()
+        self._rebuild()
 
     def set_scanning(self, scanning: bool) -> None:
         self.scanning = scanning
         if not scanning:
             self.scan_status = ""  # Clear status when done
-        self.refresh()
+        self._rebuild()
 
     def set_scan_status(self, status: str) -> None:
         """Update scan progress status."""
         self.scan_status = status
-        self.refresh()
+        self._rebuild()
 
     def set_pending_confirmation(self, signal: Optional[Signal]) -> None:
         self.pending_confirmation = signal
-        self.refresh()
+        self._rebuild()
 
-    def render(self) -> Panel:
+    def _rebuild(self) -> None:
+        """Rebuild content and force layout recalculation."""
+        self.update(self._build_content())
+
+    def _build_content(self) -> Panel:
         lines = []
 
         # Scanning status
@@ -161,7 +165,7 @@ class ScannerPanel(Static):
 
             lines.append("")
 
-        for signal in skip_signals[:5]:  # Show max 5 skip signals
+        for signal in skip_signals:
             lines.append(f"[dim]- {signal.market_slug} ({signal.market_name})[/dim]")
             lines.append(f"[dim]  Price: {signal.current_price:.1%}  Fair: {signal.fair_price:.1%}  Edge: {signal.edge:.1%}  APY: {signal.annual_return:.0%}[/dim]")
             lines.append("")
@@ -328,6 +332,7 @@ class TradingBotApp(App):
     #left-panel {
         width: 50%;
         height: 100%;
+        overflow-y: auto;
     }
 
     #right-panel {
@@ -349,7 +354,7 @@ class TradingBotApp(App):
     }
 
     ScannerPanel {
-        height: 100%;
+        height: auto;
     }
     """
 
@@ -512,12 +517,8 @@ class TradingBotApp(App):
                     # Buy all available at good prices, but not more than we have
                     signal.suggested_size = min(signal.liquidity, balance)
 
-            # Filter out BUY signals with liquidity < $1 (not worth showing)
-            MIN_LIQUIDITY = 1.0
-            entry_signals = [
-                s for s in entry_signals
-                if s.type != SignalType.BUY or s.liquidity >= MIN_LIQUIDITY
-            ]
+            # Note: BUY signals with zero liquidity are kept for visibility
+            # (user can still place limit orders)
         else:
             entry_signals, exit_signals = [], []
 
@@ -661,12 +662,12 @@ class TradingBotApp(App):
                 self._refresh_positions_panel()
             return
 
-        self.notify(f"Executing {signal.type.value} for {signal.market_slug}...")
+        self.notify(f"Executing {signal.type.value} for {signal.market_slug}...", markup=False)
 
         # Get market from cache
         market = self._markets_cache.get(signal.market_slug)
         if not market:
-            self.notify(f"Error: Market {signal.market_slug} not found in cache")
+            self.notify(f"Error: Market {signal.market_slug} not found in cache", markup=False)
             return
 
         if signal.type == SignalType.BUY:
@@ -677,7 +678,7 @@ class TradingBotApp(App):
                 # Save position
                 self.position_storage.save(position)
                 self.history_storage.record_buy(position, result.order_id)
-                self.notify(f"BUY order placed: {result.order_id}")
+                self.notify(f"BUY order placed: {result.order_id}", markup=False)
 
                 logger.log_trade_executed(
                     "BUY", signal.market_slug, signal.outcome,
@@ -688,14 +689,14 @@ class TradingBotApp(App):
                 # Refresh positions panel immediately
                 self._refresh_positions_panel()
             else:
-                self.notify(f"BUY failed: {result.error}")
+                self.notify(f"BUY failed: {result.error}", markup=False)
                 logger.log_trade_failed("BUY", signal.market_slug, result.error or "Unknown error")
 
         elif signal.type == SignalType.SELL and signal.position_id:
             # Get position
             position = self.position_storage.load(signal.position_id)
             if not position:
-                self.notify(f"Error: Position {signal.position_id} not found")
+                self.notify(f"Error: Position {signal.position_id} not found", markup=False)
                 return
 
             # Execute sell order
@@ -714,11 +715,11 @@ class TradingBotApp(App):
                         signal.current_price, position.tokens, signal.suggested_size
                     )
                     logger.log_position_closed(closed_position, signal.current_price, pnl)
-                self.notify(f"SELL order placed: {result.order_id}")
+                self.notify(f"SELL order placed: {result.order_id}", markup=False)
                 # Refresh positions panel immediately
                 self._refresh_positions_panel()
             else:
-                self.notify(f"SELL failed: {result.error}")
+                self.notify(f"SELL failed: {result.error}", markup=False)
                 logger.log_trade_failed("SELL", signal.market_slug, result.error or "Unknown error")
 
     def action_quit(self) -> None:

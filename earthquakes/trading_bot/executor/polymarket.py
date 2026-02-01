@@ -109,7 +109,11 @@ class PolymarketExecutor:
 
             # 2. Get orderbook
             orderbook = self.client.get_orderbook(token_id)
-            asks = orderbook.get("asks", [])
+            # OrderBookSummary может быть объектом с атрибутами или dict
+            if hasattr(orderbook, 'asks'):
+                asks = orderbook.asks or []
+            else:
+                asks = orderbook.get("asks", [])
 
             if not asks:
                 return OrderResult(success=False, error="No asks in orderbook"), None
@@ -121,8 +125,8 @@ class PolymarketExecutor:
             total_cost = 0.0      # in USD
 
             for ask in asks:
-                ask_price = float(ask.get("price", 0))
-                ask_size = float(ask.get("size", 0))
+                ask_price = float(ask.get("price", 0) if isinstance(ask, dict) else getattr(ask, 'price', 0))
+                ask_size = float(ask.get("size", 0) if isinstance(ask, dict) else getattr(ask, 'size', 0))
 
                 # Only take asks at our target price or better (lower)
                 if ask_price <= target_price:

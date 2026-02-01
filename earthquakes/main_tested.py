@@ -678,6 +678,9 @@ def run_analysis(poly: PolymarketClient, usgs: USGSClient,
                 if name.endswith("+"):
                     num = name[:-1]
                     matched = bool(re.search(rf'\b{num}\s+or\s+more\b', q))
+                    if not matched:
+                        prev_num = int(num) - 1
+                        matched = bool(re.search(rf'more\s+than\s+{prev_num}\b', q))
                 elif "-" in name and name[0].isdigit():
                     parts = name.split("-")
                     if len(parts) == 2:
@@ -780,45 +783,29 @@ def print_opportunities(opportunities: list[TestedOpportunity], poly: Polymarket
         print(f"   Модель: {opp.fair_price*100:.1f}% ({model_tag})  |  Рынок: {opp.market_price*100:.1f}%  |  Edge: {opp.edge*100:+.1f}%")
         print(f"   Событий: {opp.current_count}  |  Дней: {opp.remaining_days:.0f}  |  ROI: {opp.expected_return*100:+.1f}%  |  APY: {opp.annual_return*100:+.0f}%")
 
-        # Уровни из ордербука
+        # Стакан (asks) с выгодными ордерами
         if poly and opp.token_id:
             tiers = get_orderbook_tiers(poly, opp.token_id, opp.fair_price, opp.remaining_days)
             if tiers:
-                print(f"   Инвестиции по уровням:")
-                apy_groups = {}
-                for tier in tiers:
-                    apy_rounded = int(tier["apy"] * 100)
-                    if apy_rounded not in apy_groups:
-                        apy_groups[apy_rounded] = 0
-                    apy_groups[apy_rounded] = tier["cumulative_usd"]
+                # Фильтруем только выгодные (price < fair_price)
+                profitable = [t for t in tiers if t["price"] < opp.fair_price]
+                if profitable:
+                    total_profitable = profitable[-1]["cumulative_usd"]
+                    print(f"   Стакан (выгодные asks, всего ${total_profitable:,.0f}):")
+                    for tier in profitable:
+                        edge_pct = (opp.fair_price - tier["price"]) * 100
+                        print(f"     {tier['price']:.3f}  ${tier['size_usd']:>7,.0f}  (cum ${tier['cumulative_usd']:>7,.0f})  edge {edge_pct:+.1f}%  APY {tier['apy']*100:+.0f}%")
+                else:
+                    print(f"   Стакан: нет asks ниже fair price ({opp.fair_price:.3f})")
 
-                shown = 0
-                prev_cumulative = 0
-                for apy_pct in sorted(apy_groups.keys(), reverse=True):
-                    if apy_pct < MIN_ANNUAL_RETURN * 100:
-                        break
-                    cumulative = apy_groups[apy_pct]
-                    if cumulative > prev_cumulative + 10:
-                        print(f"     → ${cumulative:,.0f} с APY {apy_pct}%+")
-                        prev_cumulative = cumulative
-                        shown += 1
-                        if shown >= 5:
-                            break
-
-            # Показываем информацию о спреде и возможности активной торговли
+            # Спред
             spread_info = get_spread_info(poly, opp.token_id)
             if spread_info:
-                spread_pct = spread_info.get("spread_pct", 0)
                 bid = spread_info.get("best_bid", 0)
                 ask = spread_info.get("best_ask", 0)
+                spread_pct = spread_info.get("spread_pct", 0)
                 bid_liq = spread_info.get("bid_liquidity", 0)
-                reason = spread_info.get("reason", "")
-                active_ok = spread_info.get("active_trading_ok", False)
-
-                symbol = "✓" if active_ok else "✗"
-
-                print(f"   Спред: {spread_pct:.1f}% (bid: {bid:.2f}, ask: {ask:.2f}, bid liquidity: ${bid_liq:.0f})")
-                print(f"   Активная торговля: {symbol} {reason}")
+                print(f"   Спред: {spread_pct:.1f}% (bid: {bid:.3f}, ask: {ask:.3f}, bid liq: ${bid_liq:.0f})")
 
     print(f"\n" + "-" * 80)
     print(f"Всего {len(selected)} возможностей")

@@ -67,6 +67,10 @@ def load_market_configs() -> dict:
             configs[slug]["outcomes"] = [
                 (o[0], o[1], o[2]) for o in config["outcomes"]
             ]
+        # Копируем condition_id(s) и token_ids
+        for key in ("condition_id", "condition_ids", "token_ids"):
+            if key in config:
+                configs[slug][key] = config[key]
     return configs
 
 

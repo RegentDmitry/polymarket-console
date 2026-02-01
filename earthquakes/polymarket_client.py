@@ -61,12 +61,14 @@ class PolymarketClient:
         self.chain_id = int(os.getenv("CHAIN_ID", "137"))
         self.signature_type = int(os.getenv("SIGNATURE_TYPE", "1"))
         self.pk = os.getenv("PK")
+        self.funder = os.getenv("FUNDER")  # Proxy wallet address (for email login)
 
         self.client = ClobClient(
             host=self.host,
             key=self.pk,
             chain_id=self.chain_id,
             signature_type=self.signature_type,
+            funder=self.funder,
         )
 
         # Загружаем API credentials если есть

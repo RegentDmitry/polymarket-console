@@ -365,8 +365,8 @@ class MarketsUpdater:
         current_config = self.load_current_config()
         current_slugs = set(current_config.keys())
 
-        # Search for earthquake events
-        events = self.scanner.search_markets_by_keyword("earthquake")
+        # Search for earthquake events by multiple keywords
+        events = self.scanner.search_markets_by_keywords()
 
         # Collect event slugs and individual market slugs
         event_slugs = set()
@@ -443,21 +443,49 @@ class MarketsUpdater:
             if output_callback:
                 output_callback("")
 
-            # Check existing markets from config
+            # Discover new earthquake markets
             if output_callback:
-                output_callback("Checking existing markets...")
+                output_callback("Searching for earthquake/megaquake markets...")
+
+            discovered_events = self.scanner.search_markets_by_keywords()
+            discovered_slugs = set()
+            discovered_event_map = {}
+            for event in discovered_events:
+                event_slug = event.get("slug", "")
+                if event_slug:
+                    discovered_slugs.add(event_slug)
+                    discovered_event_map[event_slug] = event
+                # For binary events, also track individual market slugs
+                markets = event.get("markets", [])
+                if len(markets) <= 2:
+                    for market in markets:
+                        ms = market.get("slug", "")
+                        if ms:
+                            discovered_slugs.add(ms)
+
+            all_slugs = before_slugs | discovered_slugs
+
+            if output_callback:
+                new_found = discovered_slugs - before_slugs
+                if new_found:
+                    output_callback(f"Found {len(new_found)} new market(s): {', '.join(list(new_found)[:5])}")
+                output_callback(f"Total slugs to check: {len(all_slugs)}")
+                output_callback("")
+
+            # Check all markets (existing + discovered)
+            if output_callback:
+                output_callback("Checking markets...")
 
             new_config = {}
             total_events_checked = 0
 
-            # Check each slug from current config (these are event slugs)
-            for event_slug in before_slugs:
+            for event_slug in all_slugs:
                 total_events_checked += 1
                 if output_callback and total_events_checked % 2 == 0:
                     output_callback(f"Checked {total_events_checked}/{len(before_slugs)}...")
 
-                # Fetch current state of the event
-                event = self.scanner.get_event_by_slug(event_slug)
+                # Use cached event data if available, otherwise fetch
+                event = discovered_event_map.get(event_slug) or self.scanner.get_event_by_slug(event_slug)
                 if not event:
                     if output_callback:
                         output_callback(f"  Not found: {event_slug[:50]}")
@@ -530,6 +558,11 @@ class MarketsUpdater:
                             if match:
                                 num = int(match.group(1))
                                 outcomes.append([f"{num}+", num, None])
+                        elif "more than" in question_lower:
+                            match = re.search(r'more than (\d+)', question_lower)
+                            if match:
+                                num = int(match.group(1))
+                                outcomes.append([f"{num + 1}+", num + 1, None])
 
                     if outcomes:
                         # Sort outcomes by min value
@@ -566,9 +599,13 @@ class MarketsUpdater:
                                     num = outcome_name[1:]
                                     matched = bool(re.search(rf'fewer\s+than\s+{num}\b', question_lower))
                                 elif outcome_name.endswith("+"):
-                                    # Or more like "8+"
+                                    # Or more like "8+" or "more than 7"
                                     num = outcome_name[:-1]
                                     matched = bool(re.search(rf'{num}\s+or\s+more', question_lower))
+                                    if not matched:
+                                        # "more than X" where X = num - 1
+                                        prev_num = int(num) - 1
+                                        matched = bool(re.search(rf'more\s+than\s+{prev_num}\b', question_lower))
                                 else:
                                     # Exact like "2"
                                     matched = bool(re.search(rf'exactly\s+{outcome_name}\b', question_lower))
