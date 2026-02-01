@@ -637,86 +637,101 @@ def run_analysis(poly: PolymarketClient, usgs: USGSClient,
     all_prices = poly.get_all_earthquake_prices()
 
     # Count events to analyze
-    events_to_analyze = [slug for slug in all_prices.keys() if slug in market_configs]
-    total_events = len(events_to_analyze)
+    total_events = len(all_prices)
     current_event = 0
 
+    # Build condition_id -> config slug mapping for multi-binary events
+    cid_to_config_slug = {}
+    for cfg_slug, cfg in market_configs.items():
+        if "condition_id" in cfg:
+            cid_to_config_slug[cfg["condition_id"]] = cfg_slug
+
     for event_slug, markets in all_prices.items():
-        if event_slug not in market_configs:
-            continue
-
-        current_event += 1
-        if progress_callback:
-            progress_callback(f"Analyzing {current_event}/{total_events}...")
-
-        config = market_configs[event_slug]
-
-        # Собираем рыночные цены
-        market_prices = {}
-
-        for market in markets:
-            if not market.active:
+        if event_slug in market_configs:
+            # Direct match - process as single event
+            configs_to_process = [(event_slug, market_configs[event_slug], markets)]
+        else:
+            # Try matching individual markets by condition_id (multi-binary events)
+            configs_to_process = []
+            for market in markets:
+                cid = market.condition_id
+                if cid in cid_to_config_slug:
+                    cfg_slug = cid_to_config_slug[cid]
+                    configs_to_process.append((cfg_slug, market_configs[cfg_slug], [market]))
+            if not configs_to_process:
                 continue
 
-            yes_outcome = None
-            no_outcome = None
-            for outcome in market.outcomes:
-                if outcome.outcome_name == "Yes":
-                    yes_outcome = outcome
-                elif outcome.outcome_name == "No":
-                    no_outcome = outcome
+        for config_slug, config, config_markets in configs_to_process:
+            current_event += 1
+            if progress_callback:
+                progress_callback(f"Analyzing {current_event}/{total_events}...")
 
-            if yes_outcome is None or yes_outcome.closed:
-                continue
+            # Собираем рыночные цены
+            market_prices = {}
 
-            q = market.question.lower()
+            for market in config_markets:
+                if not market.active:
+                    continue
 
-            import re
-            for name, _, _ in config.get("outcomes", []):
-                matched = False
+                yes_outcome = None
+                no_outcome = None
+                for outcome in market.outcomes:
+                    if outcome.outcome_name == "Yes":
+                        yes_outcome = outcome
+                    elif outcome.outcome_name == "No":
+                        no_outcome = outcome
 
-                if name.endswith("+"):
-                    num = name[:-1]
-                    matched = bool(re.search(rf'\b{num}\s+or\s+more\b', q))
-                    if not matched:
-                        prev_num = int(num) - 1
-                        matched = bool(re.search(rf'more\s+than\s+{prev_num}\b', q))
-                elif "-" in name and name[0].isdigit():
-                    parts = name.split("-")
-                    if len(parts) == 2:
-                        matched = bool(re.search(rf'between\s+{parts[0]}\s+and\s+{parts[1]}', q))
-                elif name.startswith("<"):
-                    num = name[1:]
-                    matched = bool(re.search(rf'fewer\s+than\s+{num}\b', q))
+                if yes_outcome is None or yes_outcome.closed:
+                    continue
+
+                q = market.question.lower()
+
+                import re
+                for name, _, _ in config.get("outcomes", []):
+                    matched = False
+
+                    if name.endswith("+"):
+                        num = name[:-1]
+                        matched = bool(re.search(rf'\b{num}\s+or\s+more\b', q))
+                        if not matched:
+                            prev_num = int(num) - 1
+                            matched = bool(re.search(rf'more\s+than\s+{prev_num}\b', q))
+                    elif "-" in name and name[0].isdigit():
+                        parts = name.split("-")
+                        if len(parts) == 2:
+                            matched = bool(re.search(rf'between\s+{parts[0]}\s+and\s+{parts[1]}', q))
+                    elif name.startswith("<"):
+                        num = name[1:]
+                        matched = bool(re.search(rf'fewer\s+than\s+{num}\b', q))
+                    else:
+                        matched = bool(re.search(rf'exactly\s+{name}\b', q))
+
+                    if matched:
+                        market_prices[name] = yes_outcome.yes_price
+                        break
                 else:
-                    matched = bool(re.search(rf'exactly\s+{name}\b', q))
+                    market_prices[yes_outcome.outcome_name] = yes_outcome.yes_price
 
-                if matched:
-                    market_prices[name] = yes_outcome.yes_price
-                    break
-            else:
-                market_prices[yes_outcome.outcome_name] = yes_outcome.yes_price
+            # Анализируем
+            opps = analyze_market_tested(config_slug, config, usgs, market_prices, poly)
 
-        # Анализируем
-        opps = analyze_market_tested(event_slug, config, usgs, market_prices, poly)
+            # Добавляем condition_id и token_id из JSON конфигов (БЕЗ HTTP запросов!)
+            for opp in opps:
+                # Для binary markets
+                if "condition_id" in config:
+                    opp.condition_id = config["condition_id"]
+                    # token_ids для binary: {"Yes": "...", "No": "..."}
+                    if "token_ids" in config:
+                        opp.token_id = config["token_ids"].get(opp.outcome, "")
 
-        # Добавляем condition_id и token_id из JSON конфигов (БЕЗ HTTP запросов!)
-        for opp in opps:
-            # Для binary markets
-            if "condition_id" in config:
-                opp.condition_id = config["condition_id"]
-                # token_ids для binary: {"Yes": "...", "No": "..."}
-                if "token_ids" in config:
-                    opp.token_id = config["token_ids"].get(opp.outcome, "")
+                # Для count markets
+                elif "condition_ids" in config and "token_ids" in config:
+                    opp.condition_id = config["condition_ids"].get(opp.outcome, "")
+                    # token_ids для count: {"<5": {"Yes": "...", "No": "..."}, ...}
+                    outcome_tokens = config["token_ids"].get(opp.outcome, {})
+                    opp.token_id = outcome_tokens.get("Yes" if opp.side == "YES" else "No", "")
 
-            # Для count markets
-            elif "condition_ids" in config and "token_ids" in config:
-                opp.condition_id = config["condition_ids"].get(opp.outcome, "")
-                # token_ids для count: {"<5": {"Yes": "...", "No": "..."}, ...}
-                outcome_tokens = config["token_ids"].get(opp.outcome, {})
-                opp.token_id = outcome_tokens.get("Yes" if opp.side == "YES" else "No", "")
-
-        all_opportunities.extend(opps)
+            all_opportunities.extend(opps)
 
     # Получаем реальные цены из ордербука (параллельно!)
     if progress_callback:

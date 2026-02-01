@@ -399,6 +399,9 @@ class PolymarketExecutor:
                 price = 0.99
             # Round size DOWN to avoid exceeding available balance
             size = math.floor(size * 100) / 100
+            # Polymarket minimum order size is 5 tokens
+            if size < 5:
+                return None
             # Ensure on-chain approval for selling (one-time)
             self.ensure_sell_approval()
             # Update conditional token allowance on API and check balance

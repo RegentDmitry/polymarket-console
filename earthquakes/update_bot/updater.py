@@ -522,6 +522,60 @@ class MarketsUpdater:
                     "end": end_date or "2026-12-31T23:59:59Z",
                 }
 
+                # Detect true count event vs multi-binary event
+                # Count events have outcomes like "exactly 2", "3 or more", etc.
+                # Multi-binary events have multiple markets each with Yes/No outcomes
+                # but different end dates (e.g., "by Jan 31" and "by Mar 31")
+                if is_count_event:
+                    # Check if markets have different end dates — that means multi-binary, not count
+                    end_dates = set()
+                    for m in markets:
+                        ed = m.get("endDateIso", "")
+                        if ed:
+                            end_dates.add(ed[:10])  # Compare date part only
+                    if len(end_dates) > 1:
+                        # Multi-binary event: save each market separately with its own slug
+                        for market in markets:
+                            if market.get("closed", False) or not market.get("active", True):
+                                continue
+                            market_slug = market.get("slug", "")
+                            if not market_slug:
+                                continue
+                            m_question = market.get("question", "")
+                            m_magnitude = self.scanner._infer_magnitude(m_question)
+                            m_end = market.get("endDateIso", "")
+                            m_condition_id = market.get("conditionId", "")
+                            m_entry = {
+                                "magnitude": m_magnitude,
+                                "start": start_date or datetime.now().isoformat(),
+                                "end": m_end,
+                                "type": "binary",
+                            }
+                            if m_condition_id:
+                                m_entry["condition_id"] = m_condition_id
+                            # Parse token_ids
+                            try:
+                                import json as _json
+                                t_list = _json.loads(market.get("clobTokenIds", "[]"))
+                                o_list = _json.loads(market.get("outcomes", "[]"))
+                                t_ids = {}
+                                for i, o in enumerate(o_list):
+                                    if i < len(t_list):
+                                        t_ids[o] = t_list[i]
+                                if t_ids:
+                                    m_entry["token_ids"] = t_ids
+                            except Exception:
+                                pass
+                            new_config[market_slug] = m_entry
+                            if market_slug in before_config:
+                                if before_config[market_slug] != m_entry:
+                                    if output_callback:
+                                        output_callback(f"  Updated: {market_slug[:50]}")
+                            else:
+                                if output_callback:
+                                    output_callback(f"  Added: {market_slug[:50]}")
+                        continue
+
                 if is_count_event:
                     # Count event - extract outcomes from market questions
                     config_entry["type"] = "count"
@@ -569,7 +623,71 @@ class MarketsUpdater:
                         outcomes.sort(key=lambda x: x[1] if x[1] is not None else 999)
                         config_entry["outcomes"] = outcomes
                 else:
-                    # Binary event
+                    # Check if this is a multi-binary event (multiple independent markets)
+                    # by checking if markets have different conditionIds
+                    condition_ids_set = set()
+                    for m in markets:
+                        cid = m.get("conditionId", "")
+                        if cid:
+                            condition_ids_set.add(cid)
+
+                    if len(condition_ids_set) > 1:
+                        # Multi-binary: each market is independent, save separately
+                        for market in markets:
+                            if market.get("closed", False) or not market.get("active", True):
+                                continue
+                            market_slug = market.get("slug", "")
+                            if not market_slug:
+                                continue
+                            m_question = market.get("question", "")
+                            m_end = market.get("endDateIso", "")
+                            m_condition_id = market.get("conditionId", "")
+
+                            # Try to extract real end date from question
+                            import re as _re
+                            date_match = _re.search(
+                                r'by\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2}),?\s*(\d{4})',
+                                m_question.lower()
+                            )
+                            if date_match:
+                                month_names = {"january": "01", "february": "02", "march": "03",
+                                               "april": "04", "may": "05", "june": "06",
+                                               "july": "07", "august": "08", "september": "09",
+                                               "october": "10", "november": "11", "december": "12"}
+                                m_end = f"{date_match.group(3)}-{month_names[date_match.group(1)]}-{int(date_match.group(2)):02d}"
+
+                            m_entry = {
+                                "magnitude": magnitude,
+                                "start": start_date or datetime.now().isoformat(),
+                                "end": m_end,
+                                "type": "binary",
+                            }
+                            if m_condition_id:
+                                m_entry["condition_id"] = m_condition_id
+                            # Parse token_ids from market data
+                            try:
+                                import json as _json
+                                t_list = _json.loads(market.get("clobTokenIds", "[]"))
+                                o_list = _json.loads(market.get("outcomes", "[]"))
+                                t_ids = {}
+                                for i, o in enumerate(o_list):
+                                    if i < len(t_list):
+                                        t_ids[o] = t_list[i]
+                                if t_ids:
+                                    m_entry["token_ids"] = t_ids
+                            except Exception:
+                                pass
+                            new_config[market_slug] = m_entry
+                            if market_slug in before_config:
+                                if before_config[market_slug] != m_entry:
+                                    if output_callback:
+                                        output_callback(f"  Updated: {market_slug[:50]}")
+                            else:
+                                if output_callback:
+                                    output_callback(f"  Added: {market_slug[:50]}")
+                        continue
+
+                    # Single binary event
                     config_entry["type"] = "binary"
 
                 # Add condition_id and token_ids from polymarket data

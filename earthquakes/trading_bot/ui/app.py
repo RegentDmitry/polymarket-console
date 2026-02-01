@@ -1021,6 +1021,7 @@ class TradingBotApp(App):
         # Get market from cache
         market = self._markets_cache.get(signal.market_slug)
         if not market:
+            logger.log_warning(f"Market not found in cache: {signal.market_slug}")
             self.notify(f"Error: Market {signal.market_slug} not found in cache", markup=False)
             return
 
