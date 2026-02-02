@@ -224,7 +224,7 @@ class PositionsPanel(VerticalScroll):
                          fair_prices: dict[str, float] = None,
                          bid_prices: dict[str, float] = None,
                          sell_orders: dict[str, dict] = None) -> None:
-        self.positions = positions
+        self.positions = sorted(positions, key=lambda p: (p.market_slug, -p.entry_size))
         self.current_prices = current_prices
         self.fair_prices = fair_prices or {}
         self.bid_prices = bid_prices or {}
