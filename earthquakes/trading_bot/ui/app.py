@@ -165,7 +165,8 @@ class ScannerPanel(Static):
             liq_str = f"${signal.liquidity:.0f}" if signal.liquidity else "$0"
             size_str = f"${signal.suggested_size:.0f}" if signal.suggested_size > 0 else "-"
             lines.append(f"  Available: {liq_str}  |  Buy: {size_str}")
-            lines.append(f"  >>> BUY {signal.outcome}")
+            cost_str = f" (${signal.suggested_size:.2f})" if signal.suggested_size > 0 else ""
+            lines.append(f"  >>> BUY {signal.outcome}{cost_str}")
 
             if self.pending_confirmation and self.pending_confirmation.market_slug == signal.market_slug:
                 lines.append("  [yellow]Confirm? [Y/N][/yellow]")
@@ -497,6 +498,10 @@ class TradingBotApp(App):
             # Clean up stale sell orders (filled or cancelled while bot was off)
             self._init_sell_orders()
 
+            # Check storage vs on-chain balance discrepancies
+            self.notify("Checking on-chain balances...")
+            self.call_later(self._check_balance_discrepancies)
+
         # Initialize status bar
         status = self.query_one("#status-bar", Static)
         status_bar = StatusBar(self.config)
@@ -546,6 +551,13 @@ class TradingBotApp(App):
 
     async def do_scan(self) -> None:
         """Perform market scan."""
+        # Clear any pending confirmations - they use stale cache data
+        if self.pending_signal or self._pending_signals_queue:
+            self.pending_signal = None
+            self._pending_signals_queue = []
+            scanner_panel = self.query_one(ScannerPanel)
+            scanner_panel.set_pending_confirmation(None)
+
         # Set scanning state (may already be set by action_refresh)
         if not self.scanning:
             self.scanning = True
@@ -585,10 +597,12 @@ class TradingBotApp(App):
 
             # Calculate suggested sizes: buy all available liquidity (or remaining balance)
             balance = self.executor.get_balance() if self.executor.initialized else 0
+            remaining_balance = balance
             for signal in entry_signals:
-                if signal.liquidity > 0 and balance > 0:
+                if signal.liquidity > 0 and remaining_balance > 0:
                     # Buy all available at good prices, but not more than we have
-                    signal.suggested_size = min(signal.liquidity, balance)
+                    signal.suggested_size = min(signal.liquidity, remaining_balance)
+                    remaining_balance -= signal.suggested_size
 
             # Note: BUY signals with zero liquidity are kept for visibility
             # (user can still place limit orders)
@@ -773,17 +787,108 @@ class TradingBotApp(App):
         except Exception:
             return None
 
-    def _calculate_sell_price(self, entry_price: float, fair_price: float) -> float:
-        """Calculate sell price with dynamic markup/discount.
-
-        - fair > entry (profitable): sell = entry + (fair - entry) * 1.3 (30% markup above edge)
-        - fair <= entry (losing): sell = entry + (fair - entry) * 0.7 (30% discount)
+    async def _check_balance_discrepancies(self) -> None:
+        """One-time check: compare storage tokens vs on-chain balances.
+        Auto-corrects by closing oldest positions (FIFO) when on-chain < storage.
         """
-        if fair_price > entry_price:
-            sell = entry_price + (fair_price - entry_price) * 1.3
+        logger = get_logger()
+        positions = self._get_all_positions()
+        if not positions:
+            return
+
+        # Group by token_id from sell_orders
+        sell_orders = self.sell_order_store.load_all()
+        token_positions: dict[str, list] = {}  # token_id -> [pos]
+        no_token: list = []
+
+        for pos in positions:
+            so = sell_orders.get(pos.id)
+            if so and so.get("token_id"):
+                token_positions.setdefault(so["token_id"], []).append(pos)
+            else:
+                no_token.append(pos)
+
+        logger.log_info("=== BALANCE DISCREPANCY CHECK ===")
+        total_corrected = 0
+
+        for token_id, group in token_positions.items():
+            storage_total = sum(p.tokens for p in group)
+            on_chain = self._get_token_balance(token_id)
+            if on_chain is None:
+                logger.log_warning(f"  {group[0].market_slug[:40]} - API error")
+                continue
+            diff = on_chain - storage_total
+            slug = group[0].market_slug[:45]
+            if abs(diff) > 1 and diff < 0:
+                excess = -diff  # tokens to remove
+                logger.log_warning(
+                    f"  MISMATCH: {slug} | "
+                    f"storage={storage_total:.2f} on_chain={on_chain:.2f} diff={diff:+.2f}"
+                )
+                # Sort by entry_time (oldest first) for FIFO closing
+                sorted_group = sorted(group, key=lambda p: p.entry_time or "")
+                for pos in sorted_group:
+                    if excess <= 0.01:
+                        break
+                    so = sell_orders.get(pos.id)
+                    sell_price = so["price"] if so else pos.entry_price
+                    if pos.tokens <= excess + 0.01:
+                        # Close entire position
+                        pnl = pos.tokens * sell_price - pos.entry_size
+                        logger.log_info(
+                            f"    AUTO-CLOSE: {pos.id} ({pos.tokens:.2f} tokens) "
+                            f"@ {sell_price:.1%} P&L: ${pnl:+.2f}"
+                        )
+                        self.position_storage.close_position(pos.id, sell_price)
+                        self.sell_order_store.remove(pos.id)
+                        excess -= pos.tokens
+                        total_corrected += 1
+                    else:
+                        # Partial close: reduce tokens on this position
+                        old_tokens = pos.tokens
+                        pos.tokens = old_tokens - excess
+                        pos.entry_size = pos.tokens * pos.entry_price
+                        self.position_storage.save(pos)
+                        logger.log_info(
+                            f"    PARTIAL-CLOSE: {pos.id} "
+                            f"{old_tokens:.2f} -> {pos.tokens:.2f} tokens "
+                            f"(removed {excess:.2f})"
+                        )
+                        total_corrected += 1
+                        excess = 0
+            elif abs(diff) <= 1:
+                logger.log_info(
+                    f"  OK: {slug} | "
+                    f"storage={storage_total:.2f} on_chain={on_chain:.2f}"
+                )
+
+        if no_token:
+            logger.log_info(f"  {len(no_token)} positions without token_id (no sell order yet)")
+
+        if total_corrected:
+            self.notify(
+                f"Auto-corrected {total_corrected} positions — check log",
+                severity="warning",
+            )
+            self._refresh_positions_panel()
         else:
-            sell = entry_price + (fair_price - entry_price) * 0.7
-        # Clamp to valid range
+            self.notify("Balance check OK — no discrepancies")
+        logger.log_info("=== END BALANCE CHECK ===")
+
+    def _calculate_sell_price(self, entry_price: float, fair_price: float) -> float:
+        """Calculate sell price with dynamic markup/discount proportional to edge.
+
+        sell = fair * (1 + edge_ratio * 0.5)
+        where edge_ratio = (fair - entry) / entry
+
+        - Large positive edge (fair >> entry): sell well above fair (capture profit)
+        - Small edge: sell ≈ fair
+        - Negative edge (fair < entry): sell below fair (accept loss to get filled)
+        """
+        if entry_price <= 0:
+            return round(max(0.01, min(0.99, fair_price)), 2)
+        edge_ratio = (fair_price - entry_price) / entry_price
+        sell = fair_price * (1 + edge_ratio * 0.5)
         sell = max(0.01, min(0.99, sell))
         return round(sell, 2)
 
@@ -851,9 +956,9 @@ class TradingBotApp(App):
         if self._shutting_down:
             return
 
-        # --- Phase 2: Group positions by token_id, place one sell per token ---
+        # --- Phase 2: Group ALL positions by token_id, place one sell per token ---
 
-        # Resolve token_id and fair/sell price for each position
+        # Collect all positions with fair price and token_id
         token_groups: dict[str, list] = {}  # token_id -> [(pos, sell_price)]
 
         for pos in positions:
@@ -866,23 +971,7 @@ class TradingBotApp(App):
             if not fair or fair <= 0 or fair >= 1:
                 continue
 
-            # Already has a live sell order — check if price needs update
-            existing = self.sell_order_store.get(pos.id)
             sell_price = self._calculate_sell_price(pos.entry_price, fair)
-            if existing and existing["order_id"] in open_ids:
-                if abs(existing["price"] - sell_price) < 0.005:
-                    continue  # Price unchanged, keep existing order
-                # Price changed — cancel old, will re-place below
-                self.executor.cancel_order(existing["order_id"])
-                self.sell_order_store.remove(pos.id)
-                logger.log_info(
-                    f"SELL ORDER updated: {pos.market_slug[:40]} "
-                    f"{existing['price']:.1%} -> {sell_price:.1%}"
-                )
-
-            # Skip positions that already have a live sell order (not cancelled above)
-            if self.sell_order_store.get(pos.id):
-                continue
 
             # Resolve token_id
             token_id = None
@@ -914,67 +1003,76 @@ class TradingBotApp(App):
         if self._shutting_down:
             return
 
-        # Place one sell order per token_id group
+        # For each token: check if we need to update, then place one consolidated order
         for token_id, group in token_groups.items():
             if self._shutting_down:
                 return
 
-            # Get on-chain balance for this token
-            on_chain = self._get_token_balance(token_id)
-
-            # Subtract already reserved (existing live sell orders on this token)
-            already_reserved = sum(
-                info["size"] for pid, info in self.sell_order_store.load_all().items()
-                if info.get("token_id") == token_id
-            )
-            if on_chain is not None:
-                available = on_chain - already_reserved
-                sell_size = math.floor(available * 100) / 100
-            else:
-                sell_size = sum(pos.tokens for pos, _ in group)
-                sell_size = math.floor(sell_size * 100) / 100
-
-            if sell_size < 5:
-                # Log once per token, not per position
-                if on_chain is not None and on_chain < 5:
-                    slug_sample = group[0][0].market_slug[:40]
-                    logger.log_info(
-                        f"SELL SKIP (< 5 tokens): {slug_sample} "
-                        f"on_chain={on_chain:.2f} reserved={already_reserved:.2f}"
-                    )
-                continue
-
-            # Use weighted average sell price across positions in the group
+            # Calculate target sell price (weighted average across all positions)
             total_tokens = sum(pos.tokens for pos, _ in group)
             if total_tokens > 0:
-                avg_sell_price = sum(pos.tokens * sp for pos, sp in group) / total_tokens
+                target_price = sum(pos.tokens * sp for pos, sp in group) / total_tokens
             else:
-                avg_sell_price = group[0][1]
-            avg_sell_price = max(0.01, min(0.99, round(avg_sell_price, 2)))
+                target_price = group[0][1]
+            target_price = max(0.01, min(0.99, round(target_price, 2)))
 
-            order_id = self.executor.place_sell_limit(token_id, avg_sell_price, sell_size)
+            # Check if all positions already have sell orders at this price
+            all_have_orders = True
+            for pos, _ in group:
+                existing = self.sell_order_store.get(pos.id)
+                if not existing or existing["order_id"] not in open_ids:
+                    all_have_orders = False
+                    break
+                if abs(existing["price"] - target_price) >= 0.005:
+                    all_have_orders = False
+                    break
+
+            if all_have_orders:
+                continue  # All positions covered at correct price
+
+            # Cancel all existing sell orders for this token
+            cancelled_ids = set()
+            for pos, _ in group:
+                existing = self.sell_order_store.get(pos.id)
+                if existing and existing["order_id"] not in cancelled_ids:
+                    if existing["order_id"] in open_ids:
+                        self.executor.cancel_order(existing["order_id"])
+                    cancelled_ids.add(existing["order_id"])
+                    self.sell_order_store.remove(pos.id)
+
+            # Get on-chain balance for this token
+            on_chain = self._get_token_balance(token_id)
+            if on_chain is not None:
+                sell_size = math.floor(on_chain * 100) / 100
+            else:
+                sell_size = math.floor(total_tokens * 100) / 100
+
+            if sell_size < 5:
+                slug_sample = group[0][0].market_slug[:40]
+                logger.log_info(
+                    f"SELL SKIP (< 5 tokens): {slug_sample} "
+                    f"on_chain={on_chain:.2f}"
+                )
+                continue
+
+            order_id = self.executor.place_sell_limit(token_id, target_price, sell_size)
             if order_id:
-                # Distribute the order across all positions in the group
-                remaining = sell_size
+                # Record order for all positions in the group
                 for pos, sp in group:
-                    pos_share = min(pos.tokens, remaining)
-                    if pos_share < 0.01:
-                        continue
                     self.sell_order_store.save(
-                        pos.id, order_id, avg_sell_price, token_id, pos_share, pos.market_slug
+                        pos.id, order_id, target_price, token_id, pos.tokens, pos.market_slug
                     )
-                    remaining -= pos_share
                 slug_sample = group[0][0].market_slug[:40]
                 logger.log_info(
                     f"SELL LIMIT placed: {slug_sample} "
-                    f"price={avg_sell_price:.1%} size={sell_size:.2f} "
+                    f"price={target_price:.1%} size={sell_size:.2f} "
                     f"({len(group)} positions)"
                 )
             else:
                 slug_sample = group[0][0].market_slug[:40]
                 logger.log_info(
                     f"SELL SKIP (place failed): {slug_sample} "
-                    f"price={avg_sell_price:.4f} size={sell_size:.2f}"
+                    f"price={target_price:.4f} size={sell_size:.2f}"
                 )
 
     async def process_signals(self, entry_signals: List[Signal],
@@ -1197,15 +1295,31 @@ class TradingBotApp(App):
 
     def action_confirm_yes(self) -> None:
         """Confirm pending action."""
+        if self.scanning:
+            self.notify("Scan in progress, please wait...")
+            return
         if self.pending_signal:
             logger = get_logger()
             logger.log_user_confirmed(self.pending_signal.type.value, self.pending_signal.market_slug)
-            asyncio.create_task(self.execute_signal(self.pending_signal))
-            # Show next signal in queue
+            signal = self.pending_signal
             self._show_next_pending_signal()
+            asyncio.create_task(self._execute_and_refresh(signal))
+
+    async def _execute_and_refresh(self, signal) -> None:
+        """Execute signal and block new scans until done."""
+        self.scanning = True
+        self.refresh_bindings()
+        try:
+            await self.execute_signal(signal)
+        finally:
+            self.scanning = False
+            self.refresh_bindings()
 
     def action_confirm_no(self) -> None:
         """Reject pending action."""
+        if self.scanning:
+            self.notify("Scan in progress, please wait...")
+            return
         if self.pending_signal:
             logger = get_logger()
             logger.log_user_rejected(self.pending_signal.type.value, self.pending_signal.market_slug)
