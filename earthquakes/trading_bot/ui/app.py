@@ -1018,12 +1018,8 @@ class TradingBotApp(App):
             if self._shutting_down:
                 return
 
-            # Calculate target sell price (weighted average across all positions)
-            total_tokens = sum(pos.tokens for pos, _ in group)
-            if total_tokens > 0:
-                target_price = sum(pos.tokens * sp for pos, sp in group) / total_tokens
-            else:
-                target_price = group[0][1]
+            # Use minimum sell price from group — most aggressive, closest to fair
+            target_price = min(sp for _, sp in group)
             target_price = max(0.01, min(0.99, round(target_price, 2)))
 
             # Check if all positions already have sell orders at this price
