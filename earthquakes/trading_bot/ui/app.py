@@ -2,6 +2,8 @@
 Main TUI application using Textual.
 """
 
+import math
+import time
 from datetime import datetime
 from typing import List, Optional
 import asyncio
@@ -498,8 +500,7 @@ class TradingBotApp(App):
             # Clean up stale sell orders (filled or cancelled while bot was off)
             self._init_sell_orders()
 
-            # Check storage vs on-chain balance discrepancies
-            self.notify("Checking on-chain balances...")
+            # Check storage vs on-chain balance discrepancies at startup
             self.call_later(self._check_balance_discrepancies)
 
         # Initialize status bar
@@ -722,6 +723,10 @@ class TradingBotApp(App):
             current_prices = self.scanner.get_current_prices() if self.scanner else {}
             self.update_status_bar(positions, current_prices)
 
+        # Auto-correct storage vs on-chain discrepancies
+        if self.executor.initialized and positions:
+            await self._check_balance_discrepancies()
+
         # Handle signals based on mode
         await self.process_signals(entry_signals, exit_signals)
 
@@ -788,41 +793,45 @@ class TradingBotApp(App):
             return None
 
     async def _check_balance_discrepancies(self) -> None:
-        """One-time check: compare storage tokens vs on-chain balances.
+        """Compare storage tokens vs on-chain balances.
         Auto-corrects by closing oldest positions (FIFO) when on-chain < storage.
         """
-        logger = get_logger()
         positions = self._get_all_positions()
-        if not positions:
+        if not positions or not self.executor.initialized:
             return
 
         # Group by token_id from sell_orders
         sell_orders = self.sell_order_store.load_all()
         token_positions: dict[str, list] = {}  # token_id -> [pos]
-        no_token: list = []
 
         for pos in positions:
             so = sell_orders.get(pos.id)
             if so and so.get("token_id"):
                 token_positions.setdefault(so["token_id"], []).append(pos)
-            else:
-                no_token.append(pos)
 
-        logger.log_info("=== BALANCE DISCREPANCY CHECK ===")
+        if not token_positions:
+            return
+
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._do_balance_correction, token_positions, sell_orders)
+
+    def _do_balance_correction(self, token_positions: dict, sell_orders: dict) -> None:
+        """Sync worker for balance correction."""
+        logger = get_logger()
+
         total_corrected = 0
 
         for token_id, group in token_positions.items():
             storage_total = sum(p.tokens for p in group)
             on_chain = self._get_token_balance(token_id)
             if on_chain is None:
-                logger.log_warning(f"  {group[0].market_slug[:40]} - API error")
                 continue
             diff = on_chain - storage_total
-            slug = group[0].market_slug[:45]
             if abs(diff) > 1 and diff < 0:
                 excess = -diff  # tokens to remove
+                slug = group[0].market_slug[:45]
                 logger.log_warning(
-                    f"  MISMATCH: {slug} | "
+                    f"BALANCE MISMATCH: {slug} | "
                     f"storage={storage_total:.2f} on_chain={on_chain:.2f} diff={diff:+.2f}"
                 )
                 # Sort by entry_time (oldest first) for FIFO closing
@@ -836,7 +845,7 @@ class TradingBotApp(App):
                         # Close entire position
                         pnl = pos.tokens * sell_price - pos.entry_size
                         logger.log_info(
-                            f"    AUTO-CLOSE: {pos.id} ({pos.tokens:.2f} tokens) "
+                            f"  AUTO-CLOSE: {pos.id} ({pos.tokens:.2f} tokens) "
                             f"@ {sell_price:.1%} P&L: ${pnl:+.2f}"
                         )
                         self.position_storage.close_position(pos.id, sell_price)
@@ -850,30 +859,23 @@ class TradingBotApp(App):
                         pos.entry_size = pos.tokens * pos.entry_price
                         self.position_storage.save(pos)
                         logger.log_info(
-                            f"    PARTIAL-CLOSE: {pos.id} "
+                            f"  PARTIAL-CLOSE: {pos.id} "
                             f"{old_tokens:.2f} -> {pos.tokens:.2f} tokens "
                             f"(removed {excess:.2f})"
                         )
                         total_corrected += 1
                         excess = 0
-            elif abs(diff) <= 1:
-                logger.log_info(
-                    f"  OK: {slug} | "
-                    f"storage={storage_total:.2f} on_chain={on_chain:.2f}"
-                )
-
-        if no_token:
-            logger.log_info(f"  {len(no_token)} positions without token_id (no sell order yet)")
 
         if total_corrected:
-            self.notify(
-                f"Auto-corrected {total_corrected} positions — check log",
-                severity="warning",
-            )
-            self._refresh_positions_panel()
-        else:
-            self.notify("Balance check OK — no discrepancies")
-        logger.log_info("=== END BALANCE CHECK ===")
+            try:
+                self.call_from_thread(
+                    self.notify,
+                    f"Auto-corrected {total_corrected} positions — check log",
+                    severity="warning",
+                )
+                self.call_from_thread(self._refresh_positions_panel)
+            except RuntimeError:
+                pass
 
     def _calculate_sell_price(self, entry_price: float, fair_price: float) -> float:
         """Calculate sell price with dynamic markup/discount proportional to edge.
@@ -901,10 +903,18 @@ class TradingBotApp(App):
         if self.config.dry_run or not self.executor.initialized or self._shutting_down:
             return
 
-        import math
         logger = get_logger()
         try:
-            open_ids = self.executor.get_open_order_ids()
+            open_orders = self.executor.get_open_orders()
+            open_ids = set()
+            open_orders_by_token: dict[str, list[str]] = {}  # token_id -> [order_id]
+            for o in open_orders:
+                oid = o.get("id") or o.get("order_id") or o.get("orderID")
+                tid = o.get("asset_id") or o.get("token_id") or ""
+                if oid:
+                    open_ids.add(oid)
+                    if tid:
+                        open_orders_by_token.setdefault(tid, []).append(oid)
         except Exception:
             return
 
@@ -1030,15 +1040,18 @@ class TradingBotApp(App):
             if all_have_orders:
                 continue  # All positions covered at correct price
 
-            # Cancel all existing sell orders for this token
+            # Cancel ALL live sell orders for this token (including orphaned ones)
             cancelled_ids = set()
+            for oid in open_orders_by_token.get(token_id, []):
+                if oid not in cancelled_ids:
+                    self.executor.cancel_order(oid)
+                    cancelled_ids.add(oid)
             for pos, _ in group:
-                existing = self.sell_order_store.get(pos.id)
-                if existing and existing["order_id"] not in cancelled_ids:
-                    if existing["order_id"] in open_ids:
-                        self.executor.cancel_order(existing["order_id"])
-                    cancelled_ids.add(existing["order_id"])
-                    self.sell_order_store.remove(pos.id)
+                self.sell_order_store.remove(pos.id)
+
+            # Wait for on-chain balance to unlock after cancellation
+            if cancelled_ids:
+                time.sleep(3)
 
             # Get on-chain balance for this token
             on_chain = self._get_token_balance(token_id)
