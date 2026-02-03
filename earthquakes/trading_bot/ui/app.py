@@ -42,13 +42,16 @@ class StatusBar(Static):
         self.unrealized_pnl = 0.0
         self.unrealized_pnl_pct = 0.0
         self.last_scan_time: Optional[datetime] = None
+        self.missed_liquidity = 0.0
 
     def update_status(self, balance: float, positions_count: int, invested: float,
                       unrealized_pnl: float, unrealized_pnl_pct: float,
                       last_scan_time: Optional[datetime] = None,
-                      matic_balance: float = 0.0) -> None:
+                      matic_balance: float = 0.0,
+                      missed_liquidity: float = 0.0) -> None:
         self.balance = balance
         self.matic_balance = matic_balance
+        self.missed_liquidity = missed_liquidity
         self.positions_count = positions_count
         self.invested = invested
         self.unrealized_pnl = unrealized_pnl
@@ -83,10 +86,11 @@ class StatusBar(Static):
         pnl_str = f"+${self.unrealized_pnl:.2f}" if self.unrealized_pnl >= 0 else f"-${abs(self.unrealized_pnl):.2f}"
         pnl_pct = f"+{self.unrealized_pnl_pct:.1%}" if self.unrealized_pnl_pct >= 0 else f"{self.unrealized_pnl_pct:.1%}"
 
+        missed_str = f"  |  Missed: ${self.missed_liquidity:,.0f}" if self.missed_liquidity > 0 else ""
         line2 = (
             f"  Mode: {mode}  |  "
             f"Scan: {format_interval(self.config.scan_interval)}  |  "
-            f"Unrealized: {pnl_str} ({pnl_pct})"
+            f"Unrealized: {pnl_str} ({pnl_pct}){missed_str}"
         )
 
         text = Text()
@@ -603,11 +607,15 @@ class TradingBotApp(App):
             entry_signals.sort(key=lambda s: s.edge, reverse=True)
             balance = self.executor.get_balance() if self.executor.initialized else 0
             remaining_balance = balance
+            total_liquidity = sum(s.liquidity for s in entry_signals if s.liquidity > 0)
             for signal in entry_signals:
                 if signal.liquidity > 0 and remaining_balance > 0:
                     # Buy all available at good prices, but not more than we have
                     signal.suggested_size = min(signal.liquidity, remaining_balance)
                     remaining_balance -= signal.suggested_size
+
+            # Track missed liquidity (profitable opportunities we couldn't afford)
+            self._missed_liquidity = max(0, total_liquidity - balance)
 
             # Note: BUY signals with zero liquidity are kept for visibility
             # (user can still place limit orders)
@@ -748,6 +756,7 @@ class TradingBotApp(App):
         balance = self.executor.get_balance()
         matic = getattr(self, '_matic_balance', 0.0)
 
+        missed = getattr(self, '_missed_liquidity', 0.0)
         status_bar = StatusBar(self.config)
         status_bar.update_status(
             balance=balance,
@@ -757,6 +766,7 @@ class TradingBotApp(App):
             unrealized_pnl_pct=unrealized_pnl_pct,
             last_scan_time=self._last_scan_time,
             matic_balance=matic,
+            missed_liquidity=missed,
         )
 
         status = self.query_one("#status-bar", Static)
@@ -1083,6 +1093,34 @@ class TradingBotApp(App):
                     f"({len(group)} positions)"
                 )
             else:
+                # Place failed - likely orphaned orders blocking balance
+                # Cancel ALL orders for this token and retry once
+                try:
+                    fresh_orders = self.executor.get_open_orders()
+                    retry_cancelled = False
+                    for o in fresh_orders:
+                        tid = o.get("asset_id") or o.get("token_id") or ""
+                        if tid == token_id:
+                            oid = o.get("id") or o.get("order_id") or o.get("orderID")
+                            if oid:
+                                self.executor.cancel_order(oid)
+                                retry_cancelled = True
+                    if retry_cancelled:
+                        time.sleep(3)
+                        order_id = self.executor.place_sell_limit(token_id, target_price, sell_size)
+                        if order_id:
+                            for pos, sp in group:
+                                self.sell_order_store.save(
+                                    pos.id, order_id, target_price, token_id, pos.tokens, pos.market_slug
+                                )
+                            slug_sample = group[0][0].market_slug[:40]
+                            logger.log_info(
+                                f"SELL LIMIT placed (retry): {slug_sample} "
+                                f"price={target_price:.1%} size={sell_size:.2f}"
+                            )
+                            continue
+                except Exception:
+                    pass
                 slug_sample = group[0][0].market_slug[:40]
                 logger.log_info(
                     f"SELL SKIP (place failed): {slug_sample} "
@@ -1092,9 +1130,12 @@ class TradingBotApp(App):
     async def process_signals(self, entry_signals: List[Signal],
                               exit_signals: List[Signal]) -> None:
         """Process trading signals based on mode."""
-        # Filter out BUY signals if balance is too low
+        # Filter out BUY signals if balance is too low or order would be < $1
         balance = self.executor.get_balance() if self.executor.initialized else 0
-        buy_signals = [s for s in entry_signals if s.type == SignalType.BUY] if balance >= 1.0 else []
+        buy_signals = [
+            s for s in entry_signals
+            if s.type == SignalType.BUY and s.suggested_size >= 1.0
+        ] if balance >= 1.0 else []
         actionable = buy_signals + exit_signals
 
         if not actionable:
