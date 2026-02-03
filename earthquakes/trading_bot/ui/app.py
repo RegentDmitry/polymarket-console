@@ -893,19 +893,22 @@ class TradingBotApp(App):
                 pass
 
     def _calculate_sell_price(self, entry_price: float, fair_price: float) -> float:
-        """Calculate sell price with dynamic markup/discount proportional to edge.
+        """Calculate sell price based on entry vs fair.
 
-        sell = fair * (1 + edge_ratio * 0.5)
-        where edge_ratio = (fair - entry) / entry
-
-        - Large positive edge (fair >> entry): sell well above fair (capture profit)
-        - Small edge: sell ≈ fair
-        - Negative edge (fair < entry): sell below fair (accept loss to get filled)
+        If entry > fair (bad entry): sell at fair (no discount, just exit)
+        If entry < fair (good entry): sell = fair * (1 + edge_ratio * 0.5)
         """
         if entry_price <= 0:
             return round(max(0.01, min(0.99, fair_price)), 2)
-        edge_ratio = (fair_price - entry_price) / entry_price
-        sell = fair_price * (1 + edge_ratio * 0.5)
+
+        if entry_price >= fair_price:
+            # Bad entry - sell at fair, no discount
+            sell = fair_price
+        else:
+            # Good entry - add markup proportional to edge
+            edge_ratio = (fair_price - entry_price) / entry_price
+            sell = fair_price * (1 + edge_ratio * 0.5)
+
         sell = max(0.01, min(0.99, sell))
         return round(sell, 2)
 
