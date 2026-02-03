@@ -599,6 +599,8 @@ class TradingBotApp(App):
                 self._markets_cache[market.slug] = market
 
             # Calculate suggested sizes: buy all available liquidity (or remaining balance)
+            # Sort by edge descending - prioritize highest edge opportunities
+            entry_signals.sort(key=lambda s: s.edge, reverse=True)
             balance = self.executor.get_balance() if self.executor.initialized else 0
             remaining_balance = balance
             for signal in entry_signals:
