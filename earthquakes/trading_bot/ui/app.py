@@ -4,7 +4,7 @@ Main TUI application using Textual.
 
 import math
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 import asyncio
 
@@ -67,10 +67,12 @@ class StatusBar(Static):
             scan_time = "--:--:--"
 
         # First line
+        utc_now = datetime.now(timezone.utc).strftime("%H:%M:%S")
         matic_str = f"{self.matic_balance:.4f}" if self.matic_balance < 1 else f"{self.matic_balance:.2f}"
 
         line1 = (
-            f"  Balance: ${self.balance:,.2f}  |  "
+            f"  UTC: {utc_now}  |  "
+            f"Balance: ${self.balance:,.2f}  |  "
             f"MATIC: {matic_str}  |  "
             f"Positions: {self.positions_count}  |  "
             f"Invested: ${self.invested:,.2f}  |  "
