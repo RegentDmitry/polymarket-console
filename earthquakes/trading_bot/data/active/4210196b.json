@@ -1,0 +1,21 @@
+{
+  "id": "4210196b",
+  "market_id": "0x580386e7f3b47fa0cd6d14688894f16958e6eacf5c9dce02bbfd4028bf6e738f",
+  "market_slug": "how-many-7pt0-or-above-earthquakes-in-2026-14-16-YES",
+  "market_name": "14-16 (YES)",
+  "outcome": "YES",
+  "resolution_date": null,
+  "entry_price": 0.28,
+  "entry_time": "2026-02-02T07:36:49.342141Z",
+  "entry_size": 38.29803152,
+  "tokens": 136.778684,
+  "exit_price": null,
+  "exit_time": null,
+  "exit_size": null,
+  "status": "open",
+  "strategy": "earthquake",
+  "fair_price_at_entry": 0.2840311527232088,
+  "edge_at_entry": 0.04403115272320879,
+  "entry_order_id": "0x58145da296dae5586efec482e69e7978da93c2542b0818df833f03840d14a264",
+  "exit_order_id": null
+}

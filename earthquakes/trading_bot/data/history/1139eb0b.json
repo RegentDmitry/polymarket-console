@@ -9,13 +9,13 @@
   "entry_time": "2026-02-01T07:19:31.383525Z",
   "entry_size": 13.25,
   "tokens": 25.0,
-  "exit_price": null,
-  "exit_time": null,
-  "exit_size": null,
-  "status": "open",
+  "exit_price": 0.5,
+  "exit_time": "2026-02-02T07:35:30.660938Z",
+  "exit_size": 12.5,
+  "status": "closed",
   "strategy": "earthquake",
   "fair_price_at_entry": 0.5651771685357433,
   "edge_at_entry": 0.035177168535743264,
   "entry_order_id": "0x85c0e91c5fb3f71ea5df201520e7d1860a93fd431eaccb4880a6e7d2d13c2857",
-  "exit_order_id": null
+  "exit_order_id": "0x75d0604da32ea93cde79ebb60804545c2dec853a3df40bdbd3361ac612931d97"
 }

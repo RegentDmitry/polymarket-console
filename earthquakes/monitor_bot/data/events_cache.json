@@ -1,0 +1,27 @@
+{
+  "last_updated": "2026-02-03T03:08:02.382709+00:00",
+  "event_count": 1,
+  "events": [
+    {
+      "event_id": "c89a3edf-807f-43a7-82b1-cac2dd01494d",
+      "best_magnitude": 4.56,
+      "best_magnitude_type": "mb",
+      "latitude": -19.971,
+      "longitude": -178.177,
+      "depth_km": 507.1,
+      "location_name": "Fiji Islands Region",
+      "event_time": "2026-02-02T21:25:40.470000+00:00",
+      "first_detected_at": "2026-02-02T21:59:45.574480+00:00",
+      "usgs_published_at": null,
+      "usgs_id": null,
+      "jma_id": null,
+      "emsc_id": null,
+      "gfz_id": "gfz2026cicn",
+      "iris_id": null,
+      "ingv_id": null,
+      "source_count": 1,
+      "is_significant": false,
+      "detection_advantage_minutes": null
+    }
+  ]
+}
