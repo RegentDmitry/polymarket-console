@@ -6,6 +6,13 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Load pyenv if available (for Linux servers)
+if [ -d "$HOME/.pyenv" ]; then
+    export PYENV_ROOT="$HOME/.pyenv"
+    export PATH="$PYENV_ROOT/bin:$PATH"
+    eval "$(pyenv init - bash)" 2>/dev/null || true
+fi
+
 echo "=================================================="
 echo "Earthquake Monitor Bot"
 echo "=================================================="

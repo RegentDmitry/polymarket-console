@@ -16,3 +16,12 @@ python-dotenv>=1.0.0
 # Scientific computing (trading_bot)
 scipy>=1.11.0
 numpy>=1.24.0
+
+# Blockchain (trading_bot)
+web3>=6.0.0
+
+# Database (monitor_bot)
+psycopg2-binary>=2.9.0
+
+# Update bot
+anthropic>=0.18.0

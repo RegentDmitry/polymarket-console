@@ -338,10 +338,6 @@ class RecentTradesPanel(Static):
         for trade in self.history.get_recent_trades(5):
             lines.append(trade.format_line())
 
-        lines.append("")
-        pnl_str = f"+${self.realized_pnl_today:.2f}" if self.realized_pnl_today >= 0 else f"-${abs(self.realized_pnl_today):.2f}"
-        lines.append(f"Realized P&L today:   {pnl_str}")
-
         content = "\n".join(lines) if lines else "No trades yet"
         return Panel(content, title="RECENT TRADES", border_style="cyan")
 
