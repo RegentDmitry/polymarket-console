@@ -7,6 +7,8 @@ Usage:
 """
 
 import sys
+import logging
+from datetime import datetime
 from pathlib import Path
 
 # Add parent directory to path
@@ -100,4 +102,19 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Set up crash log
+    crash_log = Path(__file__).parent.parent / "crash.log"
+    crash_logger = logging.getLogger("crash")
+    crash_logger.setLevel(logging.ERROR)
+    fh = logging.FileHandler(crash_log, encoding="utf-8")
+    fh.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    crash_logger.addHandler(fh)
+
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except Exception as e:
+        crash_logger.error("CRASH: %s", e, exc_info=True)
+        print(f"\nCRASH logged to {crash_log}: {e}")
+        sys.exit(1)
