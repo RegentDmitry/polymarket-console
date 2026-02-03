@@ -384,7 +384,7 @@ class TradingBotApp(App):
     }
 
     #status-bar {
-        height: 3;
+        height: 4;
         border: solid green;
         padding: 0 1;
         margin-top: 0;
@@ -616,6 +616,8 @@ class TradingBotApp(App):
 
             # Track missed liquidity (profitable opportunities we couldn't afford)
             self._missed_liquidity = max(0, total_liquidity - balance)
+            if self._missed_liquidity > 0:
+                get_logger().log_info(f"Missed liquidity: ${self._missed_liquidity:.2f} (total=${total_liquidity:.2f}, balance=${balance:.2f})")
 
             # Note: BUY signals with zero liquidity are kept for visibility
             # (user can still place limit orders)
@@ -757,6 +759,9 @@ class TradingBotApp(App):
         matic = getattr(self, '_matic_balance', 0.0)
 
         missed = getattr(self, '_missed_liquidity', 0.0)
+        # Debug: log missed value
+        if missed > 0:
+            get_logger().log_info(f"StatusBar update: missed=${missed:.2f}")
         status_bar = StatusBar(self.config)
         status_bar.update_status(
             balance=balance,
