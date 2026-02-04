@@ -102,9 +102,14 @@ class PolymarketExecutor:
             return OrderResult(success=False, error="No token ID"), None
 
         try:
-            # 1. Get current balance (with 2% safety margin for rounding/fees)
-            raw_balance = self.get_balance()
-            balance = raw_balance * 0.98
+            # 1. Use suggested_size from signal (respects reserve balance)
+            # Fall back to full balance only if suggested_size not set
+            if signal.suggested_size and signal.suggested_size > 0:
+                balance = signal.suggested_size * 0.98  # 2% safety margin
+            else:
+                raw_balance = self.get_balance()
+                balance = raw_balance * 0.98
+
             if balance <= 0:
                 return OrderResult(success=False, error="No balance available"), None
 
