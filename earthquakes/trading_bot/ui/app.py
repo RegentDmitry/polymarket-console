@@ -426,14 +426,12 @@ class TradingBotApp(App):
         Binding("q", "quit", "Quit", key_display="Q"),
         Binding("r", "refresh", "Scan", key_display="R"),
         Binding("h", "history", "History", key_display="H"),
-        Binding("m", "toggle_mode", "Mode", key_display="M"),
         Binding("y", "confirm_yes", "Yes", show=False),
         Binding("n", "confirm_no", "No", show=False),
         # Russian keyboard layout support
         Binding("й", "quit", "Quit", show=False),
         Binding("к", "refresh", "Scan", show=False),
         Binding("р", "history", "History", show=False),
-        Binding("ь", "toggle_mode", "Mode", show=False),
         Binding("н", "confirm_yes", "Yes", show=False),
         Binding("т", "confirm_no", "No", show=False),
     ]
