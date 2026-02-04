@@ -78,11 +78,11 @@ def load_market_configs() -> dict:
 # КОНФИГУРАЦИЯ
 # ============================================================================
 
-# Минимальный edge для торговли (0.5% = 0.005)
-MIN_EDGE = 0.005
+# Минимальный edge для торговли (1% = 0.01)
+MIN_EDGE = 0.01
 
-# Минимальная годовая доходность (3% = 0.03)
-MIN_ANNUAL_RETURN = 0.03
+# Минимальная годовая доходность (20% = 0.20)
+MIN_ANNUAL_RETURN = 0.20
 
 # Минимальная ставка в долларах
 MIN_BET_USD = 5.0
@@ -254,6 +254,8 @@ class Opportunity:
     condition_id: str = ""
     liquidity_usd: Optional[float] = None  # Общая ликвидность в ордербуке
     usable_liquidity: Optional[float] = None  # Ликвидность по ценам, проходящим фильтры
+    weighted_edge: Optional[float] = None  # Средневзвешенный edge по usable_liquidity
+    weighted_apy: Optional[float] = None  # Средневзвешенный APY по usable_liquidity
 
     @property
     def expected_return(self) -> float:

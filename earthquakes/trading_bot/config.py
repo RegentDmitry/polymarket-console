@@ -26,6 +26,11 @@ class BotConfig:
     min_edge: float = 0.01  # 1% (noise protection)
     min_apy: float = 0.30   # 30% annualized
 
+    # Reserve balance for early detection (info advantage)
+    reserve_balance: float = 0.0       # $ to keep for early detection situations
+    reserve_min_certainty: float = 0.90  # Fair >= 90% = "верняк"
+    reserve_min_roi: float = 0.50      # ROI >= 50% = very profitable
+
     # Paths
     data_dir: Path = field(default_factory=lambda: Path("trading_bot/data"))
     active_dir: Path = field(default_factory=lambda: Path("trading_bot/data/active"))
@@ -115,6 +120,28 @@ Examples:
         help="Minimum APY (annualized return) to enter. Default: 0.30 (30%%)"
     )
 
+    # Reserve balance parameters
+    parser.add_argument(
+        "--reserve-balance",
+        type=float,
+        default=0.0,
+        help="Reserve balance for early detection ($). Default: 0 (disabled)"
+    )
+
+    parser.add_argument(
+        "--reserve-min-certainty",
+        type=float,
+        default=0.90,
+        help="Min certainty (fair price) to use reserve. Default: 0.90 (90%%)"
+    )
+
+    parser.add_argument(
+        "--reserve-min-roi",
+        type=float,
+        default=0.50,
+        help="Min ROI to use reserve. Default: 0.50 (50%%)"
+    )
+
     parser.add_argument(
         "--data-dir",
         type=Path,
@@ -131,6 +158,9 @@ Examples:
         max_positions=args.max_positions,
         min_edge=args.min_edge,
         min_apy=args.min_apy,
+        reserve_balance=args.reserve_balance,
+        reserve_min_certainty=args.reserve_min_certainty,
+        reserve_min_roi=args.reserve_min_roi,
         data_dir=args.data_dir,
         active_dir=args.data_dir / "active",
         history_dir=args.data_dir / "history",

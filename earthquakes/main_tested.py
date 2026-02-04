@@ -39,6 +39,9 @@ from markets import EARTHQUAKE_ANNUAL_RATES
 from usgs_client import USGSClient
 from polymarket_client import PolymarketClient
 
+# Для monitor_bot (альтернативный мониторинг - раннее обнаружение)
+from monitor_cache import get_monitor_events, get_cache_info
+
 
 # ============================================================================
 # ПРАВИЛА ВЫБОРА МОДЕЛИ (из бэктеста)
@@ -322,8 +325,13 @@ def analyze_market_tested(
     usgs: USGSClient,
     market_prices: dict[str, float],
     poly: PolymarketClient = None,
+    extra_events: list[dict] = None,
 ) -> list[TestedOpportunity]:
-    """Анализировать рынок с тестированной моделью."""
+    """Анализировать рынок с тестированной моделью.
+
+    Args:
+        extra_events: События из monitor_bot (ещё не в USGS) для раннего обнаружения
+    """
     opportunities = []
     now = datetime.now(timezone.utc)
 
@@ -331,9 +339,28 @@ def analyze_market_tested(
     start = config["start"]
     end = config["end"]
 
-    # Получаем текущее количество событий
+    # Получаем текущее количество событий из USGS
     earthquakes = usgs.get_earthquakes(start, now, magnitude)
-    current_count = len(earthquakes)
+    usgs_count = len(earthquakes)
+
+    # Добавляем extra events из monitor_bot (обнаружены, но ещё не в USGS)
+    extra_count = 0
+    if extra_events:
+        for ev in extra_events:
+            ev_mag = ev.get('best_magnitude', 0)
+            ev_time_str = ev.get('event_time')
+            if ev_mag >= magnitude and ev_time_str:
+                try:
+                    ev_time = datetime.fromisoformat(ev_time_str)
+                    if ev_time.tzinfo is None:
+                        ev_time = ev_time.replace(tzinfo=timezone.utc)
+                    # Проверяем, что событие в окне рынка
+                    if start <= ev_time <= now:
+                        extra_count += 1
+                except (ValueError, TypeError):
+                    pass
+
+    current_count = usgs_count + extra_count
 
     # Оставшиеся дни
     remaining_days = max(0, (end - now).total_seconds() / 86400)
@@ -511,9 +538,9 @@ def analyze_market_tested(
 
 def calculate_usable_liquidity_from_tiers(tiers: list[dict], fair_price: float,
                                           remaining_days: float, min_edge: float,
-                                          min_apy: float) -> float:
+                                          min_apy: float) -> tuple[float, float, float]:
     """
-    Рассчитать usable liquidity из уже полученных tiers (без запроса).
+    Рассчитать usable liquidity и средневзвешенные edge/APY из tiers.
 
     Args:
         tiers: Уровни ордербука из get_orderbook_full()
@@ -523,9 +550,14 @@ def calculate_usable_liquidity_from_tiers(tiers: list[dict], fair_price: float,
         min_apy: Минимальный APY
 
     Returns:
-        Сумма в USD, которую можно купить с edge >= min_edge и APY >= min_apy
+        Tuple (usable_liquidity, weighted_edge, weighted_apy):
+        - usable_liquidity: Сумма в USD, которую можно купить
+        - weighted_edge: Средневзвешенный edge по ликвидности
+        - weighted_apy: Средневзвешенный APY по ликвидности
     """
     usable = 0.0
+    weighted_edge_sum = 0.0
+    weighted_apy_sum = 0.0
 
     for tier in tiers:
         price = tier["price"]
@@ -539,11 +571,21 @@ def calculate_usable_liquidity_from_tiers(tiers: list[dict], fair_price: float,
         # Если проходит фильтры - добавляем
         if edge >= min_edge and apy >= min_apy:
             usable += size_usd
+            weighted_edge_sum += edge * size_usd
+            weighted_apy_sum += apy * size_usd
         else:
             # Дальше цены только хуже - выходим
             break
 
-    return usable
+    # Рассчитываем средневзвешенные значения
+    if usable > 0:
+        weighted_edge = weighted_edge_sum / usable
+        weighted_apy = weighted_apy_sum / usable
+    else:
+        weighted_edge = 0.0
+        weighted_apy = 0.0
+
+    return usable, weighted_edge, weighted_apy
 
 
 def get_usable_liquidity(poly: PolymarketClient, token_id: str,
@@ -570,7 +612,8 @@ def get_usable_liquidity(poly: PolymarketClient, token_id: str,
         return 0.0
 
     tiers = get_orderbook_tiers(poly, token_id, fair_price, remaining_days)
-    return calculate_usable_liquidity_from_tiers(tiers, fair_price, remaining_days, min_edge, min_apy)
+    usable, _, _ = calculate_usable_liquidity_from_tiers(tiers, fair_price, remaining_days, min_edge, min_apy)
+    return usable
 
 
 def process_opportunity_orderbook(opp: 'TestedOpportunity', poly: PolymarketClient,
@@ -613,10 +656,13 @@ def process_opportunity_orderbook(opp: 'TestedOpportunity', poly: PolymarketClie
             else:
                 opp.kelly = 0
 
-            # Рассчитываем usable liquidity из уже полученных tiers (БЕЗ нового запроса!)
-            opp.usable_liquidity = calculate_usable_liquidity_from_tiers(
+            # Рассчитываем usable liquidity и средневзвешенные edge/APY (БЕЗ нового запроса!)
+            usable, weighted_edge, weighted_apy = calculate_usable_liquidity_from_tiers(
                 tiers, opp.fair_price, opp.remaining_days, min_edge, min_apy
             )
+            opp.usable_liquidity = usable
+            opp.weighted_edge = weighted_edge
+            opp.weighted_apy = weighted_apy
 
     return opp
 
@@ -630,6 +676,11 @@ def run_analysis(poly: PolymarketClient, usgs: USGSClient,
 
     # Загружаем конфиги из JSON (hot-reload при каждом скане)
     market_configs = load_market_configs()
+
+    # Загружаем extra events из monitor_bot (события обнаруженные раньше USGS)
+    extra_events = get_monitor_events()
+    if extra_events and not progress_callback:
+        print(f"Monitor bot: {len(extra_events)} extra events (не в USGS)")
 
     # Получаем данные с Polymarket
     if progress_callback:
@@ -712,8 +763,8 @@ def run_analysis(poly: PolymarketClient, usgs: USGSClient,
                 else:
                     market_prices[yes_outcome.outcome_name] = yes_outcome.yes_price
 
-            # Анализируем
-            opps = analyze_market_tested(config_slug, config, usgs, market_prices, poly)
+            # Анализируем (с учётом extra events из monitor_bot)
+            opps = analyze_market_tested(config_slug, config, usgs, market_prices, poly, extra_events)
 
             # Добавляем condition_id и token_id из JSON конфигов (БЕЗ HTTP запросов!)
             for opp in opps:
@@ -770,19 +821,31 @@ def run_analysis(poly: PolymarketClient, usgs: USGSClient,
     return all_opportunities
 
 
-def print_opportunities(opportunities: list[TestedOpportunity], poly: PolymarketClient = None):
+def print_opportunities(opportunities: list[TestedOpportunity], poly: PolymarketClient = None,
+                        min_edge: float = MIN_EDGE, min_apy: float = MIN_ANNUAL_RETURN):
     """Вывести возможности с информацией о модели."""
     print("\n" + "=" * 80)
     print("ТОРГОВЫЕ ВОЗМОЖНОСТИ (Тестированная модель)")
     print("=" * 80)
 
     if not opportunities:
-        print(f"\nНет возможностей с edge > {MIN_EDGE:.0%} и APY > {MIN_ANNUAL_RETURN:.0%}")
+        print(f"\nНет возможностей с edge > {min_edge:.0%} и APY > {min_apy:.0%}")
+        return
+
+    # Фильтруем по min_edge и min_apy
+    filtered = [
+        opp for opp in opportunities
+        if opp.edge >= min_edge and opp.annual_return >= min_apy
+    ]
+
+    if not filtered:
+        print(f"\nНет возможностей с edge >= {min_edge:.0%} и APY >= {min_apy:.0%}")
+        print(f"(всего найдено {len(opportunities)} возможностей, но не прошли фильтры)")
         return
 
     # Группируем по событию
     best_per_event: dict[str, TestedOpportunity] = {}
-    for opp in opportunities:
+    for opp in filtered:
         if opp.event not in best_per_event or opp.annual_return > best_per_event[opp.event].annual_return:
             best_per_event[opp.event] = opp
 
@@ -797,6 +860,12 @@ def print_opportunities(opportunities: list[TestedOpportunity], poly: Polymarket
         print(f"   BUY {opp.side} на '{opp.outcome}'")
         print(f"   Модель: {opp.fair_price*100:.1f}% ({model_tag})  |  Рынок: {opp.market_price*100:.1f}%  |  Edge: {opp.edge*100:+.1f}%")
         print(f"   Событий: {opp.current_count}  |  Дней: {opp.remaining_days:.0f}  |  ROI: {opp.expected_return*100:+.1f}%  |  APY: {opp.annual_return*100:+.0f}%")
+        # Средневзвешенные значения по usable_liquidity
+        w_edge = getattr(opp, 'weighted_edge', None)
+        w_apy = getattr(opp, 'weighted_apy', None)
+        usable = getattr(opp, 'usable_liquidity', None) or 0
+        if w_edge is not None and usable > 0:
+            print(f"   Средневзв. (${usable:,.0f}): Edge {w_edge*100:+.1f}%  |  APY {w_apy*100:+.0f}%")
 
         # Стакан (asks) с выгодными ордерами
         if poly and opp.token_id:
@@ -947,17 +1016,17 @@ def main():
     print("\nАнализирую рынки...")
     opportunities = run_analysis(poly, usgs)
 
-    # Вывод
-    selected = print_opportunities(opportunities, poly)
+    # Вывод (с фильтрацией по MIN_EDGE и MIN_ANNUAL_RETURN)
+    selected = print_opportunities(opportunities, poly, MIN_EDGE, MIN_ANNUAL_RETURN)
 
     # Сохраняем отчёт
     if selected:
         report_path = save_report_to_markdown(selected, poly)
         print(f"\nОтчёт сохранён: {report_path}")
 
-    # Торговля
-    if (args.debug or args.auto) and opportunities:
-        allocations = allocate_portfolio(opportunities, args.bankroll)
+    # Торговля (только отфильтрованные возможности)
+    if (args.debug or args.auto) and selected:
+        allocations = allocate_portfolio(selected, args.bankroll)
 
         if allocations:
             print("\n" + "=" * 80)

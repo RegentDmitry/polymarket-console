@@ -1,7 +1,30 @@
 #!/bin/bash
 
-# Trading Bot Launcher
-# Usage: ./run_trading_bot.sh [--live] [--auto] [--interval 5m]
+# =============================================================================
+# EARTHQUAKE TRADING BOT — CONFIGURATION
+# =============================================================================
+
+# --- Signal Filters ---
+MIN_EDGE="0.01"              # 1% minimum edge
+MIN_APY="0.20"               # 20% minimum APY
+
+# --- Reserve Balance (for early detection) ---
+RESERVE_BALANCE="1000"       # $1000 kept for info advantage situations
+RESERVE_MIN_CERTAINTY="0.90" # 90% fair = "верняк" (certainty threshold)
+RESERVE_MIN_ROI="0.50"       # 50% ROI = very profitable
+
+# --- Scan Settings ---
+SCAN_INTERVAL="1m"           # Scan every 1 minute
+
+# --- Trading Mode ---
+# --dry-run        : simulation only (no real trades)
+# --live           : real trades with confirmation
+# --live --auto    : fully automatic trading
+MODE="--live --auto"
+
+# =============================================================================
+# STARTUP (don't modify below)
+# =============================================================================
 
 # Colors
 GREEN='\033[0;32m'
@@ -23,10 +46,18 @@ fi
 
 echo -e "${BLUE}Starting Trading Bot...${NC}"
 echo ""
+echo "Configuration:"
+echo "  Min Edge:      $MIN_EDGE"
+echo "  Min APY:       $MIN_APY"
+echo "  Reserve:       \$$RESERVE_BALANCE"
+echo "  Reserve ROI:   $RESERVE_MIN_ROI"
+echo "  Scan Interval: $SCAN_INTERVAL"
+echo "  Mode:          $MODE"
+echo ""
 
 # Check if .env exists
 if [ ! -f ".env" ]; then
-    echo -e "${YELLOW}⚠️  Warning: .env file not found${NC}"
+    echo -e "${YELLOW}Warning: .env file not found${NC}"
     if [ -f ".env.example" ]; then
         cp .env.example .env
         echo "  Created .env from .env.example - please configure your API keys"
@@ -40,7 +71,7 @@ fi
 if [ ! -d ".venv" ]; then
     echo -e "${YELLOW}Virtual environment not found. Creating...${NC}"
     python3 -m venv .venv
-    echo -e "${GREEN}✓ Virtual environment created${NC}"
+    echo -e "${GREEN}Virtual environment created${NC}"
 fi
 
 # Activate venv
@@ -52,7 +83,7 @@ if ! python -c "import textual" 2>/dev/null; then
     pip install -q -r requirements.txt
     # Install polymarket_console from parent directory
     pip install -q -e ..
-    echo -e "${GREEN}✓ Dependencies installed${NC}"
+    echo -e "${GREEN}Dependencies installed${NC}"
 fi
 
 # Auto-restart loop
@@ -61,10 +92,18 @@ RESTART_DELAY=5
 restart_count=0
 
 while true; do
-    echo -e "${GREEN}✓ Launching trading_bot...${NC}"
+    echo -e "${GREEN}Launching trading_bot...${NC}"
     echo ""
 
-    python -m trading_bot "$@"
+    python -m trading_bot \
+        --min-edge "$MIN_EDGE" \
+        --min-apy "$MIN_APY" \
+        --reserve-balance "$RESERVE_BALANCE" \
+        --reserve-min-certainty "$RESERVE_MIN_CERTAINTY" \
+        --reserve-min-roi "$RESERVE_MIN_ROI" \
+        --interval "$SCAN_INTERVAL" \
+        $MODE
+
     exit_code=$?
 
     # Exit cleanly on Ctrl+C (130) or normal exit (0)

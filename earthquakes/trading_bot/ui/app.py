@@ -43,12 +43,19 @@ class StatusBar(Static):
         self.unrealized_pnl_pct = 0.0
         self.last_scan_time: Optional[datetime] = None
         self.missed_liquidity = 0.0
+        # Reserve balance tracking
+        self.reserve_unlocked = False
+        self.extra_events_count = 0
+        self.reserve_signals_count = 0
 
     def update_status(self, balance: float, positions_count: int, invested: float,
                       unrealized_pnl: float, unrealized_pnl_pct: float,
                       last_scan_time: Optional[datetime] = None,
                       matic_balance: float = 0.0,
-                      missed_liquidity: float = 0.0) -> None:
+                      missed_liquidity: float = 0.0,
+                      reserve_unlocked: bool = False,
+                      extra_events_count: int = 0,
+                      reserve_signals_count: int = 0) -> None:
         self.balance = balance
         self.matic_balance = matic_balance
         self.missed_liquidity = missed_liquidity
@@ -56,6 +63,9 @@ class StatusBar(Static):
         self.invested = invested
         self.unrealized_pnl = unrealized_pnl
         self.unrealized_pnl_pct = unrealized_pnl_pct
+        self.reserve_unlocked = reserve_unlocked
+        self.extra_events_count = extra_events_count
+        self.reserve_signals_count = reserve_signals_count
         if last_scan_time:
             self.last_scan_time = last_scan_time
         self.refresh()
@@ -73,29 +83,52 @@ class StatusBar(Static):
         utc_now = datetime.now(timezone.utc).strftime("%H:%M:%S")
         matic_str = f"{self.matic_balance:.4f}" if self.matic_balance < 1 else f"{self.matic_balance:.2f}"
 
-        line1 = (
-            f"  UTC: {utc_now}  |  "
-            f"Balance: ${self.balance:,.2f}  |  "
-            f"MATIC: {matic_str}  |  "
-            f"Positions: {self.positions_count}  |  "
-            f"Invested: ${self.invested:,.2f}  |  "
-            f"Scanned: {scan_time}"
-        )
+        # Reserve status
+        reserve = self.config.reserve_balance
+        if reserve > 0:
+            if self.reserve_unlocked:
+                reserve_str = f"Rsv: UNLOCKED 🔓"
+            else:
+                reserve_str = f"Rsv: ${reserve:,.0f} 🔒"
+        else:
+            reserve_str = ""
+
+        line1_parts = [
+            f"  UTC: {utc_now}",
+            f"Balance: ${self.balance:,.2f}",
+        ]
+        if reserve_str:
+            line1_parts.append(reserve_str)
+        line1_parts.extend([
+            f"MATIC: {matic_str}",
+            f"Positions: {self.positions_count}",
+            f"Invested: ${self.invested:,.2f}",
+            f"Scanned: {scan_time}",
+        ])
+        line1 = "  |  ".join(line1_parts)
 
         # Second line
         pnl_str = f"+${self.unrealized_pnl:.2f}" if self.unrealized_pnl >= 0 else f"-${abs(self.unrealized_pnl):.2f}"
         pnl_pct = f"+{self.unrealized_pnl_pct:.1%}" if self.unrealized_pnl_pct >= 0 else f"{self.unrealized_pnl_pct:.1%}"
 
         missed_str = f"  |  Missed: ${self.missed_liquidity:,.0f}" if self.missed_liquidity > 0 else ""
+
+        # Extra events info
+        extra_str = ""
+        if self.extra_events_count > 0:
+            extra_str = f"  |  [bold yellow]EARLY: {self.extra_events_count} events[/bold yellow]"
+            if self.reserve_signals_count > 0:
+                extra_str += f" → {self.reserve_signals_count} signals"
+
         line2 = (
             f"  Mode: {mode}  |  "
             f"Scan: {format_interval(self.config.scan_interval)}  |  "
-            f"Unrealized: {pnl_str} ({pnl_pct}){missed_str}"
+            f"Unrealized: {pnl_str} ({pnl_pct}){missed_str}{extra_str}"
         )
 
         text = Text()
         text.append(line1 + "\n", style="bold")
-        text.append(line2, style="dim")
+        text.append_text(Text.from_markup(line2))
         return text
 
 
@@ -468,6 +501,12 @@ class TradingBotApp(App):
         # Sell order management
         self.sell_order_store = SellOrderStore()
 
+        # Reserve balance tracking
+        self._reserve_unlocked = False
+        self._reserve_signals_count = 0
+        self._missed_liquidity = 0.0
+        self._matic_balance = 0.0
+
     def compose(self) -> ComposeResult:
         yield Static(self.title, id="app-header")
         yield Static(id="status-bar")
@@ -596,22 +635,69 @@ class TradingBotApp(App):
             for market in self.scanner.get_markets():
                 self._markets_cache[market.slug] = market
 
-            # Calculate suggested sizes: buy all available liquidity (or remaining balance)
-            # Sort by edge descending - prioritize highest edge opportunities
-            entry_signals.sort(key=lambda s: s.edge, reverse=True)
-            balance = self.executor.get_balance() if self.executor.initialized else 0
-            remaining_balance = balance
-            total_liquidity = sum(s.liquidity for s in entry_signals if s.liquidity > 0)
-            for signal in entry_signals:
-                if signal.liquidity > 0 and remaining_balance > 0:
-                    # Buy all available at good prices, but not more than we have
-                    signal.suggested_size = min(signal.liquidity, remaining_balance)
-                    remaining_balance -= signal.suggested_size
+            # Calculate suggested sizes with reserve balance logic
+            # Sort by ROI → APY → Edge (descending)
+            entry_signals.sort(key=lambda s: (s.roi, s.annual_return, s.edge), reverse=True)
 
-            # Track missed liquidity (profitable opportunities we couldn't afford)
-            self._missed_liquidity = max(0, total_liquidity - balance)
+            total_balance = self.executor.get_balance() if self.executor.initialized else 0
+            reserve = self.config.reserve_balance
+            has_extra = self.scanner.has_extra_events
+
+            # Determine available balances
+            if reserve > 0 and has_extra:
+                # Early detection mode: split signals into reserve-worthy and regular
+                reserve_signals = []
+                regular_signals = []
+                for s in entry_signals:
+                    certainty = max(s.fair_price, 1 - s.fair_price)
+                    if (certainty >= self.config.reserve_min_certainty or
+                        s.roi >= self.config.reserve_min_roi):
+                        reserve_signals.append(s)
+                    else:
+                        regular_signals.append(s)
+
+                # Allocate reserve balance to reserve signals
+                reserve_balance = min(reserve, total_balance)
+                regular_balance = max(0, total_balance - reserve)
+
+                remaining_reserve = reserve_balance
+                for signal in reserve_signals:
+                    if signal.liquidity > 0 and remaining_reserve > 0:
+                        signal.suggested_size = min(signal.liquidity, remaining_reserve)
+                        remaining_reserve -= signal.suggested_size
+
+                # Allocate regular balance to regular signals
+                remaining_regular = regular_balance
+                for signal in regular_signals:
+                    if signal.liquidity > 0 and remaining_regular > 0:
+                        signal.suggested_size = min(signal.liquidity, remaining_regular)
+                        remaining_regular -= signal.suggested_size
+
+                # Track reserve usage
+                self._reserve_unlocked = len(reserve_signals) > 0
+                self._reserve_signals_count = len(reserve_signals)
+            else:
+                # Normal mode: use all balance minus reserve
+                if reserve > 0:
+                    available_balance = max(0, total_balance - reserve)
+                else:
+                    available_balance = total_balance
+
+                remaining_balance = available_balance
+                for signal in entry_signals:
+                    if signal.liquidity > 0 and remaining_balance > 0:
+                        signal.suggested_size = min(signal.liquidity, remaining_balance)
+                        remaining_balance -= signal.suggested_size
+
+                self._reserve_unlocked = False
+                self._reserve_signals_count = 0
+
+            # Track missed liquidity
+            total_liquidity = sum(s.liquidity for s in entry_signals if s.liquidity > 0)
+            allocated = sum(s.suggested_size for s in entry_signals if s.suggested_size > 0)
+            self._missed_liquidity = max(0, total_liquidity - allocated)
             if self._missed_liquidity > 0:
-                get_logger().log_info(f"Missed liquidity: ${self._missed_liquidity:.2f} (total=${total_liquidity:.2f}, balance=${balance:.2f})")
+                get_logger().log_info(f"Missed liquidity: ${self._missed_liquidity:.2f}")
 
             # Note: BUY signals with zero liquidity are kept for visibility
             # (user can still place limit orders)
@@ -753,9 +839,10 @@ class TradingBotApp(App):
         matic = getattr(self, '_matic_balance', 0.0)
 
         missed = getattr(self, '_missed_liquidity', 0.0)
-        # Debug: log missed value
-        if missed > 0:
-            get_logger().log_info(f"StatusBar update: missed=${missed:.2f}")
+        reserve_unlocked = getattr(self, '_reserve_unlocked', False)
+        reserve_signals = getattr(self, '_reserve_signals_count', 0)
+        extra_events = self.scanner.extra_events_count if self.scanner else 0
+
         status_bar = StatusBar(self.config)
         status_bar.update_status(
             balance=balance,
@@ -766,6 +853,9 @@ class TradingBotApp(App):
             last_scan_time=self._last_scan_time,
             matic_balance=matic,
             missed_liquidity=missed,
+            reserve_unlocked=reserve_unlocked,
+            extra_events_count=extra_events,
+            reserve_signals_count=reserve_signals,
         )
 
         status = self.query_one("#status-bar", Static)

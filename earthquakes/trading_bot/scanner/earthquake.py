@@ -26,6 +26,7 @@ try:
     from main import get_spread_info
     from polymarket_client import PolymarketClient
     from usgs_client import USGSClient
+    from monitor_cache import get_monitor_events
     IMPORTS_OK = True
 except ImportError as e:
     print(f"Warning: Failed to import main_tested: {e}")
@@ -33,6 +34,7 @@ except ImportError as e:
     TestedModel = None
     PolymarketClient = None
     get_spread_info = None
+    get_monitor_events = None
 
 
 class EarthquakeScanner(BaseScanner):
@@ -61,6 +63,28 @@ class EarthquakeScanner(BaseScanner):
         self._fair_prices: dict[str, float] = {}  # market_slug -> fair_price
         self._token_ids: dict[str, str] = {}  # market_slug -> token_id
         self._bid_prices: dict[str, float] = {}  # market_slug -> bid_price
+        # Extra events from monitor_bot (early detection)
+        self._extra_events: List[dict] = []
+        # Minimum magnitude to consider as "significant" for trading
+        self._min_significant_magnitude = 6.5
+
+    @property
+    def significant_extra_events(self) -> List[dict]:
+        """Extra events with magnitude >= 6.5 (affect trading markets)."""
+        return [
+            e for e in self._extra_events
+            if e.get('best_magnitude', 0) >= self._min_significant_magnitude
+        ]
+
+    @property
+    def has_extra_events(self) -> bool:
+        """True if there are significant events detected before USGS."""
+        return len(self.significant_extra_events) > 0
+
+    @property
+    def extra_events_count(self) -> int:
+        """Number of significant extra events from monitor_bot."""
+        return len(self.significant_extra_events)
 
     @property
     def name(self) -> str:
@@ -114,6 +138,21 @@ class EarthquakeScanner(BaseScanner):
             self._token_ids = {}
             self._condition_id_to_slug = {}  # condition_id -> unique_slug mapping
 
+            # Load extra events from monitor_bot (early detection)
+            self._extra_events = []
+            if get_monitor_events:
+                self._extra_events = get_monitor_events()
+                if self._extra_events:
+                    # Log all events
+                    logger.log_info(f"Monitor bot: {len(self._extra_events)} extra events total")
+                    # Log significant events (M6.5+) that affect trading
+                    significant = self.significant_extra_events
+                    if significant:
+                        for ev in significant:
+                            mag = ev.get('best_magnitude', 0)
+                            loc = ev.get('location_name', 'Unknown')[:30]
+                            logger.log_info(f"  SIGNIFICANT: M{mag:.1f} {loc} (early detection!)")
+
             # Run the same analysis as main_tested.py
             self._opportunities = run_analysis(
                 self.api_client, self.usgs_client,
@@ -163,13 +202,17 @@ class EarthquakeScanner(BaseScanner):
                 )
                 self._markets_cache.append(market)
 
-                # Check if meets our criteria
+                # Check if meets our criteria (using top-of-book - best case)
                 meets_edge = opp.edge >= self.config.min_edge
                 meets_apy = opp.annual_return >= self.config.min_apy
 
                 # Get usable liquidity (filtered by edge/apy) and kelly from opportunity
                 liquidity = getattr(opp, 'usable_liquidity', 0.0) or 0.0
                 kelly = getattr(opp, 'kelly', 0.0) or 0.0
+
+                # Use weighted edge/APY for display (average across all usable liquidity)
+                display_edge = getattr(opp, 'weighted_edge', None) or opp.edge
+                display_apy = getattr(opp, 'weighted_apy', None) or opp.annual_return
 
                 # Skip if liquidity below Polymarket minimum order ($1)
                 meets_liquidity = liquidity >= 1.0
@@ -183,12 +226,12 @@ class EarthquakeScanner(BaseScanner):
                         outcome=opp.side,
                         current_price=opp.market_price,
                         fair_price=opp.fair_price,
-                        edge=opp.edge,
+                        edge=display_edge,
                         roi=opp.expected_return,
                         days_remaining=opp.remaining_days,
                         token_id=opp.token_id,
                         model_used=getattr(opp, 'model_used', 'unknown'),
-                        annual_return=opp.annual_return,
+                        annual_return=display_apy,
                         liquidity=liquidity,
                         kelly=kelly,
                     )
@@ -201,11 +244,11 @@ class EarthquakeScanner(BaseScanner):
                         outcome=opp.side,
                         current_price=opp.market_price,
                         fair_price=opp.fair_price,
-                        edge=opp.edge,
+                        edge=display_edge,
                         roi=opp.expected_return,
                         days_remaining=opp.remaining_days,
                         model_used=getattr(opp, 'model_used', 'unknown'),
-                        annual_return=opp.annual_return,
+                        annual_return=display_apy,
                         liquidity=liquidity,
                         kelly=kelly,
                     )
