@@ -987,7 +987,7 @@ class TradingBotApp(App):
         If entry < fair (good entry): sell = fair * (1 + edge_ratio * 0.5)
         """
         if entry_price <= 0:
-            return round(max(0.01, min(0.99, fair_price)), 2)
+            return round(max(0.01, min(0.99, fair_price)), 3)
 
         if entry_price >= fair_price:
             # Bad entry - sell at fair, no discount
@@ -998,7 +998,7 @@ class TradingBotApp(App):
             sell = fair_price * (1 + edge_ratio * 0.5)
 
         sell = max(0.01, min(0.99, sell))
-        return round(sell, 2)
+        return round(sell, 3)
 
     def _manage_sell_orders(self, positions: List[Position], fair_prices: dict[str, float]):
         """Place/update sell limit orders for all positions.
@@ -1127,7 +1127,7 @@ class TradingBotApp(App):
             # Use minimum sell price from group — most aggressive, closest to fair
             target_price = min(sp for _, sp in group)
             total_tokens = sum(pos.tokens for pos, _ in group)
-            target_price = max(0.01, min(0.99, round(target_price, 2)))
+            target_price = max(0.01, min(0.99, round(target_price, 3)))
 
             # Check if all positions already have sell orders at this price
             all_have_orders = True
