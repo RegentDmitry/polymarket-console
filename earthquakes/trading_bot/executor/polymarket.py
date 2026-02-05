@@ -250,9 +250,15 @@ class PolymarketExecutor:
         if not self.client:
             return OrderResult(success=False, error="Client not initialized")
 
-        token_id = market.yes_token_id
+        # Use correct token_id based on position outcome
+        if position.outcome.upper() == "NO":
+            token_id = market.no_token_id
+            token_type = "NO"
+        else:
+            token_id = market.yes_token_id
+            token_type = "YES"
         if not token_id:
-            return OrderResult(success=False, error="No YES token ID")
+            return OrderResult(success=False, error=f"No {token_type} token ID")
 
         try:
             # Sell all tokens at current price
