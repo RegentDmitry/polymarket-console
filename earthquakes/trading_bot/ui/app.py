@@ -1130,13 +1130,15 @@ class TradingBotApp(App):
             target_price = max(0.01, min(0.99, round(target_price, 3)))
 
             # Check if all positions already have sell orders at this price
+            # Use relative threshold (2% of price) to update more frequently at low prices
+            price_threshold = max(0.001, target_price * 0.02)
             all_have_orders = True
             for pos, _ in group:
                 existing = self.sell_order_store.get(pos.id)
                 if not existing or existing["order_id"] not in open_ids:
                     all_have_orders = False
                     break
-                if abs(existing["price"] - target_price) >= 0.005:
+                if abs(existing["price"] - target_price) >= price_threshold:
                     all_have_orders = False
                     break
 
