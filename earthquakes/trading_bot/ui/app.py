@@ -1088,6 +1088,10 @@ class TradingBotApp(App):
                 if mapped_slug:
                     fair = fair_prices.get(mapped_slug)
             if not fair or fair <= 0 or fair >= 1:
+                if fair and fair >= 1:
+                    logger.log_info(f"SELL SKIP (fair >= 100%): {pos.market_slug[:40]} fair={fair:.1%}")
+                elif not fair:
+                    logger.log_info(f"SELL SKIP (no fair price): {pos.market_slug[:40]}")
                 continue
 
             sell_price = self._calculate_sell_price(pos.entry_price, fair)
@@ -1115,14 +1119,17 @@ class TradingBotApp(App):
                 except Exception as e:
                     logger.log_warning(f"SELL token_id API lookup failed: {e}")
             if not token_id:
+                logger.log_info(f"SELL SKIP (no token_id): {pos.market_slug[:40]}")
                 continue
 
             token_groups.setdefault(token_id, []).append((pos, sell_price))
+            logger.log_info(f"SELL GROUP: {pos.market_slug[:40]} token={token_id[:12]}... sell={sell_price:.1%}")
 
         if self._shutting_down:
             return
 
         # For each token: check if we need to update, then place one consolidated order
+        logger.log_info(f"SELL PROCESS: {len(token_groups)} token groups to process")
         for token_id, group in token_groups.items():
             if self._shutting_down:
                 return
@@ -1131,6 +1138,7 @@ class TradingBotApp(App):
             target_price = min(sp for _, sp in group)
             total_tokens = sum(pos.tokens for pos, _ in group)
             target_price = max(0.01, min(0.99, round(target_price, 3)))
+            logger.log_info(f"SELL CHECK: token={token_id[:12]}... target={target_price:.1%} positions={len(group)}")
 
             # Check if all positions already have sell orders at this price
             # Use relative threshold (2% of price) to update more frequently at low prices
@@ -1146,6 +1154,7 @@ class TradingBotApp(App):
                     break
 
             if all_have_orders:
+                logger.log_info(f"SELL SKIP (orders exist): {group[0][0].market_slug[:40]} @ {target_price:.1%}")
                 continue  # All positions covered at correct price
 
             # Cancel ALL live sell orders for this token (including orphaned ones)
@@ -1174,6 +1183,12 @@ class TradingBotApp(App):
                     f"SELL SKIP (< 5 tokens): {slug_sample} "
                     f"on_chain={on_chain:.2f}"
                 )
+                # Auto-close positions with 0 on-chain tokens (sold elsewhere)
+                if on_chain is not None and on_chain < 0.01:
+                    for pos, _ in group:
+                        if pos.tokens > 0:
+                            logger.log_info(f"AUTO-CLOSE (0 on-chain): {pos.market_slug[:40]}")
+                            self.position_storage.close_position(pos.id, 0.0)
                 continue
 
             order_id = self.executor.place_sell_limit(token_id, target_price, sell_size)
