@@ -168,6 +168,9 @@ class PolymarketExecutor:
             order_price = target_price
             avg_price = total_cost / available_size if available_size > 0 else target_price
 
+            # Record balance before buy to measure actual cost (incl. fees)
+            balance_before_buy = self.get_balance()
+
             # Try placing order, retry with half size on balance error
             last_error = None
             for attempt in range(3):
@@ -202,6 +205,19 @@ class PolymarketExecutor:
             order_id = result.get("orderID") or result.get("order_id")
 
             if order_id:
+                # Measure actual cost by checking balance after buy
+                actual_entry_size = total_cost  # fallback to estimate
+                try:
+                    balance_after_buy = self.get_balance()
+                    actual_cost = balance_before_buy - balance_after_buy
+                    # Sanity check: actual cost should be close to estimated
+                    if actual_cost > 0 and actual_cost < total_cost * 2:
+                        actual_entry_size = actual_cost
+                except Exception:
+                    pass  # keep estimated total_cost
+
+                actual_avg_price = actual_entry_size / available_size if available_size > 0 else avg_price
+
                 # Create position
                 position = Position(
                     market_id=signal.market_id,
@@ -209,9 +225,9 @@ class PolymarketExecutor:
                     market_name=signal.market_name,
                     outcome=signal.outcome,
                     resolution_date=market.end_date,
-                    entry_price=avg_price,
+                    entry_price=actual_avg_price,
                     entry_time=datetime.utcnow().isoformat() + "Z",
-                    entry_size=total_cost,
+                    entry_size=actual_entry_size,
                     tokens=available_size,
                     strategy="earthquake",
                     fair_price_at_entry=signal.fair_price,
@@ -222,8 +238,8 @@ class PolymarketExecutor:
                 return OrderResult(
                     success=True,
                     order_id=order_id,
-                    filled_price=avg_price,
-                    filled_size=total_cost,
+                    filled_price=actual_avg_price,
+                    filled_size=actual_entry_size,
                     tokens=available_size,
                 ), position
             else:
