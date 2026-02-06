@@ -580,36 +580,38 @@ class PolymarketExecutor:
             # Extract position data
             token_id = api_pos.get("asset", "")
             size = float(api_pos.get("size", 0))
-            avg_cost = float(api_pos.get("avgCost", 0))
-            market_info = api_pos.get("market", {})
+            avg_price = float(api_pos.get("avgPrice", 0))
+            initial_value = float(api_pos.get("initialValue", 0))
 
             if size <= 0:
                 continue
 
             # Build market slug from API data
-            condition_id = api_pos.get("conditionId", "") or market_info.get("conditionId", "") or market_info.get("condition_id", "")
+            condition_id = api_pos.get("conditionId", "")
             outcome = api_pos.get("outcome", "Yes")
             slug = api_pos.get("slug", condition_id)
+            title = api_pos.get("title", slug)
+            end_date = api_pos.get("endDate")
 
             # Skip if we already have this position locally
             if slug in existing_slugs:
                 continue
 
-            # Calculate entry price from avg cost and size
-            entry_price = avg_cost if avg_cost > 0 else 0.5
-            entry_size = size * entry_price
+            # Use API's avgPrice and initialValue for accurate cost basis
+            entry_price = avg_price if avg_price > 0 else (initial_value / size if size > 0 else 0.5)
+            entry_size = initial_value if initial_value > 0 else size * entry_price
 
             position = Position(
                 market_id=condition_id,
                 market_slug=slug,
-                market_name=market_info.get("question", slug)[:50],
+                market_name=title[:50],
                 outcome=outcome,
-                resolution_date=market_info.get("endDateIso"),
+                resolution_date=end_date,
                 entry_price=entry_price,
                 entry_time=datetime.utcnow().isoformat() + "Z",
                 entry_size=entry_size,
                 tokens=size,
-                strategy="synced",
+                strategy="earthquake",
                 fair_price_at_entry=entry_price,  # Unknown, use entry as estimate
             )
 
