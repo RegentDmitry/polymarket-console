@@ -33,7 +33,7 @@ Smart Money Analysis по 67 политическим рынкам Polymarket (2
 | Рынок | PM | Smart $ | Edge | Liq | Комментарий | Ссылка |
 |-------|-----|---------|------|-----|------------|--------|
 | US strikes Iran by Mar 31 NO | 60% | 88% | +28.9% | $151k | Лучший edge по NO, 50 дней | [Polymarket](https://polymarket.com/event/us-strikes-iran-by) |
-| Russia-Ukraine ceasefire 2026 YES | 8% | 21% | +13.6% | $559k | Flow -0.55 КОНФЛИКТ с edge, но liq огромная | [Polymarket](https://polymarket.com/event/russia-x-ukraine-ceasefire-before-2027) |
+| Russia-Ukraine ceasefire by Mar 31 YES | 8% | 21% | +13.6% | $567k | Flow -0.55 КОНФЛИКТ с edge, но liq огромная | [Polymarket](https://polymarket.com/event/russia-x-ukraine-ceasefire-by-march-31-2026) |
 | US/Israel strikes Iran Feb YES | 23% | 46% | +22.9% | $27k | Мало ликвидности | [Polymarket](https://polymarket.com/event/usisrael-strikes-iran-by) |
 
 ### Tier 3 — Спекулятивные
@@ -47,39 +47,33 @@ Smart Money Analysis по 67 политическим рынкам Polymarket (2
 
 ## Распределение портфеля $1,500
 
-### Консервативный блок — $1,000 (67%)
+Все 6 позиций — ставки на то, что события НЕ произойдут. Акцент на независимые от геополитики позиции (Fed, Greenland).
 
-Высоковероятные NO-ставки с быстрой резолюцией:
+| # | Ставка | Что покупать | Сумма | % | Цена | Мультипл. | Срок | Ссылка |
+|---|--------|-------------|-------|---|------|-----------|------|--------|
+| 1 | Fed March: ставку не снизят | **"No change" → Buy YES** | $450 | 30% | 84c | x1.19 | ~40 дней | [Polymarket](https://polymarket.com/event/fed-decision-in-march-885) |
+| 2 | US не ударит по Iran до Feb 28 | **"February 28" → Buy NO** | $300 | 20% | 78c | x1.28 | 19 дней | [Polymarket](https://polymarket.com/event/us-strikes-iran-by) |
+| 3 | Khamenei останется до Mar 31 | **Buy NO** | $250 | 17% | 82c | x1.22 | 50 дней | [Polymarket](https://polymarket.com/event/khamenei-out-as-supreme-leader-of-iran-by-march-31) |
+| 4 | Trump не купит Greenland | **Buy NO** | $200 | 13% | 88c | x1.14 | ~11 мес | [Polymarket](https://polymarket.com/event/will-trump-acquire-greenland-before-2027) |
+| 5 | US не ударит по Iran до Mar 31 | **"March 31" → Buy NO** | $150 | 10% | 60c | x1.67 | 50 дней | [Polymarket](https://polymarket.com/event/us-strikes-iran-by) |
+| 6 | US не купит часть Greenland в 2026 | **Buy NO** | $150 | 10% | 84c | x1.19 | ~11 мес | [Polymarket](https://polymarket.com/event/will-the-us-acquire-any-part-of-greenland-in-2026) |
 
-| Ставка | Сумма | Цена NO | Мультипл. | Срок | Ссылка |
-|--------|-------|---------|-----------|------|--------|
-| US strikes Iran by Feb 28 **NO** | $350 | ~78c | x1.28 | 19 дней | [Polymarket](https://polymarket.com/event/us-strikes-iran-by) |
-| Khamenei out by Mar 31 **NO** | $250 | ~82c | x1.22 | 50 дней | [Polymarket](https://polymarket.com/event/khamenei-out-as-supreme-leader-of-iran-by-march-31) |
-| Fed NO cut in March **NO** | $200 | ~86c | x1.16 | ~40 дней | [Polymarket](https://polymarket.com/event/fed-decision-in-march-885) |
-| Trump Greenland **NO** | $100 | ~88c | x1.14 | ~11 мес | [Polymarket](https://polymarket.com/event/will-trump-acquire-greenland-before-2027) |
-| US Greenland 2026 **NO** | $100 | ~84c | x1.19 | ~11 мес | [Polymarket](https://polymarket.com/event/will-the-us-acquire-any-part-of-greenland-in-2026) |
+### Распределение по рискам
 
-Ожидаемый возврат: ~$1,000 -> **~$1,200** (+$200, +20%) за 1-2 мес на коротких, до конца года на длинных.
+```
+Fed (независимый):     $450  (30%)  ████████████
+Iran (Feb+Mar):        $450  (30%)  ████████████
+Khamenei (ME):         $250  (17%)  ███████
+Greenland (x2):        $350  (23%)  █████████
+```
 
-### Средний блок — $300 (20%)
+Middle East суммарно: $700 (47%) — Iran $450 + Khamenei $250.
+После резолюции Iran Feb 28 (19 дней): ME exposure снизится до $400 (27%).
 
-Больший edge, срок до 50 дней:
+### Реинвестирование после Feb 28
 
-| Ставка | Сумма | Цена NO | Мультипл. | Срок | Ссылка |
-|--------|-------|---------|-----------|------|--------|
-| US strikes Iran by Mar 31 **NO** | $300 | ~60c | x1.67 | 50 дней | [Polymarket](https://polymarket.com/event/us-strikes-iran-by) |
-
-Возврат при резолюции NO: $300 -> **$500** (+$200).
-
-### Спекулятивный блок — $200 (13%)
-
-Лотерея с высоким мультипликатором:
-
-| Ставка | Сумма | Цена | Мультипл. | Срок | Ссылка |
-|--------|-------|------|-----------|------|--------|
-| Russia-Ukraine ceasefire 2026 **YES** | $200 | ~8c | x12.5 | ~11 мес | [Polymarket](https://polymarket.com/event/russia-x-ukraine-ceasefire-before-2027) |
-
-Возврат при резолюции YES: $200 -> **$2,500** (+$2,300). Маловероятно, но smart money implied 21% vs PM 8%.
+Если Iran Feb 28 NO выиграл → получаем ~$384 (+$84 прибыль).
+Варианты реинвеста: свежие short-duration NO с сильным smart money сигналом, или увеличить Fed.
 
 ---
 
@@ -87,11 +81,9 @@ Smart Money Analysis по 67 политическим рынкам Polymarket (2
 
 | Сценарий | Возврат | Прибыль |
 |----------|---------|---------|
-| Консервативный блок (все NO) | ~$1,200 | +$200 |
-| + Iran Mar 31 NO | ~$1,700 | +$400 |
-| Базовый (без спекуляции) | ~$1,700 | **+$400** |
-| + Россия-Украина ceasefire | ~$4,200 | +$2,700 |
-| APY консервативного блока | | **~60-100% годовых** |
+| Все 6 NO резолвятся | $1,500 → ~$1,780 | **+$280** |
+| Worst case (все стопы) | $1,500 → ~$1,195 | -$305 |
+| Iran black swan (Feb+Mar NO проиграли) | $1,500 → ~$1,075 | -$425 |
 
 ## Главная идея
 
@@ -103,20 +95,19 @@ Smart Money Analysis по 67 политическим рынкам Polymarket (2
 - Высокая вероятность выигрыша (геополитические события обычно НЕ происходят)
 - Smart money flow -0.80...-0.94 на всех Tier 1 ставках
 - Быстрый оборот капитала (19-50 дней)
-- Реинвестирование: после резолюции Feb 28 ($350 -> $449) перекладываем в следующий NO
+- Реинвестирование: после резолюции Feb 28 ($300 → $384) перекладываем в следующий NO
 
 ### Риски:
-- Black swan: если США реально ударят по Ирану — потеря $650 (Iran Feb + Iran Mar)
-- Корреляция: Iran strikes + Khamenei связаны через одно геополитическое событие
+- Black swan: если США ударят по Ирану — потеря $450 (Iran Feb + Iran Mar)
+- Корреляция: Iran strikes + Khamenei связаны через Middle East ($700, 47%)
 - Ликвидность на выходе: на NO-рынках может быть сложно продать до резолюции
-- Russia-Ukraine ceasefire — $200 можно считать потерянными с вероятностью ~80-90%
+- Greenland $350 заморожены на 11 месяцев ради ~$50 прибыли (низкая капиталоэффективность)
 
 ### Календарь резолюций:
-- **Feb 15** — US/Israel strikes Iran Feb (если в портфеле)
-- **Feb 28** — US strikes Iran Feb 28 -> если NO, получаем $449 -> реинвест
-- **Mar ~15** — Fed decision March -> если NO cut, получаем $232
-- **Mar 31** — Khamenei out + Iran Mar 31 + Greenland -> три резолюции сразу
-- **Dec 31** — Greenland 2026 + Russia-Ukraine ceasefire
+- **Feb 28** — US strikes Iran Feb 28 → если NO, получаем ~$384 → реинвест
+- **Mar ~15** — Fed decision March → если NO, получаем ~$523
+- **Mar 31** — Khamenei out + Iran Mar 31 → две резолюции
+- **Dec 31** — Greenland x2
 
 ---
 
