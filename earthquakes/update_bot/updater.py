@@ -456,12 +456,14 @@ class MarketsUpdater:
                     discovered_slugs.add(event_slug)
                     discovered_event_map[event_slug] = event
                 # For binary events, also track individual market slugs
+                # Map them to parent event so they can be resolved later
                 markets = event.get("markets", [])
                 if len(markets) <= 2:
                     for market in markets:
                         ms = market.get("slug", "")
                         if ms:
                             discovered_slugs.add(ms)
+                            discovered_event_map[ms] = event
 
             all_slugs = before_slugs | discovered_slugs
 
