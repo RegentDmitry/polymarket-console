@@ -10,6 +10,7 @@ Usage:
 
 import argparse
 import json
+import math
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -26,6 +27,7 @@ DATA_API = "https://data-api.polymarket.com"
 CACHE_PATH = Path("/tmp/pm_trader_cache.json")
 CACHE_TTL = 3600
 SHRINKAGE_K = 30
+MAX_WEIGHT_SHARE = 0.15  # макс. доля одного трейдера в сигнале
 MIN_VOLUME = 100_000  # минимум $100k объёма
 MIN_LIQUIDITY = 5_000  # минимум $5k ликвидности
 
@@ -205,6 +207,7 @@ def fetch_trader_stats(wallet: str, cache: dict) -> dict:
         r.raise_for_status()
         for p in r.json():
             stats["realized_pnl"] += float(p.get("realizedPnl", 0) or 0)
+            stats["total_volume"] += float(p.get("totalBought", 0) or 0)
         stats["n_trades"] += len(r.json())
     except:
         pass
@@ -260,7 +263,20 @@ def analyze_single_market(market: dict, event: dict, holder_limit: int,
         total_cats = sum(st["categories"].values()) or 1
         politics_share = st["categories"].get("politics", 0) / total_cats
 
-        weight = st["total_profit"] * conviction * shrinkage
+        # [v2] Log-scale profit — сжимаем outliers
+        profit_sign = 1.0 if st["total_profit"] >= 0 else -1.0
+        log_profit = profit_sign * math.log1p(abs(st["total_profit"]))
+
+        # [v2] ROI multiplier — награда за скилл
+        roi = st["total_profit"] / max(st["total_volume"], 1)
+        roi_mult = 1.0 + min(max(roi, -0.5), 2.0)
+
+        # [v2] Штраф за unrealized losses
+        health = 1.0
+        if st["unrealized_pnl"] < 0 and st["realized_pnl"] > 0:
+            health = max(0.2, 1.0 + st["unrealized_pnl"] / (abs(st["realized_pnl"]) + 1))
+
+        weight = log_profit * roi_mult * health * conviction * shrinkage
         if politics_share > 0.3:
             weight *= 1.0 + politics_share * 0.5
 
@@ -271,14 +287,22 @@ def analyze_single_market(market: dict, event: dict, holder_limit: int,
             "side": h["side"],
             "tokens": h["amount"],
             "profit": st["total_profit"],
-            "roi": (st["total_profit"] / max(st["total_volume"], 1)) * 100,
+            "roi": roi * 100,
             "trades": st["n_trades"],
-            "weight": weight,
+            "weight": abs(weight),
             "signed_weight": weight * side_sign,
         })
 
     if not scored:
         return None
+
+    # [v2] Кап: ни один трейдер не даёт больше MAX_WEIGHT_SHARE сигнала
+    total_abs = sum(abs(s["signed_weight"]) for s in scored) or 1
+    cap = MAX_WEIGHT_SHARE * total_abs
+    for s in scored:
+        if abs(s["signed_weight"]) > cap:
+            s["signed_weight"] = math.copysign(cap, s["signed_weight"])
+            s["weight"] = cap
 
     total_abs = sum(abs(s["signed_weight"]) for s in scored) or 1
     flow = sum(s["signed_weight"] for s in scored) / total_abs
@@ -330,7 +354,7 @@ def generate_report(results: list[MarketResult]) -> str:
         "## Методология",
         "",
         "Conviction-weighted Smart Money Flow по топ-холдерам каждого рынка.",
-        "**Weight** = `profit × conviction × shrinkage × politics_bonus`",
+        "**Weight** = `log(profit) × ROI_mult × health × conviction × shrinkage × politics_bonus`",
         "**Edge** = Smart Implied - PM Price (положительный = YES недооценён)",
         "",
     ]

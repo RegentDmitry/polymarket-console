@@ -13,6 +13,7 @@
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -30,6 +31,7 @@ CACHE_TTL = 3600  # 1 час
 REQUEST_TIMEOUT = 30
 HOLDER_LIMIT = 30  # топ холдеров на сторону
 SHRINKAGE_K = 30   # байесовский порог доверия
+MAX_WEIGHT_SHARE = 0.15  # макс. доля одного трейдера в сигнале
 
 
 # === Data Models ===
@@ -210,6 +212,7 @@ def fetch_trader_stats(wallet: str, cache: dict) -> TraderStats:
         for p in closed:
             rpnl = float(p.get("realizedPnl", 0) or 0)
             stats.realized_pnl += rpnl
+            stats.total_volume += float(p.get("totalBought", 0) or 0)
 
             title = p.get("title", "").lower()
             for tag in _extract_tags(title):
@@ -290,8 +293,21 @@ def analyze_market(market: MarketInfo, holders: list[Holder], cache: dict) -> di
         total_cats = sum(stats.categories.values()) or 1
         crypto_share = stats.categories.get("crypto", 0) / total_cats
 
-        # Weight = profit × conviction × shrinkage
-        weight = stats.total_profit * conviction * shrinkage
+        # [v2] Log-scale profit — сжимаем outliers
+        profit_sign = 1.0 if stats.total_profit >= 0 else -1.0
+        log_profit = profit_sign * math.log1p(abs(stats.total_profit))
+
+        # [v2] ROI multiplier — награда за скилл, не за размер
+        roi = stats.total_profit / max(stats.total_volume, 1)
+        roi_mult = 1.0 + min(max(roi, -0.5), 2.0)  # диапазон 0.5× — 3.0×
+
+        # [v2] Штраф за unrealized losses
+        health = 1.0
+        if stats.unrealized_pnl < 0 and stats.realized_pnl > 0:
+            health = max(0.2, 1.0 + stats.unrealized_pnl / (abs(stats.realized_pnl) + 1))
+
+        # Weight = log_profit × roi_mult × health × conviction × shrinkage
+        weight = log_profit * roi_mult * health * conviction * shrinkage
 
         # Бонус за профильность (+50% для crypto-трейдеров на crypto-рынках)
         if crypto_share > 0.3:
@@ -306,16 +322,24 @@ def analyze_market(market: MarketInfo, holders: list[Holder], cache: dict) -> di
             "tokens": h.amount,
             "position_value": position_value,
             "profit": stats.total_profit,
-            "roi": (stats.total_profit / max(stats.total_volume, 1)) * 100,
+            "roi": roi * 100,
             "trades": stats.n_total_trades,
             "conviction": conviction,
             "crypto_share": crypto_share,
-            "weight": weight,
+            "weight": abs(weight),
             "signed_weight": weight * side_sign,
             "portfolio_value": stats.portfolio_value,
         })
 
-    # Smart Money Flow
+    # [v2] Кап: ни один трейдер не даёт больше MAX_WEIGHT_SHARE сигнала
+    total_abs_weight = sum(abs(h["signed_weight"]) for h in scored_holders) or 1
+    cap = MAX_WEIGHT_SHARE * total_abs_weight
+    for h in scored_holders:
+        if abs(h["signed_weight"]) > cap:
+            h["signed_weight"] = math.copysign(cap, h["signed_weight"])
+            h["weight"] = cap
+
+    # Smart Money Flow (пересчёт после капа)
     total_abs_weight = sum(abs(h["signed_weight"]) for h in scored_holders) or 1
     smart_flow = sum(h["signed_weight"] for h in scored_holders) / total_abs_weight
 
