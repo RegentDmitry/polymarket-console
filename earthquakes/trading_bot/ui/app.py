@@ -984,23 +984,8 @@ class TradingBotApp(App):
                 pass
 
     def _calculate_sell_price(self, entry_price: float, fair_price: float) -> float:
-        """Calculate sell price based on entry vs fair.
-
-        If entry > fair (bad entry): sell at fair (no discount, just exit)
-        If entry < fair (good entry): sell = fair * (1 + edge_ratio * 0.5)
-        """
-        if entry_price <= 0:
-            return round(max(0.01, min(0.99, fair_price)), 3)
-
-        if entry_price >= fair_price:
-            # Bad entry - sell at fair, no discount
-            sell = fair_price
-        else:
-            # Good entry - add markup proportional to edge
-            edge_ratio = (fair_price - entry_price) / entry_price
-            sell = fair_price * (1 + edge_ratio * 0.5)
-
-        sell = max(0.01, min(0.99, sell))
+        """Calculate sell price = fair price."""
+        sell = max(0.01, min(0.99, fair_price))
         return round(sell, 3)
 
     def _manage_sell_orders(self, positions: List[Position], fair_prices: dict[str, float]):
