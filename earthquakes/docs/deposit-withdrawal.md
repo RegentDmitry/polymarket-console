@@ -10,18 +10,40 @@
 
 ## Что лежит на кошельке
 
-| Актив | Описание |
-|-------|----------|
-| USDC | Свободный баланс для новых покупок |
-| MATIC (POL) | Газ для транзакций на Polygon |
-| Conditional Tokens | Открытые позиции (покупки на Polymarket) |
+| Актив | Контракт | Описание |
+|-------|----------|----------|
+| USDC.e (bridged) | `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174` | Основной токен для торговли бота |
+| USDC (native) | `0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359` | Приходит при выводе с Polymarket UI — **бот НЕ использует** |
+| MATIC (POL) | нативный | Газ для транзакций на Polygon |
+| Conditional Tokens | по рынку | Открытые позиции (покупки на Polymarket) |
+
+> **ВАЖНО:** На Polygon существуют ДВА токена USDC — bridged (USDC.e) и native (USDC). Бот работает только с USDC.e. Если на кошельке есть native USDC (например, после вывода с Polymarket), бот его не увидит и не сможет использовать. Нужен swap через DEX (см. ниже).
 
 ## Пополнение (Deposit)
 
-### USDC (для торговли)
-1. Отправить **USDC** на адрес `0xff36fc6De4CCDd290C14EE69244c21c1803Ad5b7`
+### USDC.e (для торговли)
+1. Отправить **USDC.e** на адрес `0xff36fc6De4CCDd290C14EE69244c21c1803Ad5b7`
 2. **Обязательно сеть Polygon** (не Ethereum mainnet, не Arbitrum и т.д.)
-3. USDC контракт на Polygon: `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`
+3. USDC.e контракт: `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`
+4. **НЕ отправляй native USDC** (`0x3c499c...`) — бот его не использует
+
+### Если на кошельке оказался native USDC
+Polymarket UI при выводе отправляет **native USDC**, а не USDC.e. Чтобы бот мог использовать эти средства, нужен swap:
+
+**Вариант 1: Через DEX (QuickSwap/Uniswap)**
+1. Импортировать PK в MetaMask
+2. Открыть https://quickswap.exchange/#/swap
+3. Swap USDC (native) → USDC.e, 1:1
+
+**Вариант 2: Скриптом** (уже есть в проекте)
+```bash
+# На сервере:
+cd /opt/polymarket/earthquakes && POLYGON_RPC=https://polygon-bor-rpc.publicnode.com .venv/bin/python scripts/swap_usdc.py
+
+# Локально:
+POLYGON_RPC=https://polygon-bor-rpc.publicnode.com .venv/bin/python earthquakes/scripts/swap_usdc.py
+```
+Скрипт `earthquakes/scripts/swap_usdc.py` — свапает ВЕСЬ native USDC → USDC.e через Uniswap V3 (пул 0.05%, slippage 0.5%). Использует PK из `.env`.
 
 ### MATIC/POL (для газа)
 1. Отправить **MATIC** на тот же адрес `0xff36fc6De4CCDd290C14EE69244c21c1803Ad5b7`
