@@ -820,6 +820,12 @@ class TradingBotApp(App):
             current_prices = self.scanner.get_current_prices() if self.scanner else {}
             self.update_status_bar(positions, current_prices)
 
+        # Redeem resolved NegRisk positions (auto-claim winnings)
+        if self.executor.initialized and positions:
+            loop4 = asyncio.get_event_loop()
+            await loop4.run_in_executor(None, self._redeem_resolved_positions, positions)
+            positions = self._get_all_positions()
+
         # Auto-correct storage vs on-chain discrepancies
         if self.executor.initialized and positions:
             await self._check_balance_discrepancies()
@@ -983,6 +989,97 @@ class TradingBotApp(App):
             except RuntimeError:
                 pass
 
+    def _redeem_resolved_positions(self, positions: List[Position]) -> None:
+        """Check for resolved markets and redeem winning positions on-chain."""
+        logger = get_logger()
+        now = datetime.now(timezone.utc)
+
+        for pos in positions:
+            if self._shutting_down:
+                return
+            # Only check positions past their resolution date
+            if not pos.resolution_date:
+                continue
+            try:
+                res_date = datetime.fromisoformat(pos.resolution_date.replace("Z", "+00:00"))
+                if isinstance(res_date, datetime) and res_date.tzinfo is None:
+                    res_date = res_date.replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                try:
+                    from datetime import date
+                    d = date.fromisoformat(pos.resolution_date)
+                    res_date = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+                except (ValueError, TypeError):
+                    continue
+            if now < res_date:
+                continue
+
+            # Past resolution date — check if market is actually resolved
+            market = self.executor.get_market_info(pos.market_id)
+            if not market or not market.get("closed"):
+                continue
+
+            # Check which side won
+            tokens = market.get("tokens", [])
+            our_outcome = pos.outcome.upper()
+            we_won = False
+            for t in tokens:
+                if t.get("outcome", "").upper() == our_outcome and t.get("winner"):
+                    we_won = True
+                    break
+
+            if not we_won:
+                # We lost — close position at 0
+                logger.log_info(
+                    f"RESOLVED LOSS: {pos.market_slug[:40]} "
+                    f"({pos.outcome}) — closing at $0"
+                )
+                self.position_storage.close_position(pos.id, 0.0)
+                self.sell_order_store.remove(pos.id)
+                continue
+
+            # We won — get token_id for on-chain redeem
+            token_id = None
+            for t in tokens:
+                if t.get("outcome", "").upper() == our_outcome:
+                    token_id = t.get("token_id")
+                    break
+            if not token_id:
+                # Fallback: try scanner
+                if self.scanner:
+                    token_id = self.scanner._token_ids.get(pos.market_slug)
+            if not token_id:
+                continue
+
+            # Check if NegRisk
+            if not market.get("neg_risk"):
+                logger.log_info(
+                    f"RESOLVED WIN (non-NegRisk): {pos.market_slug[:40]} "
+                    f"— manual redeem needed"
+                )
+                continue
+
+            # Cancel any existing sell orders for this position
+            so = self.sell_order_store.get(pos.id)
+            if so and so.get("order_id"):
+                self.executor.cancel_order(so["order_id"])
+                self.sell_order_store.remove(pos.id)
+                time.sleep(2)
+
+            # Redeem via NegRisk adapter
+            condition_id = market.get("condition_id", pos.market_id)
+            success = self.executor.redeem_neg_risk(condition_id, pos.outcome, token_id)
+            if success:
+                logger.log_info(
+                    f"REDEEMED: {pos.market_slug[:40]} ({pos.outcome}) "
+                    f"— closing position"
+                )
+                self.position_storage.close_position(pos.id, 1.0)
+            else:
+                logger.log_warning(
+                    f"REDEEM FAILED: {pos.market_slug[:40]} — will retry next cycle"
+                )
+
     def _calculate_sell_price(self, entry_price: float, fair_price: float) -> float:
         """Calculate sell price = fair price."""
         sell = max(0.01, min(0.99, fair_price))
@@ -1126,15 +1223,15 @@ class TradingBotApp(App):
             logger.log_info(f"SELL CHECK: token={token_id[:12]}... target={target_price:.1%} positions={len(group)}")
 
             # Check if all positions already have sell orders at this price
-            # Use relative threshold (2% of price) to update more frequently at low prices
-            price_threshold = max(0.001, target_price * 0.02)
+            # Compare 2-decimal rounded prices (Polymarket only supports whole cents)
+            target_2d = round(target_price, 2)
             all_have_orders = True
             for pos, _ in group:
                 existing = self.sell_order_store.get(pos.id)
                 if not existing or existing["order_id"] not in open_ids:
                     all_have_orders = False
                     break
-                if abs(existing["price"] - target_price) >= price_threshold:
+                if round(existing["price"], 2) != target_2d:
                     all_have_orders = False
                     break
 
@@ -1178,10 +1275,11 @@ class TradingBotApp(App):
 
             order_id = self.executor.place_sell_limit(token_id, target_price, sell_size)
             if order_id:
-                # Record order for all positions in the group
+                # Record order with 2-decimal price (what actually got placed)
+                placed_price = round(target_price, 2)
                 for pos, sp in group:
                     self.sell_order_store.save(
-                        pos.id, order_id, target_price, token_id, pos.tokens, pos.market_slug
+                        pos.id, order_id, placed_price, token_id, pos.tokens, pos.market_slug
                     )
                 slug_sample = group[0][0].market_slug[:40]
                 logger.log_info(
@@ -1206,9 +1304,10 @@ class TradingBotApp(App):
                         time.sleep(3)
                         order_id = self.executor.place_sell_limit(token_id, target_price, sell_size)
                         if order_id:
+                            placed_price = round(target_price, 2)
                             for pos, sp in group:
                                 self.sell_order_store.save(
-                                    pos.id, order_id, target_price, token_id, pos.tokens, pos.market_slug
+                                    pos.id, order_id, placed_price, token_id, pos.tokens, pos.market_slug
                                 )
                             slug_sample = group[0][0].market_slug[:40]
                             logger.log_info(
