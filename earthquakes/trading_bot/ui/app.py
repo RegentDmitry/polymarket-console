@@ -1338,8 +1338,24 @@ class TradingBotApp(App):
             result, position = self.executor.buy(signal, market)
 
             if result.success and position:
-                # Save position
-                self.position_storage.save(position)
+                # Merge into existing position if same market+outcome, else create new
+                existing = self.position_storage.find_matching_position(
+                    position.market_slug, position.outcome
+                )
+                if existing:
+                    self.position_storage.merge_into(
+                        existing, position.tokens, position.entry_size,
+                        position.entry_price, position.entry_order_id
+                    )
+                    logger.log_info(
+                        f"MERGED into {existing.id}: "
+                        f"+{position.tokens:.2f} tokens, "
+                        f"total={existing.tokens:.2f}, "
+                        f"avg={existing.entry_price:.4f}"
+                    )
+                else:
+                    self.position_storage.save(position)
+                    logger.log_position_opened(position)
                 self.history_storage.record_buy(position, result.order_id)
                 self.notify(f"BUY order placed: {result.order_id}", markup=False)
 
@@ -1347,7 +1363,6 @@ class TradingBotApp(App):
                     "BUY", signal.market_slug, signal.outcome,
                     signal.current_price, position.tokens, position.entry_size
                 )
-                logger.log_position_opened(position)
 
                 # Update current price for the new position and refresh UI
                 self._current_prices[signal.market_slug] = signal.current_price

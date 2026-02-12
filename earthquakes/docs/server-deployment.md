@@ -92,6 +92,41 @@ rsync -avz --exclude='.venv' --exclude='__pycache__' --exclude='.git' \
   root@62.112.10.73:/opt/polymarket/earthquakes/
 ```
 
+## Скрипты обслуживания
+
+### Консолидация позиций
+
+Бот делает несколько мелких покупок на одном рынке, создавая отдельный файл на каждую. Скрипт объединяет их в одну позицию со средневзвешенной ценой.
+
+```bash
+# Dry-run (только показать план):
+.venv/bin/python scripts/consolidate_positions.py
+
+# Применить:
+.venv/bin/python scripts/consolidate_positions.py --apply
+
+# Сохранить старые файлы в history/ (вместо удаления):
+.venv/bin/python scripts/consolidate_positions.py --apply --keep
+```
+
+> **Примечание:** С февраля 2026 бот автоматически мержит покупки в существующую позицию (merge-on-buy), поэтому новые дубли не должны появляться. Скрипт нужен для фикса старых позиций.
+
+### Swap native USDC → USDC.e
+
+Polymarket UI при выводе отправляет native USDC, а бот работает с USDC.e. См. [deposit-withdrawal.md](deposit-withdrawal.md).
+
+```bash
+POLYGON_RPC=https://polygon-bor-rpc.publicnode.com .venv/bin/python scripts/swap_usdc.py
+```
+
+### Ресинхронизация позиций
+
+Отменяет все ордера, удаляет активные позиции и пересоздаёт из API Polymarket.
+
+```bash
+.venv/bin/python scripts/resync_positions.py
+```
+
 ## Логи
 
 ```bash

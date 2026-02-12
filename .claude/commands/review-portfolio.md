@@ -6,20 +6,34 @@
 
 ---
 
+## Шаг 0: Верификация позиций (ОБЯЗАТЕЛЬНО)
+
+**КРИТИЧЕСКИ ВАЖНО.** Перед началом анализа попроси у пользователя скриншот текущих позиций с Polymarket UI. Это единственный надёжный источник данных о ценах и статусе позиций.
+
+> Запрос: "Скинь скриншот текущих позиций с Polymarket (Portfolio → Positions)"
+
+Из скриншота извлеки для каждой позиции: текущую цену (AVG → NOW), стоимость (VALUE), P&L. Эти данные имеют приоритет над WebFetch.
+
+**НИКОГДА** не помечай позицию как "resolved" или "lost" на основании WebFetch. Polymarket event-страницы содержат множество суб-рынков, WebFetch может подхватить другой (зарезолвленный) суб-рынок с похожим названием. Только скриншот или прямое подтверждение пользователя.
+
+---
+
 ## Шаг 1: Получить текущие рыночные данные
 
-Для каждой позиции ниже — получи текущую цену с Polymarket через веб (WebFetch на ссылку Polymarket) или через API. Записывай цену рядом с каждой позицией. Также получи данные по февральским крипто-рынкам: https://polymarket.com/event/what-price-will-bitcoin-hit-in-february-2026
+Для каждой позиции ниже — получи текущую цену с Polymarket. **Приоритет источников:** 1) скриншот из Шага 0, 2) SM скрипт (выводит PM Price), 3) WebFetch (ненадёжен для SPA). Также получи данные по февральским крипто-рынкам: https://polymarket.com/event/what-price-will-bitcoin-hit-in-february-2026
 
 ### Политические позиции (~$1,500 портфель)
 
-| # | Ставка | Шейры | Вход | Stop-loss | Take-profit | Резолюция | Ссылка |
-|---|--------|-------|------|-----------|-------------|-----------|--------|
-| 1 | Fed March: "No change" YES | 535.7 | 84¢ | 70¢ | 95¢ → sell 100% | ~15-19 мар 2026 | https://polymarket.com/event/fed-decision-in-march-885 |
-| 2 | US strikes Iran Feb 28 NO | 384.6 | 78¢ | 60¢ | 90¢→50%, 95¢→100% | 28 фев 2026 | https://polymarket.com/event/us-strikes-iran-by |
-| 3 | Khamenei out Mar 31 NO | 298.0 | 84¢ | 65¢ | 92¢→50%, 97¢→100% | 31 мар 2026 | https://polymarket.com/event/khamenei-out-as-supreme-leader-of-iran-by-march-31 |
-| 4 | Trump acquires Greenland NO | 227.3 | 88¢ | 75¢ | 97¢→100% | конец 2026 | https://polymarket.com/event/will-trump-acquire-greenland-before-2027 |
-| 5 | US strikes Iran Mar 31 NO | 246.6 | 61¢ | 45¢ | 80¢→30%, 90¢→80% | 31 мар 2026 | https://polymarket.com/event/us-strikes-iran-by |
-| 6 | US acquires Greenland 2026 NO | 176.5 | 85¢ | 70¢ | 97¢→100% | 31 дек 2026 | https://polymarket.com/event/will-the-us-acquire-any-part-of-greenland-in-2026 |
+| # | Ставка | Шейры | Вход | Размер | Stop-loss | Take-profit | Резолюция | Ссылка |
+|---|--------|-------|------|--------|-----------|-------------|-----------|--------|
+| 1 | Fed March: "No change" YES | 535.7 | 84¢ | $449.95 | 70¢ | 95¢ → sell 100% | ~15-19 мар 2026 | https://polymarket.com/event/fed-decision-in-march-885 |
+| 2 | US strikes Iran Feb 28 NO | 384.6 | 78¢ | $299.96 | 60¢ | 90¢→50%, 95¢→100% | 28 фев 2026 | https://polymarket.com/event/us-strikes-iran-by |
+| 3 | Khamenei out Mar 31 NO | 298.0 | 84¢ | $249.99 | 65¢ | 92¢→50%, 97¢→100% | 31 мар 2026 | https://polymarket.com/event/khamenei-out-as-supreme-leader-of-iran-by-march-31 |
+| 4 | Trump acquires Greenland NO | 227.3 | 88¢ | $199.98 | 75¢ | 97¢→100% | конец 2026 | https://polymarket.com/event/will-trump-acquire-greenland-before-2027 |
+| 5 | US strikes Iran Mar 31 NO | 246.6 | 61¢ | $149.99 | 45¢ | 80¢→30%, 90¢→80% | 31 мар 2026 | https://polymarket.com/event/us-strikes-iran-by |
+| 6 | US acquires Greenland 2026 NO | 176.5 | 85¢ | $149.98 | 70¢ | 97¢→100% | 31 дек 2026 | https://polymarket.com/event/will-the-us-acquire-any-part-of-greenland-in-2026 |
+
+> ⚠️ **ОТКРЫТЫЙ ОРДЕР (2026-02-12):** Лимитный SELL на Iran Mar 31 NO — 247 шейров @ 63¢. Причина: SM нейтральный, военная эскалация. Проверь исполнение!
 
 ### Крипто позиции (~$1,543 портфель)
 
@@ -28,18 +42,20 @@
 
 | # | Контракт | Сторона | Шейры | Вход | Размер | Резолюция |
 |---|----------|---------|-------|------|--------|-----------|
-| 1 | BTC > $120k | YES | 1,342.9 | 22¢ | $296 | 31 дек 2026 |
-| 2 | BTC dip $55k | NO | 1,057.3 | 33¢ | $345 | 31 дек 2026 |
-| 3 | BTC > $150k | YES | 1,820.0 | 11¢ | $200 | 31 дек 2026 |
-| 4 | BTC > $100k | YES | 428.9 | 46¢ | $199 | 31 дек 2026 |
+| 1 | BTC > $120k | YES | 1,342.9 | 22¢ | $295.44 | 31 дек 2026 |
+| 2 | BTC dip $55k | NO | 1,057.3 | 33¢ | $344.79 | 31 дек 2026 |
+| 3 | BTC > $150k | YES | 1,820.0 | 11¢ | $200.20 | 31 дек 2026 |
+| 4 | BTC > $100k | YES | 428.9 | 46¢ | $199.32 | 31 дек 2026 |
 
 #### Февральские (краткосрочные)
 Рынок: https://polymarket.com/event/what-price-will-bitcoin-hit-in-february-2026
 
 | # | Контракт | Сторона | Шейры | Вход | Размер | Резолюция |
 |---|----------|---------|-------|------|--------|-----------|
-| 5 | BTC dip $60k Feb | NO | 452.2 | 67¢ | $303 | 28 фев 2026 |
-| 6 | BTC dip $55k Feb | NO | 236.4 | 85¢ | $200 | 28 фев 2026 |
+| 5 | BTC dip $60k Feb | NO | 452.2 | 67¢ | $302.96 | 28 фев 2026 |
+| 6 | BTC dip $55k Feb | NO | 236.4 | 85¢ | $199.99 | 28 фев 2026 |
+
+**Итого вложено: $3,042.54** (обновлено 2026-02-12 из Polymarket UI)
 
 ---
 

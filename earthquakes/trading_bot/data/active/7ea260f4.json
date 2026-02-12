@@ -5,10 +5,10 @@
   "market_name": "5-7 (YES)",
   "outcome": "YES",
   "resolution_date": null,
-  "entry_price": 0.041,
+  "entry_price": 0.054524748446840784,
   "entry_time": "2026-02-01T07:20:00.502201Z",
-  "entry_size": 8.30455,
-  "tokens": 202.55,
+  "entry_size": 83.98921598000001,
+  "tokens": 1540.3870420766045,
   "exit_price": null,
   "exit_time": null,
   "exit_size": null,
@@ -16,6 +16,6 @@
   "strategy": "earthquake",
   "fair_price_at_entry": 0.0685335388435687,
   "edge_at_entry": 0.027533538843568704,
-  "entry_order_id": "0x8d8eb6d271ae05f570bc1e07fd81339a6e06360566f18cefcbc2f4a0ec64a95b",
+  "entry_order_id": "0x15bb21695103bb51521e6a776a79c5a195f3a8f5dda306764017a6338ed86266",
   "exit_order_id": null
 }

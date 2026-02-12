@@ -115,6 +115,36 @@ class PositionStorage:
                 return position
         return None
 
+    def find_matching_position(self, market_slug: str, outcome: str) -> Optional[Position]:
+        """Find an active position for a specific market + outcome."""
+        for position in self.load_all_active():
+            if position.market_slug == market_slug and position.outcome == outcome:
+                return position
+        return None
+
+    def merge_into(self, existing: Position, new_tokens: float,
+                   new_entry_size: float, new_entry_price: float,
+                   new_order_id: Optional[str] = None) -> Position:
+        """Merge a new buy into an existing position (weighted average).
+
+        Updates tokens, entry_size, entry_price in place and saves.
+        """
+        old_tokens = existing.tokens
+        old_size = existing.entry_size
+
+        existing.tokens = old_tokens + new_tokens
+        existing.entry_size = old_size + new_entry_size
+        existing.entry_price = (
+            existing.entry_size / existing.tokens
+            if existing.tokens > 0 else new_entry_price
+        )
+        # Keep the most recent order id for reference
+        if new_order_id:
+            existing.entry_order_id = new_order_id
+
+        self.save(existing)
+        return existing
+
     def count_active(self) -> int:
         """Count active positions."""
         return len(list(self.active_dir.glob("*.json")))
