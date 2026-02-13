@@ -22,18 +22,17 @@
 
 Для каждой позиции ниже — получи текущую цену с Polymarket. **Приоритет источников:** 1) скриншот из Шага 0, 2) SM скрипт (выводит PM Price), 3) WebFetch (ненадёжен для SPA). Также получи данные по февральским крипто-рынкам: https://polymarket.com/event/what-price-will-bitcoin-hit-in-february-2026
 
-### Политические позиции (~$1,500 портфель)
+### Политические позиции (~$1,050 портфель)
 
 | # | Ставка | Шейры | Вход | Размер | Stop-loss | Take-profit | Резолюция | Ссылка |
 |---|--------|-------|------|--------|-----------|-------------|-----------|--------|
 | 1 | Fed March: "No change" YES | 535.7 | 84¢ | $449.95 | 70¢ | 95¢ → sell 100% | ~15-19 мар 2026 | https://polymarket.com/event/fed-decision-in-march-885 |
-| 2 | US strikes Iran Feb 28 NO | 384.6 | 78¢ | $299.96 | 60¢ | 90¢→50%, 95¢→100% | 28 фев 2026 | https://polymarket.com/event/us-strikes-iran-by |
-| 3 | Khamenei out Mar 31 NO | 298.0 | 84¢ | $249.99 | 65¢ | 92¢→50%, 97¢→100% | 31 мар 2026 | https://polymarket.com/event/khamenei-out-as-supreme-leader-of-iran-by-march-31 |
-| 4 | Trump acquires Greenland NO | 227.3 | 88¢ | $199.98 | 75¢ | 97¢→100% | конец 2026 | https://polymarket.com/event/will-trump-acquire-greenland-before-2027 |
-| 5 | US strikes Iran Mar 31 NO | 246.6 | 61¢ | $149.99 | 45¢ | 80¢→30%, 90¢→80% | 31 мар 2026 | https://polymarket.com/event/us-strikes-iran-by |
-| 6 | US acquires Greenland 2026 NO | 176.5 | 85¢ | $149.98 | 70¢ | 97¢→100% | 31 дек 2026 | https://polymarket.com/event/will-the-us-acquire-any-part-of-greenland-in-2026 |
+| 2 | Khamenei out Mar 31 NO | 298.0 | 84¢ | $249.99 | 65¢ | 92¢→50%, 97¢→100% | 31 мар 2026 | https://polymarket.com/event/khamenei-out-as-supreme-leader-of-iran-by-march-31 |
+| 3 | Trump acquires Greenland NO | 227.3 | 88¢ | $199.98 | 75¢ | 97¢→100% | конец 2026 | https://polymarket.com/event/will-trump-acquire-greenland-before-2027 |
+| 4 | US acquires Greenland 2026 NO | 176.5 | 85¢ | $149.98 | 70¢ | 97¢→100% | 31 дек 2026 | https://polymarket.com/event/will-the-us-acquire-any-part-of-greenland-in-2026 |
 
-> ⚠️ **ОТКРЫТЫЙ ОРДЕР (2026-02-12):** Лимитный SELL на Iran Mar 31 NO — 247 шейров @ 63¢. Причина: SM нейтральный, военная эскалация. Проверь исполнение!
+> ✅ **ЗАКРЫТА (2026-02-13):** Iran Mar 31 NO — продано 246.6 шейров @ 63¢ ($155.36). Вход 61¢ ($149.99). P&L: +$5.37.
+> ✅ **ЗАКРЫТА (2026-02-13):** Iran Feb 28 NO — продано 384.6 шейров @ 90¢ ($346.14). Вход 78¢ ($299.96). P&L: +$46.18.
 
 ### Крипто позиции (~$1,543 портфель)
 
@@ -55,13 +54,24 @@
 | 5 | BTC dip $60k Feb | NO | 452.2 | 67¢ | $302.96 | 28 фев 2026 |
 | 6 | BTC dip $55k Feb | NO | 236.4 | 85¢ | $199.99 | 28 фев 2026 |
 
-**Итого вложено: $3,042.54** (обновлено 2026-02-12 из Polymarket UI)
+**Итого вложено: $2,592.59** (обновлено 2026-02-13; Iran Mar 31 NO +$5.37, Iran Feb 28 NO +$46.18)
 
 ---
 
 ## Шаг 2: Проверить текущую цену BTC
 
-Получи текущую цену BTC (WebSearch "bitcoin price today"). Это нужно для оценки крипто-позиций.
+Получи текущую цену BTC через Binance API (основной источник, тот же что использует Polymarket). Запусти Bash команду:
+
+```bash
+curl -s 'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT'
+```
+
+Если Binance недоступен (fallback):
+```bash
+curl -s 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd'
+```
+
+Используй цену из API ответа для всего отчёта. **НЕ используй цену из Deribit скрипта** — у Deribit свой индекс, который может отличаться от спот-цены.
 
 ---
 
@@ -76,8 +86,6 @@ rm -f /tmp/pm_trader_cache.json
 ### Политика — smart money команды:
 
 ```bash
-.venv/bin/python crypto/smart_money.py us-strikes-iran-by --market "February 28"
-.venv/bin/python crypto/smart_money.py us-strikes-iran-by --market "March 31"
 .venv/bin/python crypto/smart_money.py khamenei-out-as-supreme-leader-of-iran-by-march-31
 .venv/bin/python crypto/smart_money.py fed-decision-in-march-885 --market "No change"
 .venv/bin/python crypto/smart_money.py will-trump-acquire-greenland-before-2027
