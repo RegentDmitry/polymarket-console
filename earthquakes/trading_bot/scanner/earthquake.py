@@ -203,7 +203,9 @@ class EarthquakeScanner(BaseScanner):
                 self._markets_cache.append(market)
 
                 # Check if meets our criteria (using top-of-book - best case)
-                meets_edge = opp.edge >= self.config.min_edge
+                # YES positions require 2x edge (time decay works against YES)
+                effective_min_edge = self.config.min_edge * 2 if opp.side == "YES" else self.config.min_edge
+                meets_edge = opp.edge >= effective_min_edge
                 meets_apy = opp.annual_return >= self.config.min_apy
 
                 # Get usable liquidity (filtered by edge/apy) and kelly from opportunity
