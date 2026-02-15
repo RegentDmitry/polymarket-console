@@ -1080,9 +1080,16 @@ class TradingBotApp(App):
                     f"REDEEM FAILED: {pos.market_slug[:40]} — will retry next cycle"
                 )
 
-    def _calculate_sell_price(self, entry_price: float, fair_price: float) -> float:
-        """Calculate sell price = fair price."""
-        sell = max(0.01, min(0.99, fair_price))
+    def _calculate_sell_price(self, entry_price: float, fair_price: float,
+                              bid_price: float = 0.0) -> float:
+        """Calculate sell price = max(fair_price, bid * 0.9).
+
+        Prevents dumping tokens far below market bid when the model
+        recalculates after a large earthquake.
+        """
+        bid_floor = bid_price * 0.9 if bid_price > 0 else 0.0
+        sell = max(fair_price, bid_floor)
+        sell = max(0.01, min(0.99, sell))
         return round(sell, 3)
 
     def _manage_sell_orders(self, positions: List[Position], fair_prices: dict[str, float]):
@@ -1160,7 +1167,8 @@ class TradingBotApp(App):
         # --- Phase 2: Group ALL positions by token_id, place one sell per token ---
 
         # Collect all positions with fair price and token_id
-        token_groups: dict[str, list] = {}  # token_id -> [(pos, sell_price)]
+        # First pass: group by token_id with fair prices (bid fetched per group later)
+        token_groups: dict[str, list] = {}  # token_id -> [(pos, fair_price)]
 
         for pos in positions:
             fair = fair_prices.get(pos.market_slug)
@@ -1175,8 +1183,6 @@ class TradingBotApp(App):
                 elif not fair:
                     logger.log_info(f"SELL SKIP (no fair price): {pos.market_slug[:40]}")
                 continue
-
-            sell_price = self._calculate_sell_price(pos.entry_price, fair)
 
             # Resolve token_id
             token_id = None
@@ -1204,8 +1210,39 @@ class TradingBotApp(App):
                 logger.log_info(f"SELL SKIP (no token_id): {pos.market_slug[:40]}")
                 continue
 
-            token_groups.setdefault(token_id, []).append((pos, sell_price))
-            logger.log_info(f"SELL GROUP: {pos.market_slug[:40]} token={token_id[:12]}... sell={sell_price:.1%}")
+            token_groups.setdefault(token_id, []).append((pos, fair))
+
+        # Second pass: fetch bid per token_id and calculate sell prices with bid floor
+        try:
+            from main import get_spread_info
+        except ImportError:
+            get_spread_info = None
+
+        final_groups: dict[str, list] = {}  # token_id -> [(pos, sell_price)]
+        for token_id, group in token_groups.items():
+            # Get best bid from orderbook
+            bid_price = 0.0
+            if get_spread_info and self.scanner and self.scanner.api_client:
+                try:
+                    spread = get_spread_info(self.scanner.api_client, token_id)
+                    if spread:
+                        bid_price = spread.get("best_bid", 0)
+                except Exception:
+                    pass  # Fall back to no bid floor
+
+            for pos, fair in group:
+                sell_price = self._calculate_sell_price(pos.entry_price, fair, bid_price)
+                final_groups.setdefault(token_id, []).append((pos, sell_price))
+                if bid_price > 0 and sell_price > fair + 0.005:
+                    logger.log_info(
+                        f"SELL BID FLOOR: {pos.market_slug[:40]} fair={fair:.1%} bid={bid_price:.1%} → sell={sell_price:.1%}"
+                    )
+                else:
+                    logger.log_info(
+                        f"SELL GROUP: {pos.market_slug[:40]} token={token_id[:12]}... sell={sell_price:.1%}"
+                    )
+
+        token_groups = final_groups
 
         if self._shutting_down:
             return
