@@ -1,14 +1,14 @@
 {
-  "id": "e8f54746",
+  "id": "97937017",
   "market_id": "0x8cb0e09f55035854abb00e99e3f86d896a2272326b18d4b40e391566aa23246a",
   "market_slug": "how-many-7pt0-or-above-earthquakes-in-2026-5-7-YES",
-  "market_name": "5-7 (YES)",
-  "outcome": "YES",
+  "market_name": "Will there be between 5 and 7 earthquakes of magni",
+  "outcome": "Yes",
   "resolution_date": null,
-  "entry_price": 0.07514685239846047,
+  "entry_price": 0.0509,
   "entry_time": "2026-02-06T14:02:49.250142Z",
-  "entry_size": 9.148860559999996,
-  "tokens": 121.74642407494139,
+  "entry_size": 104.2034,
+  "tokens": 2046.0543,
   "exit_price": null,
   "exit_time": null,
   "exit_size": null,
@@ -17,5 +17,6 @@
   "fair_price_at_entry": 0.07484528272912724,
   "edge_at_entry": 0.015116817339864341,
   "entry_order_id": "0x99c1301ad58a9d561a6a776c1acde35ece37781c41db9b224ae74834a83ea717",
-  "exit_order_id": null
+  "exit_order_id": null,
+  "token_id": "41372014694999370754615718846987313813708957489001648644147300608069418187533"
 }

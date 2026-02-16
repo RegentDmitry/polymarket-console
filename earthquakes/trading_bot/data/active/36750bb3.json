@@ -1,14 +1,14 @@
 {
-  "id": "e37a3ea2",
+  "id": "36750bb3",
   "market_id": "0x580386e7f3b47fa0cd6d14688894f16958e6eacf5c9dce02bbfd4028bf6e738f",
   "market_slug": "how-many-7pt0-or-above-earthquakes-in-2026-14-16-YES",
-  "market_name": "14-16 (YES)",
-  "outcome": "YES",
+  "market_name": "Will there be between 14 and 16 earthquakes of mag",
+  "outcome": "Yes",
   "resolution_date": null,
-  "entry_price": 0.26,
+  "entry_price": 0.2266,
   "entry_time": "2026-02-14T15:26:16.972954Z",
-  "entry_size": 245.4428923800001,
-  "tokens": 944.0111245384619,
+  "entry_size": 260.1162,
+  "tokens": 1147.58,
   "exit_price": null,
   "exit_time": null,
   "exit_size": null,
@@ -17,5 +17,6 @@
   "fair_price_at_entry": 0.26850987617900357,
   "edge_at_entry": 0.04850987617900357,
   "entry_order_id": "0x140dd243abe4747d99b31a42ca11234e40eb6fe5cf6f679b33c59008f9de441c",
-  "exit_order_id": null
+  "exit_order_id": null,
+  "token_id": "18984892750376483805253418990318943016541056782864991219807572406261231770929"
 }

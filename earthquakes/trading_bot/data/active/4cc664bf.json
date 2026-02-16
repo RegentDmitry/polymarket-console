@@ -1,14 +1,14 @@
 {
-  "id": "09667d70",
+  "id": "4cc664bf",
   "market_id": "0x897a2f88e1b65776ac5af0440833eea638395f0af0df4bed47e83f64c9b9a1e3",
   "market_slug": "how-many-7pt0-or-above-earthquakes-by-june-30-8+-YES",
-  "market_name": "8+ (YES)",
-  "outcome": "YES",
+  "market_name": "Will there be 8 or more earthquakes of magnitude 7",
+  "outcome": "Yes",
   "resolution_date": null,
-  "entry_price": 0.39000000000000007,
+  "entry_price": 0.38,
   "entry_time": "2026-02-15T14:29:23.545202Z",
-  "entry_size": 45.997671020000155,
-  "tokens": 117.94274620512859,
+  "entry_size": 44.8058,
+  "tokens": 117.91,
   "exit_price": null,
   "exit_time": null,
   "exit_size": null,
@@ -17,5 +17,6 @@
   "fair_price_at_entry": 0.40867435052740864,
   "edge_at_entry": 0.028674350527408632,
   "entry_order_id": "0xd0e39232f58effc2fe174622c38cbc553c32d35aca03e3fcd348868f489c0751",
-  "exit_order_id": null
+  "exit_order_id": null,
+  "token_id": "11824574045576628150612194967948587889530003270004521491303323671815597832573"
 }
