@@ -1,0 +1,21 @@
+{
+  "id": "9cc41403",
+  "market_id": "0xf355655fbd08319839ed3aceda8119e10969be2b64bfa5b814aa80a3d1166f4f",
+  "market_slug": "megaquake-by-march-31-Yes-YES",
+  "market_name": "Yes (YES)",
+  "outcome": "YES",
+  "resolution_date": null,
+  "entry_price": 0.14,
+  "entry_time": "2026-02-03T08:48:17.186342Z",
+  "entry_size": 20.31308034,
+  "tokens": 145.09343099999998,
+  "exit_price": 0.14,
+  "exit_time": "2026-02-05T14:53:04.657043Z",
+  "exit_size": 20.31308034,
+  "status": "closed",
+  "strategy": "earthquake",
+  "fair_price_at_entry": 0.1437225791624961,
+  "edge_at_entry": 0.013722579162496085,
+  "entry_order_id": "0x528d395592194012aed61a851ba5eb1fb9d5ba3c2be6eb725071eeb768883916",
+  "exit_order_id": "0x73ea16483ac06d05e2def56dda33ac7c1cfb4134d1147b45bc2a3cfd068e0192"
+}

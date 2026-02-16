@@ -1,0 +1,21 @@
+{
+  "id": "b999863b",
+  "market_id": "0x5adcd3ba66058aef6d641be6641e606a65306fb33b17c305d787c6c449bb62b1",
+  "market_slug": "will-there-be-exactly-2-earthquakes-of-magnitude-6pt5-or-higher-worldwide-by-february-8",
+  "market_name": "Will there be exactly 2 earthquakes of magnitude 6",
+  "outcome": "Yes",
+  "resolution_date": "2026-02-08",
+  "entry_price": 0.0274,
+  "entry_time": "2026-02-06T11:27:37.566472Z",
+  "entry_size": 12.1285,
+  "tokens": 442.4705,
+  "exit_price": 0.028,
+  "exit_time": "2026-02-06T12:46:48.984720Z",
+  "exit_size": 12.389174,
+  "status": "closed",
+  "strategy": "earthquake",
+  "fair_price_at_entry": 0.0274,
+  "edge_at_entry": 0.0,
+  "entry_order_id": null,
+  "exit_order_id": "0xcf8000191581423b17b1db0f34f483b64e205da1ad13632d795d853fcf5183aa"
+}

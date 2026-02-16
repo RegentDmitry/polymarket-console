@@ -1,0 +1,21 @@
+{
+  "id": "e057b087",
+  "market_id": "0x8cb0e09f55035854abb00e99e3f86d896a2272326b18d4b40e391566aa23246a",
+  "market_slug": "will-there-be-between-5-and-7-earthquakes-of-magnitude-7pt0-or-higher-worldwide-in-2026",
+  "market_name": "Will there be between 5 and 7 earthquakes of magni",
+  "outcome": "Yes",
+  "resolution_date": "2026-12-31",
+  "entry_price": 0.0501,
+  "entry_time": "2026-02-06T11:27:37.565346Z",
+  "entry_size": 96.40782483434543,
+  "tokens": 1924.3078809250587,
+  "exit_price": null,
+  "exit_time": null,
+  "exit_size": null,
+  "status": "open",
+  "strategy": "earthquake",
+  "fair_price_at_entry": 0.0501,
+  "edge_at_entry": 0.0,
+  "entry_order_id": null,
+  "exit_order_id": null
+}

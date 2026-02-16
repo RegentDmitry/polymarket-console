@@ -1,0 +1,21 @@
+{
+  "id": "20ac067e",
+  "market_id": "0xf355655fbd08319839ed3aceda8119e10969be2b64bfa5b814aa80a3d1166f4f",
+  "market_slug": "megaquake-by-march-31-No-NO",
+  "market_name": "No (NO)",
+  "outcome": "NO",
+  "resolution_date": null,
+  "entry_price": 0.88,
+  "entry_time": "2026-02-14T02:33:15.158401Z",
+  "entry_size": 127.50883728000001,
+  "tokens": 144.896406,
+  "exit_price": null,
+  "exit_time": null,
+  "exit_size": null,
+  "status": "open",
+  "strategy": "earthquake",
+  "fair_price_at_entry": 0.8818477135283617,
+  "edge_at_entry": 0.02184771352836168,
+  "entry_order_id": "0x341a49bbee21437d80e2659283d74b909ec3baed3e69c58a22e72f6e60e34495",
+  "exit_order_id": null
+}

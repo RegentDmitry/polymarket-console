@@ -1,0 +1,21 @@
+{
+  "id": "e4585cd4",
+  "market_id": "0x42c5b40ce67dd7730d4bd522c2971217e4071c0a1c814ba0998fa8fa59bcfa3b",
+  "market_slug": "will-there-be-exactly-6-earthquakes-of-magnitude-7pt0-or-higher-worldwide-by-june-30",
+  "market_name": "Will there be exactly 6 earthquakes of magnitude 7",
+  "outcome": "Yes",
+  "resolution_date": "2026-06-30",
+  "entry_price": 0.1377,
+  "entry_time": "2026-02-06T11:27:37.566242Z",
+  "entry_size": 67.1869,
+  "tokens": 487.8766,
+  "exit_price": 0.163,
+  "exit_time": "2026-02-12T23:10:15.267459Z",
+  "exit_size": 79.5238858,
+  "status": "closed",
+  "strategy": "earthquake",
+  "fair_price_at_entry": 0.1377,
+  "edge_at_entry": 0.0,
+  "entry_order_id": null,
+  "exit_order_id": "0xd092992f1aa444957baea079511c27691175261d09e443846562d3e8d68d627b"
+}

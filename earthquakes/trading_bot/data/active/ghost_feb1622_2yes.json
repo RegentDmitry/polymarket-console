@@ -1,0 +1,21 @@
+{
+  "id": "ghost_feb1622_2yes",
+  "market_id": "0x13a6561aefb0027bce8e6a798bdc9fcde07889005ede375ef511dee7d30e3516",
+  "market_slug": "how-many-6pt5-or-above-earthquakes-february-16-february-22-2-YES",
+  "market_name": "2 (YES) [recovered]",
+  "outcome": "YES",
+  "resolution_date": null,
+  "entry_price": 0.111,
+  "entry_time": "2026-02-15T12:00:00Z",
+  "entry_size": 22.4,
+  "tokens": 201.3,
+  "exit_price": null,
+  "exit_time": null,
+  "exit_size": null,
+  "status": "open",
+  "strategy": "earthquake",
+  "fair_price_at_entry": 0.111,
+  "edge_at_entry": 0.0,
+  "entry_order_id": null,
+  "exit_order_id": null
+}

@@ -1,0 +1,21 @@
+{
+  "id": "f04772da",
+  "market_id": "0x444d99d34ebd6857c80bca1fd7d253b04a76c67e213bb3b73c6aa6a9773c3e86",
+  "market_slug": "will-there-be-exactly-5-earthquakes-of-magnitude-6pt5-or-higher-worldwide-by-february-8",
+  "market_name": "Will there be exactly 5 earthquakes of magnitude 6",
+  "outcome": "No",
+  "resolution_date": "2026-02-08",
+  "entry_price": 0.993,
+  "entry_time": "2026-02-06T11:27:37.567366Z",
+  "entry_size": 1.7377,
+  "tokens": 1.75,
+  "exit_price": 1.0,
+  "exit_time": "2026-02-12T04:01:35.207089Z",
+  "exit_size": 1.75,
+  "status": "closed",
+  "strategy": "earthquake",
+  "fair_price_at_entry": 0.993,
+  "edge_at_entry": 0.0,
+  "entry_order_id": null,
+  "exit_order_id": null
+}

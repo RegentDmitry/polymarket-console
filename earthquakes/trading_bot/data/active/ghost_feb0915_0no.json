@@ -1,0 +1,21 @@
+{
+  "id": "ghost_feb0915_0no",
+  "market_id": "0xbc31098a97448ebf99910233b250431f7350d092710cafeb357a274ed5542a00",
+  "market_slug": "how-many-6pt5-or-above-earthquakes-february-9-feb-15-0-NO",
+  "market_name": "0 (NO) [recovered]",
+  "outcome": "NO",
+  "resolution_date": "2026-02-15",
+  "entry_price": 0.168,
+  "entry_time": "2026-02-14T03:00:00Z",
+  "entry_size": 30.24,
+  "tokens": 179.88,
+  "exit_price": null,
+  "exit_time": null,
+  "exit_size": null,
+  "status": "open",
+  "strategy": "earthquake",
+  "fair_price_at_entry": 0.168,
+  "edge_at_entry": 0.0,
+  "entry_order_id": null,
+  "exit_order_id": null
+}
