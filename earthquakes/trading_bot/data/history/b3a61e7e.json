@@ -1,0 +1,22 @@
+{
+  "id": "b3a61e7e",
+  "market_id": "0xbc31098a97448ebf99910233b250431f7350d092710cafeb357a274ed5542a00",
+  "market_slug": "how-many-6pt5-or-above-earthquakes-february-9-feb-15-0-NO",
+  "market_name": "Will there be exactly 0 earthquakes of magnitude 6",
+  "outcome": "Yes",
+  "resolution_date": "2026-02-15",
+  "entry_price": 0.9670968525944829,
+  "entry_time": "2026-02-14T03:00:00Z",
+  "entry_size": 173.96138184469558,
+  "tokens": 179.88,
+  "exit_price": 0.99,
+  "exit_time": "2026-02-16T07:25:14.923768Z",
+  "exit_size": 178.0812,
+  "status": "closed",
+  "strategy": "earthquake",
+  "fair_price_at_entry": 0.9995,
+  "edge_at_entry": 0.0,
+  "entry_order_id": null,
+  "exit_order_id": "0x208b033521335d7fc3a6d00049a3d7e918af2bf19c9f695f65465afa9ca2aa79",
+  "token_id": "89504048929259443895523254038877741024273614783998160752903974342243731457882"
+}

@@ -55,6 +55,9 @@ class Position:
     entry_order_id: Optional[str] = None
     exit_order_id: Optional[str] = None
 
+    # Token ID (from Polymarket CLOB)
+    token_id: Optional[str] = None
+
     def __post_init__(self):
         """Convert status string to enum if needed."""
         if isinstance(self.status, str):

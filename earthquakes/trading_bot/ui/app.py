@@ -783,6 +783,19 @@ class TradingBotApp(App):
                 if key in cid_to_fair:
                     self._current_fair_prices[pos.market_slug] = cid_to_fair[key]
 
+        # Fetch CLOB prices for positions not covered by scanner
+        if self.executor.initialized:
+            for pos in positions:
+                if pos.market_slug not in self._current_prices and pos.market_id:
+                    market = self.executor.get_market_info(pos.market_id)
+                    if market:
+                        for t in market.get("tokens", []):
+                            if t.get("outcome", "").upper() == pos.outcome.upper():
+                                price = float(t.get("price", 0))
+                                if price > 0:
+                                    self._current_prices[pos.market_slug] = price
+                                    self._current_fair_prices[pos.market_slug] = price
+
         self._refresh_positions_panel()
 
         # Update trades panel
