@@ -965,15 +965,35 @@ class TradingBotApp(App):
                         excess -= pos.tokens
                         total_corrected += 1
                     else:
-                        # Partial close: reduce tokens on this position
+                        # Partial close: split off removed portion into history
+                        import copy
                         old_tokens = pos.tokens
-                        pos.tokens = old_tokens - excess
-                        pos.entry_size = pos.tokens * pos.entry_price
+                        removed = min(excess, old_tokens - 0.01)
+                        proportion = removed / old_tokens
+                        removed_entry_size = pos.entry_size * proportion
+
+                        # Create history entry for the sold portion
+                        partial = copy.deepcopy(pos)
+                        partial.id = f"{pos.id[:6]}p{int(datetime.utcnow().timestamp()) % 100000:05d}"
+                        partial.tokens = removed
+                        partial.entry_size = removed_entry_size
+                        partial.close(sell_price)
+                        self.position_storage.move_to_history(partial)
+
+                        # Update remaining position
+                        pos.tokens = old_tokens - removed
+                        pos.entry_size = pos.entry_size - removed_entry_size
+                        pos.entry_price = (
+                            pos.entry_size / pos.tokens
+                            if pos.tokens > 0 else pos.entry_price
+                        )
                         self.position_storage.save(pos)
+
+                        pnl = partial.exit_size - partial.entry_size
                         logger.log_info(
                             f"  PARTIAL-CLOSE: {pos.id} "
                             f"{old_tokens:.2f} -> {pos.tokens:.2f} tokens "
-                            f"(removed {excess:.2f})"
+                            f"(removed {removed:.2f}, P&L: ${pnl:+.2f})"
                         )
                         total_corrected += 1
                         excess = 0
