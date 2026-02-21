@@ -492,6 +492,9 @@ class TradingBotApp(App):
         self._pending_signals_queue: List[Signal] = []
         self.quit_pending = False
 
+        # Track buys in current scan cycle (to trigger immediate rescan)
+        self._had_buys_this_cycle = False
+
         # Virtual positions for DRY RUN mode (in-memory only)
         self._dry_run_positions: List[Position] = []
         self._dry_run_size = 10.0  # Default position size for dry run
@@ -593,7 +596,10 @@ class TradingBotApp(App):
         scanner_panel.set_next_scan(self.next_scan_seconds)
 
     async def do_scan(self) -> None:
-        """Perform market scan."""
+        """Perform market scan. Re-scans immediately if buys were made."""
+        # Reset buy tracker for this cycle
+        self._had_buys_this_cycle = False
+
         # Clear any pending confirmations - they use stale cache data
         if self.pending_signal or self._pending_signals_queue:
             self.pending_signal = None
@@ -845,6 +851,12 @@ class TradingBotApp(App):
 
         # Handle signals based on mode
         await self.process_signals(entry_signals, exit_signals)
+
+        # If buys were made this cycle, immediately rescan for more opportunities
+        if self._had_buys_this_cycle:
+            get_logger().log_info("Buys detected — triggering immediate rescan")
+            self.next_scan_seconds = 0
+            self.call_later(self.do_scan)
 
     def update_status_bar(self, positions: List[Position],
                           current_prices: dict[str, float]) -> None:
@@ -1526,6 +1538,7 @@ class TradingBotApp(App):
                     self.position_storage.save(position)
                     logger.log_position_opened(position)
                 self.history_storage.record_buy(position, result.order_id)
+                self._had_buys_this_cycle = True
                 self.notify(f"BUY order placed: {result.order_id}", markup=False)
 
                 logger.log_trade_executed(
