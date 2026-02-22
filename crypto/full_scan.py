@@ -32,29 +32,51 @@ def deribit_get(path):
     return json.loads(resp.read())["result"]
 
 
-def fetch_futures_drift():
-    """Get implied annual drift from Deribit Dec 2026 futures vs perpetual."""
+def fetch_futures_curve(currency="BTC"):
+    """Get full futures curve: list of (days_to_expiry, implied_annual_drift, price, name)."""
     try:
-        futures = deribit_get("get_book_summary_by_currency?currency=BTC&kind=future")
+        futures = deribit_get(f"get_book_summary_by_currency?currency={currency}&kind=future")
         spot = None
-        dec_price = None
+        curve = []
         for f in futures:
             name = f["instrument_name"]
-            if name == "BTC-PERPETUAL":
+            if name == f"{currency}-PERPETUAL":
                 spot = f.get("last") or f.get("mark_price")
-            if "DEC26" in name:
-                dec_price = f.get("last") or f.get("mark_price")
 
-        if not spot or not dec_price:
-            return None, None, None
+        if not spot:
+            return None, []
 
         now = datetime.now(timezone.utc)
-        exp = datetime(2026, 12, 25, 8, 0, tzinfo=timezone.utc)
-        T = (exp - now).total_seconds() / (365.25 * 24 * 3600)
-        drift = math.log(dec_price / spot) / T
-        return drift, dec_price, spot
+        for f in futures:
+            name = f["instrument_name"]
+            price = f.get("last") or f.get("mark_price") or 0
+            if not price or "PERPETUAL" in name:
+                continue
+            parts = name.split("-")
+            if len(parts) >= 2:
+                try:
+                    exp = datetime.strptime(parts[1], "%d%b%y").replace(tzinfo=timezone.utc)
+                    days = (exp - now).days
+                    if days <= 0:
+                        continue
+                    T = days / 365
+                    drift = math.log(price / spot) / T
+                    curve.append((days, drift, price, name))
+                except ValueError:
+                    pass
+        curve.sort(key=lambda x: x[0])
+        return spot, curve
     except Exception:
-        return None, None, None
+        return None, []
+
+
+def drift_for_days(curve, target_days):
+    """Interpolate drift from futures curve for a given number of days."""
+    if not curve:
+        return 0.04  # fallback
+    # Find closest futures by days
+    best = min(curve, key=lambda x: abs(x[0] - target_days))
+    return best[1]
 
 
 def touch_above(S, K, sigma, T, mu=0):
@@ -165,12 +187,9 @@ def main():
     except Exception:
         S_ETH = 1970
 
-    drift_fut, fut_price, fut_spot = fetch_futures_drift()
-    if drift_fut is None:
-        drift_fut = 0.04  # fallback ~4%
-        fut_price = S_BTC * 1.033
-        fut_spot = S_BTC
-        print("WARNING: Deribit futures unavailable, using fallback drift=4%")
+    # Fetch futures curves for both assets
+    spot_btc_fut, btc_curve = fetch_futures_curve("BTC")
+    spot_eth_fut, eth_curve = fetch_futures_curve("ETH")
 
     IV_BTC = 0.522
     IV_ETH = 0.70
@@ -178,53 +197,31 @@ def main():
 
     print(f"BTC Deribit: ${S_BTC:,.0f} | IV: {IV_BTC*100:.1f}% | df={STUDENT_DF_BTC}")
     print(f"ETH Deribit: ${S_ETH:,.0f} | IV: {IV_ETH*100:.1f}% | df={STUDENT_DF_ETH}")
-    print(f"Futures Dec26: ${fut_price:,.0f} (spot ${fut_spot:,.0f}, +{(fut_price/fut_spot-1)*100:.1f}%)")
-    print(f"Implied drift: {drift_fut*100:+.1f}%/yr")
-    print(f"Our drift:     +27.0%/yr")
+    print()
+
+    # Print both futures curves
+    for label, curve, spot in [("BTC", btc_curve, S_BTC), ("ETH", eth_curve, S_ETH)]:
+        print(f"  {label} futures curve:")
+        for days, drift, price, name in curve:
+            prem = (price / spot - 1) * 100
+            print(f"    {name:<20} ${price:>8,.0f}  {prem:>+5.2f}%  drift {drift*100:>+5.1f}%/yr  ({days}d)")
     print()
 
     if args.futures_only:
-        # Show full futures curve
-        try:
-            futures = deribit_get("get_book_summary_by_currency?currency=BTC&kind=future")
-            now = datetime.now(timezone.utc)
-            print(f"{'Фьючерс':<20} {'Цена':<12} {'Премия':<10} {'Drift':<14}")
-            print("=" * 58)
-            for f in sorted(futures, key=lambda x: x["instrument_name"]):
-                name = f["instrument_name"]
-                price = f.get("last") or f.get("mark_price") or 0
-                if not price:
-                    continue
-                prem = (price / S_BTC - 1) * 100
-                # Parse expiry from name
-                parts = name.split("-")
-                if len(parts) >= 2 and parts[1] != "PERPETUAL":
-                    try:
-                        exp = datetime.strptime(parts[1], "%d%b%y").replace(tzinfo=timezone.utc)
-                        days = (exp - now).days
-                        T = days / 365
-                        annual = math.log(price / S_BTC) / T * 100 if T > 0 else 0
-                        print(f"{name:<20} ${price:>8,.0f}   {prem:>+5.2f}%     {annual:>+5.1f}%/yr ({days}d)")
-                    except ValueError:
-                        print(f"{name:<20} ${price:>8,.0f}   {prem:>+5.2f}%")
-                else:
-                    print(f"{name:<20} ${price:>8,.0f}   (spot)")
-        except Exception as e:
-            print(f"Error: {e}")
         return
 
     # Full scan
     slugs = [
-        ("what-price-will-bitcoin-hit-before-2027", "BTC", S_BTC, IV_BTC, T_annual, STUDENT_DF_BTC),
-        ("what-price-will-bitcoin-hit-in-march-2026", "BTC", S_BTC, IV_BTC, 37 / 365, STUDENT_DF_BTC),
-        ("what-price-will-ethereum-hit-before-2027", "ETH", S_ETH, IV_ETH, T_annual, STUDENT_DF_ETH),
-        ("what-price-will-ethereum-hit-in-march-2026", "ETH", S_ETH, IV_ETH, 37 / 365, STUDENT_DF_ETH),
-        ("what-price-will-bitcoin-hit-in-february-2026", "BTC", S_BTC, IV_BTC, 6 / 365, STUDENT_DF_BTC),
-        ("what-price-will-ethereum-hit-in-february-2026", "ETH", S_ETH, IV_ETH, 6 / 365, STUDENT_DF_ETH),
+        ("what-price-will-bitcoin-hit-before-2027", "BTC", S_BTC, IV_BTC, T_annual, STUDENT_DF_BTC, btc_curve),
+        ("what-price-will-bitcoin-hit-in-march-2026", "BTC", S_BTC, IV_BTC, 37 / 365, STUDENT_DF_BTC, btc_curve),
+        ("what-price-will-ethereum-hit-before-2027", "ETH", S_ETH, IV_ETH, T_annual, STUDENT_DF_ETH, eth_curve),
+        ("what-price-will-ethereum-hit-in-march-2026", "ETH", S_ETH, IV_ETH, 37 / 365, STUDENT_DF_ETH, eth_curve),
+        ("what-price-will-bitcoin-hit-in-february-2026", "BTC", S_BTC, IV_BTC, 6 / 365, STUDENT_DF_BTC, btc_curve),
+        ("what-price-will-ethereum-hit-in-february-2026", "ETH", S_ETH, IV_ETH, 6 / 365, STUDENT_DF_ETH, eth_curve),
     ]
 
     results = []
-    for slug, currency, spot, iv, T, df in slugs:
+    for slug, currency, spot, iv, T, df, curve in slugs:
         try:
             url = f"https://gamma-api.polymarket.com/events?slug={slug}"
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -253,8 +250,10 @@ def main():
                 is_up = strike > spot
                 pm = yes_p if is_up else (1 - yes_p)
 
+                days_to_exp = int(T * 365)
+                drift_matched = drift_for_days(curve, days_to_exp)
                 edge_mc0 = mc_edge(spot, strike, iv, T, pm, is_up, mu=0.0, df=df)
-                edge_mcf = mc_edge(spot, strike, iv, T, pm, is_up, mu=drift_fut, df=df)
+                edge_mcf = mc_edge(spot, strike, iv, T, pm, is_up, mu=drift_matched, df=df)
 
                 period = (
                     "Feb" if "february" in slug
@@ -268,6 +267,7 @@ def main():
                     "pm": pm,
                     "edge_mc0": edge_mc0,
                     "edge_mcf": edge_mcf,
+                    "drift_used": drift_matched,
                 })
         except Exception as e:
             print(f"  [{slug}]: {e}")
@@ -279,13 +279,14 @@ def main():
     print()
     hdr = (
         f"{'Рынок':<25} {'Пер':<6} {'St':<4} {'PM':<6}"
-        f" {'MC d=0':>8} {'MC fut':>8}   {'Вердикт':<22}"
+        f" {'MC d=0':>8} {'MC fut':>8} {'d_fut':>6}   {'Вердикт':<22}"
     )
     print(hdr)
-    print("=" * 88)
+    print("=" * 96)
     for r in results:
         pm_str = f"{r['pm']*100:.0f}c"
         mc0, mcf = r["edge_mc0"], r["edge_mcf"]
+        d_str = f"{r['drift_used']*100:+.1f}%"
         if mc0 > 0.03 and mcf > 0.03:
             verdict = "*** EDGE d=0 + fut ***"
         elif mc0 > 0.0 and mcf > 0.0:
@@ -298,8 +299,31 @@ def main():
             verdict = "—"
         print(
             f"{r['market']:<25} {r['period']:<6} {r['side']:<4} {pm_str:<6}"
-            f" {mc0*100:>+6.1f}%  {mcf*100:>+6.1f}%   {verdict}"
+            f" {mc0*100:>+6.1f}%  {mcf*100:>+6.1f}%  {d_str:>6}   {verdict}"
         )
+
+    # Save raw data
+    import os
+    raw_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "raw")
+    os.makedirs(raw_dir, exist_ok=True)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    raw_path = os.path.join(raw_dir, f"{today}.json")
+    raw_data = {
+        "date": today,
+        "btc_spot": S_BTC,
+        "eth_spot": S_ETH,
+        "iv_btc": IV_BTC,
+        "iv_eth": IV_ETH,
+        "df_btc": STUDENT_DF_BTC,
+        "df_eth": STUDENT_DF_ETH,
+        "mc_paths": MC_PATHS,
+        "btc_futures": [(d, dr, p, n) for d, dr, p, n in btc_curve],
+        "eth_futures": [(d, dr, p, n) for d, dr, p, n in eth_curve],
+        "results": results,
+    }
+    with open(raw_path, "w") as f:
+        json.dump(raw_data, f, indent=2)
+    print(f"\nRaw data saved: {raw_path}")
 
 
 if __name__ == "__main__":
