@@ -5,6 +5,8 @@ Three drift scenarios:
   d=0     — risk-neutral (conservative)
   d=fut   — implied from Deribit Dec 2026 futures curve
   d=27%   — our subjective model (5 scenarios weighted)
+
+Plus Student-t Monte Carlo touch probability (fat tails, df=2.95).
 """
 
 import argparse
@@ -16,7 +18,8 @@ import sys
 import urllib.request
 from datetime import datetime, timezone
 
-from scipy.stats import norm
+import numpy as np
+from scipy.stats import norm, t as student_t
 
 ctx = ssl.create_default_context()
 ctx.check_hostname = False
@@ -92,6 +95,56 @@ def calc_edge(spot, strike, iv, T, pm, is_up, mu):
         return tp - pm
     else:
         tp = touch_below(spot, strike, iv, T, mu=mu)
+        return (1 - tp) - pm
+
+
+# --- Student-t Monte Carlo touch probability ---
+MC_PATHS = 50_000
+STUDENT_DF = 2.95  # from btc_model.ipynb calibration
+
+
+def mc_touch_prob(spot, strike, iv, T, mu=0, n_paths=MC_PATHS, df=STUDENT_DF):
+    """Monte Carlo touch probability using Student-t innovations (fat tails).
+
+    Simulates daily log-returns with Student-t distribution scaled to match IV.
+    Returns P(path touches strike at any point during T).
+    """
+    if T <= 0 or iv <= 0:
+        return 1.0 if strike <= spot else 0.0
+
+    n_days = max(int(T * 365), 1)
+    dt = T / n_days
+
+    # Scale Student-t so that its variance matches iv^2 * dt
+    # Var(t_df) = df/(df-2) for df>2
+    t_var = df / (df - 2)
+    scale = iv * math.sqrt(dt / t_var)
+    drift_per_step = (mu - 0.5 * iv**2) * dt
+
+    # Generate all innovations at once: (n_paths, n_days)
+    innovations = student_t.rvs(df, scale=scale, size=(n_paths, n_days))
+    log_returns = drift_per_step + innovations
+
+    # Cumulative sum → log(S_t/S_0)
+    cum_log = np.cumsum(log_returns, axis=1)
+    # Price paths
+    prices = spot * np.exp(cum_log)
+
+    is_up = strike > spot
+    if is_up:
+        touched = np.any(prices >= strike, axis=1)
+    else:
+        touched = np.any(prices <= strike, axis=1)
+
+    return float(np.mean(touched))
+
+
+def mc_edge(spot, strike, iv, T, pm, is_up, mu=0):
+    """Edge using MC Student-t touch probability."""
+    tp = mc_touch_prob(spot, strike, iv, T, mu=mu)
+    if is_up:
+        return tp - pm
+    else:
         return (1 - tp) - pm
 
 
@@ -201,6 +254,7 @@ def main():
                 edge_d0 = calc_edge(spot, strike, iv, T, pm, is_up, 0.0)
                 edge_fut = calc_edge(spot, strike, iv, T, pm, is_up, drift_fut)
                 edge_d27 = calc_edge(spot, strike, iv, T, pm, is_up, 0.27)
+                edge_mc = mc_edge(spot, strike, iv, T, pm, is_up, mu=0.0)
 
                 period = (
                     "Feb" if "february" in slug
@@ -215,6 +269,7 @@ def main():
                     "edge_d0": edge_d0,
                     "edge_fut": edge_fut,
                     "edge_d27": edge_d27,
+                    "edge_mc": edge_mc,
                 })
         except Exception as e:
             print(f"  [{slug}]: {e}")
@@ -222,13 +277,17 @@ def main():
     results.sort(key=lambda x: x["edge_d0"], reverse=True)
 
     print(f"Найдено {len(results)} активных рынков")
+    print(f"MC Student-t: df={STUDENT_DF}, {MC_PATHS:,} paths, drift=0")
     print()
-    hdr = f"{'Рынок':<25} {'Пер':<6} {'St':<4} {'PM':<6} {'Edge d=0':>8} {'Edge fut':>9} {'Edge d=27':>9}   {'Вердикт':<22}"
+    hdr = (
+        f"{'Рынок':<25} {'Пер':<6} {'St':<4} {'PM':<6}"
+        f" {'Edge d=0':>8} {'Edge fut':>9} {'Edge d=27':>9} {'MC t-dist':>9}   {'Вердикт':<22}"
+    )
     print(hdr)
-    print("=" * 95)
+    print("=" * 108)
     for r in results:
         pm_str = f"{r['pm']*100:.0f}c"
-        e0, ef, e27 = r["edge_d0"], r["edge_fut"], r["edge_d27"]
+        e0, ef, e27, emc = r["edge_d0"], r["edge_fut"], r["edge_d27"], r["edge_mc"]
         if e0 > 0.03 and ef > 0.03:
             verdict = "*** EDGE d=0 + fut ***"
         elif e0 > 0.0 and ef > 0.0:
@@ -245,7 +304,7 @@ def main():
             verdict = "—"
         print(
             f"{r['market']:<25} {r['period']:<6} {r['side']:<4} {pm_str:<6}"
-            f" {e0*100:>+6.1f}%  {ef*100:>+6.1f}%   {e27*100:>+6.1f}%   {verdict}"
+            f" {e0*100:>+6.1f}%  {ef*100:>+6.1f}%   {e27*100:>+6.1f}%  {emc*100:>+6.1f}%   {verdict}"
         )
 
 

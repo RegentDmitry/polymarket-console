@@ -104,27 +104,31 @@ curl -s "https://www.deribit.com/api/v2/public/get_book_summary_by_currency?curr
 
 ---
 
-## Шаг 3: Smart Money Analysis — ТОЛЬКО ПОЛИТИКА (ЗАПУСТИТЬ ПАРАЛЛЕЛЬНО С ШАГАМИ 4-5)
+## Шаг 3: Smart Money Analysis — ВСЕ ПОЗИЦИИ (ЗАПУСТИТЬ ПАРАЛЛЕЛЬНО С ШАГАМИ 4-5)
 
-Запусти smart money анализ (v2) **только по политическим позициям**. SM для крипто не используется — Deribit IV даёт более точную оценку (см. Шаг 5e).
+Запусти smart money анализ (v2) по всем позициям — политика и крипто.
 
 ```bash
 rm -f /tmp/pm_trader_cache.json
 ```
 
-### Политика — smart money команды:
-
-Запускай ВСЕ команды параллельно через отдельные Bash вызовы с `run_in_background: true`.
+### Команды SM — запускай ВСЕ параллельно через отдельные Bash вызовы с `run_in_background: true`:
 
 ```bash
+# Политика
 .venv/bin/python crypto/smart_money.py khamenei-out-as-supreme-leader-of-iran-by-march-31
 .venv/bin/python crypto/smart_money.py will-trump-acquire-greenland-before-2027
 .venv/bin/python crypto/smart_money.py will-the-us-acquire-any-part-of-greenland-in-2026
 .venv/bin/python crypto/smart_money.py brazil-presidential-election --market "Bolsonaro"
 .venv/bin/python crypto/smart_money.py republican-presidential-nominee-2028 --market "Vance"
-```
 
-**Крипто — SM НЕ запускать.** Для крипто используется ТОЛЬКО Deribit touch probability (Шаг 5e/5f).
+# Крипто
+.venv/bin/python crypto/smart_money.py what-price-will-bitcoin-hit-before-2027 --market "100"
+.venv/bin/python crypto/smart_money.py what-price-will-bitcoin-hit-before-2027 --market "120"
+.venv/bin/python crypto/smart_money.py what-price-will-bitcoin-hit-before-2027 --market "55"
+.venv/bin/python crypto/smart_money.py what-price-will-bitcoin-hit-in-february-2026 --market "60"
+.venv/bin/python crypto/smart_money.py what-price-will-bitcoin-hit-in-february-2026 --market "55"
+```
 
 ---
 
@@ -174,7 +178,7 @@ WebSearch по ключевым словам для каждого класте�
 - SM нейтрален (|flow| < 0.1) → 🟡 нет сигнала, без действий
 - SM сильно против (|flow| > 0.3) → 🟡 watch, проверь новости, НО не автоматический sell
 
-**Для крипто SM НЕ используется.** Deribit touch probability — единственный источник оценки edge.
+**Для крипто SM используется как дополнительный сигнал** наряду с Deribit touch probability.
 
 > Подробные результаты: `politics/backtest/RESULTS.md`
 
@@ -344,10 +348,10 @@ Exposure по рискам:
 - US 2028 (Vance): $XXX (XX%)
 
 --- КРИПТО ГОДОВЫЕ ---
-| # | Контракт | Шейры | Вход | Сейчас | Стоим. | P&L | Edge d=0 | Edge fut | Edge d=27% | Действие |
+| # | Контракт | Шейры | Вход | Сейчас | Стоим. | P&L | Edge d=0 | Edge fut | Edge d=27% | MC t-dist | SM Flow | Действие |
 
 --- КРИПТО КРАТКОСРОЧНЫЕ ---
-| # | Контракт | Шейры | Вход | Сейчас | Стоим. | P&L | Edge d=0 | Edge fut | Edge d=27% | Действие |
+| # | Контракт | Шейры | Вход | Сейчас | Стоим. | P&L | Edge d=0 | Edge fut | Edge d=27% | MC t-dist | SM Flow | Действие |
 
 Портфель итого: ~$X,XXX вложено → $X,XXX текущая стоимость (P&L: $XX)
 
