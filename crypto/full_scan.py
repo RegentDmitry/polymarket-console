@@ -100,10 +100,12 @@ def calc_edge(spot, strike, iv, T, pm, is_up, mu):
 
 # --- Student-t Monte Carlo touch probability ---
 MC_PATHS = 150_000
-STUDENT_DF = 2.95  # from btc_model.ipynb calibration
+# Calibrated from 1500 days Deribit perpetual data (2022-02 to 2026-02)
+STUDENT_DF_BTC = 2.61
+STUDENT_DF_ETH = 2.88
 
 
-def mc_touch_prob(spot, strike, iv, T, mu=0, n_paths=MC_PATHS, df=STUDENT_DF):
+def mc_touch_prob(spot, strike, iv, T, mu=0, n_paths=MC_PATHS, df=STUDENT_DF_BTC):
     """Monte Carlo touch probability using Student-t innovations (fat tails).
 
     Simulates daily log-returns with Student-t distribution scaled to match IV.
@@ -139,9 +141,9 @@ def mc_touch_prob(spot, strike, iv, T, mu=0, n_paths=MC_PATHS, df=STUDENT_DF):
     return float(np.mean(touched))
 
 
-def mc_edge(spot, strike, iv, T, pm, is_up, mu=0):
+def mc_edge(spot, strike, iv, T, pm, is_up, mu=0, df=STUDENT_DF_BTC):
     """Edge using MC Student-t touch probability."""
-    tp = mc_touch_prob(spot, strike, iv, T, mu=mu)
+    tp = mc_touch_prob(spot, strike, iv, T, mu=mu, df=df)
     if is_up:
         return tp - pm
     else:
@@ -174,8 +176,8 @@ def main():
     IV_ETH = 0.70
     T_annual = 306 / 365
 
-    print(f"BTC Deribit: ${S_BTC:,.0f} | IV: {IV_BTC*100:.1f}%")
-    print(f"ETH Deribit: ${S_ETH:,.0f} | IV: {IV_ETH*100:.1f}%")
+    print(f"BTC Deribit: ${S_BTC:,.0f} | IV: {IV_BTC*100:.1f}% | df={STUDENT_DF_BTC}")
+    print(f"ETH Deribit: ${S_ETH:,.0f} | IV: {IV_ETH*100:.1f}% | df={STUDENT_DF_ETH}")
     print(f"Futures Dec26: ${fut_price:,.0f} (spot ${fut_spot:,.0f}, +{(fut_price/fut_spot-1)*100:.1f}%)")
     print(f"Implied drift: {drift_fut*100:+.1f}%/yr")
     print(f"Our drift:     +27.0%/yr")
@@ -213,16 +215,16 @@ def main():
 
     # Full scan
     slugs = [
-        ("what-price-will-bitcoin-hit-before-2027", "BTC", S_BTC, IV_BTC, T_annual),
-        ("what-price-will-bitcoin-hit-in-march-2026", "BTC", S_BTC, IV_BTC, 37 / 365),
-        ("what-price-will-ethereum-hit-before-2027", "ETH", S_ETH, IV_ETH, T_annual),
-        ("what-price-will-ethereum-hit-in-march-2026", "ETH", S_ETH, IV_ETH, 37 / 365),
-        ("what-price-will-bitcoin-hit-in-february-2026", "BTC", S_BTC, IV_BTC, 6 / 365),
-        ("what-price-will-ethereum-hit-in-february-2026", "ETH", S_ETH, IV_ETH, 6 / 365),
+        ("what-price-will-bitcoin-hit-before-2027", "BTC", S_BTC, IV_BTC, T_annual, STUDENT_DF_BTC),
+        ("what-price-will-bitcoin-hit-in-march-2026", "BTC", S_BTC, IV_BTC, 37 / 365, STUDENT_DF_BTC),
+        ("what-price-will-ethereum-hit-before-2027", "ETH", S_ETH, IV_ETH, T_annual, STUDENT_DF_ETH),
+        ("what-price-will-ethereum-hit-in-march-2026", "ETH", S_ETH, IV_ETH, 37 / 365, STUDENT_DF_ETH),
+        ("what-price-will-bitcoin-hit-in-february-2026", "BTC", S_BTC, IV_BTC, 6 / 365, STUDENT_DF_BTC),
+        ("what-price-will-ethereum-hit-in-february-2026", "ETH", S_ETH, IV_ETH, 6 / 365, STUDENT_DF_ETH),
     ]
 
     results = []
-    for slug, currency, spot, iv, T in slugs:
+    for slug, currency, spot, iv, T, df in slugs:
         try:
             url = f"https://gamma-api.polymarket.com/events?slug={slug}"
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -251,8 +253,8 @@ def main():
                 is_up = strike > spot
                 pm = yes_p if is_up else (1 - yes_p)
 
-                edge_mc0 = mc_edge(spot, strike, iv, T, pm, is_up, mu=0.0)
-                edge_mcf = mc_edge(spot, strike, iv, T, pm, is_up, mu=drift_fut)
+                edge_mc0 = mc_edge(spot, strike, iv, T, pm, is_up, mu=0.0, df=df)
+                edge_mcf = mc_edge(spot, strike, iv, T, pm, is_up, mu=drift_fut, df=df)
 
                 period = (
                     "Feb" if "february" in slug
@@ -273,7 +275,7 @@ def main():
     results.sort(key=lambda x: x["edge_mc0"], reverse=True)
 
     print(f"Найдено {len(results)} активных рынков")
-    print(f"MC Student-t: df={STUDENT_DF}, {MC_PATHS:,} paths")
+    print(f"MC Student-t: BTC df={STUDENT_DF_BTC}, ETH df={STUDENT_DF_ETH}, {MC_PATHS:,} paths")
     print()
     hdr = (
         f"{'Рынок':<25} {'Пер':<6} {'St':<4} {'PM':<6}"
