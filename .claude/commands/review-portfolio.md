@@ -79,28 +79,28 @@ curl -s 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies
 
 ---
 
-## Шаг 2b: Проверить фьючерсную кривую Deribit (ОБЯЗАТЕЛЬНО)
+## Шаг 2b: Фьючерсные кривые BTC и ETH (ОБЯЗАТЕЛЬНО, ПЕРЕГЕНЕРИРОВАТЬ КАЖДЫЙ РАЗ)
 
-Получи implied drift из фьючерсов Deribit. Запусти:
+Фьючерсные кривые **обновляются каждый день** — их нужно получать заново при каждом отчёте. Запусти:
 
 ```bash
 .venv/bin/python crypto/full_scan.py --futures-only
 ```
 
-Или вручную: загрузи все BTC фьючерсы с Deribit API:
+Скрипт `full_scan.py` автоматически:
+1. Загружает фьючерсные кривые **BTC и ETH** с Deribit
+2. Рассчитывает implied drift для каждого срока (Feb, Mar, Jun, Sep, Dec)
+3. При полном скане (без `--futures-only`) **подбирает drift по сроку рынка** — Feb рынки используют Feb futures drift, Annual — Dec futures drift
 
-```bash
-curl -s "https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency=BTC&kind=future"
+**Две колонки edge:**
+- **MC d=0** — Monte Carlo Student-t, drift=0 (risk-neutral)
+- **MC fut** — Monte Carlo Student-t, drift из ближайшего фьючерса по сроку
+
+Добавь в заголовок отчёта обе кривые:
 ```
-
-Из Dec 2026 фьючерса рассчитай **implied annual drift** = (futures_price / spot - 1) / T.
-
-**Три сценария drift для всего отчёта:**
-- **d=0** — risk-neutral (консервативный)
-- **d=futures** — рыночный консенсус из фьючерсной кривой Deribit (~3-5%)
-- **d=27%** — наша субъективная модель (5 сценариев)
-
-Добавь в заголовок отчёта: `Futures Dec26: $XX,XXX (+X.X%, implied drift +X.X%/yr)`
+BTC futures: Feb $XX,XXX (drift X.X%), ... Dec $XX,XXX (drift X.X%)
+ETH futures: Feb $X,XXX (drift X.X%), ... Dec $X,XXX (drift X.X%)
+```
 
 ---
 
