@@ -20,6 +20,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -534,6 +535,421 @@ def analyze_results(results: list[BacktestResult], snapshot_days: list[int] = No
     }
 
 
+# === SM Reversal Exit Simulation ===
+
+@dataclass
+class ExitTrade:
+    market_question: str
+    side: str          # "YES" or "NO"
+    entry_date: str
+    entry_price: float
+    entry_flow: float
+    exit_date: str
+    exit_price: float
+    exit_flow: float
+    exit_reason: str   # "reversal", "weak_signal", "resolution"
+    pnl: float
+    pnl_hold: float    # P&L if held to resolution instead
+    yes_won: bool | None
+
+
+def compute_flow_series_all(
+    markets: list[dict],
+    dune: DuneLoader,
+    trader_cache: dict,
+    step_days: int = 5,
+) -> list[dict]:
+    """
+    Compute SM flow series for all markets (heavy — does API calls).
+    Returns list of {market: dict, flow_series: [(date, flow, price)], end_date, yes_won}.
+    Cache-friendly: trader stats cached, Dune trades cached.
+    """
+    from datetime import datetime, timedelta
+
+    results = []
+
+    for market in tqdm(markets, desc="Computing SM flow series"):
+        token_id = market["yes_token"]
+        end_date = market.get("end_date", "")[:10]
+        yes_won = market.get("yes_won")
+        if not end_date or yes_won is None:
+            continue
+
+        cache_file = CACHE_DIR / f"dune_trades_{hashlib.md5(token_id.encode()).hexdigest()[:12]}.json"
+        if not cache_file.exists():
+            continue
+        trades = json.loads(cache_file.read_text())
+        if not trades or len(trades) < 50:
+            continue
+
+        prices = dune.daily_prices(trades, token_id)
+        if len(prices) < 10:
+            continue
+
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        price_dates = sorted(prices.keys())
+        first_dt = datetime.strptime(price_dates[0], "%Y-%m-%d")
+
+        snap_dates = []
+        current = first_dt
+        while current < end_dt:
+            snap_dates.append(current.strftime("%Y-%m-%d"))
+            current += timedelta(days=step_days)
+
+        if len(snap_dates) < 3:
+            continue
+
+        flow_series: list[tuple[str, float, float]] = []
+        for snap_date in snap_dates:
+            price = prices.get(snap_date)
+            if not price:
+                for offset in range(1, step_days):
+                    for d_str in [
+                        (datetime.strptime(snap_date, "%Y-%m-%d") + timedelta(days=offset)).strftime("%Y-%m-%d"),
+                        (datetime.strptime(snap_date, "%Y-%m-%d") - timedelta(days=offset)).strftime("%Y-%m-%d"),
+                    ]:
+                        if d_str in prices:
+                            price = prices[d_str]
+                            break
+                    if price:
+                        break
+            if not price:
+                continue
+
+            positions = dune.reconstruct_positions(trades, token_id, as_of=snap_date)
+            yes_holders, no_holders = dune.get_top_holders(positions, top_n=HOLDER_LIMIT)
+            if len(yes_holders) < 3:
+                continue
+
+            sm = compute_smart_flow(yes_holders, trader_cache, price, no_holders=no_holders)
+            flow_series.append((snap_date, sm["smart_flow"], price))
+
+        if len(flow_series) < 3:
+            continue
+
+        results.append({
+            "market": market,
+            "flow_series": flow_series,
+            "end_date": end_date,
+            "yes_won": yes_won,
+        })
+
+    save_trader_cache(trader_cache)
+    return results
+
+
+def simulate_on_series(
+    precomputed: list[dict],
+    min_edge: float = 0.1,
+    exit_threshold: float = 0.0,
+    trade_size: float = 100,
+    fee: float = 0.02,
+) -> list[ExitTrade]:
+    """
+    Fast simulation on precomputed flow series. No API calls.
+    """
+    all_trades: list[ExitTrade] = []
+
+    for item in precomputed:
+        market = item["market"]
+        flow_series = item["flow_series"]
+        end_date = item["end_date"]
+        yes_won = item["yes_won"]
+
+        in_trade = False
+        entry_date = entry_price = entry_flow = entry_side = None
+
+        for date, flow, price in flow_series:
+            if not in_trade:
+                if abs(flow) >= min_edge:
+                    in_trade = True
+                    entry_date = date
+                    entry_flow = flow
+                    entry_side = "YES" if flow > 0 else "NO"
+                    entry_price = price if entry_side == "YES" else (1.0 - price)
+            else:
+                exit_reason = None
+
+                if entry_side == "YES" and flow < -exit_threshold:
+                    exit_reason = "reversal"
+                elif entry_side == "NO" and flow > exit_threshold:
+                    exit_reason = "reversal"
+
+                if exit_reason:
+                    exit_price = price if entry_side == "YES" else (1.0 - price)
+                    tokens = trade_size / entry_price if entry_price > 0 else 0
+                    pnl = tokens * exit_price - trade_size
+                    pnl -= trade_size * fee
+
+                    resolution_payout = 1.0 if (entry_side == "YES") == yes_won else 0.0
+                    pnl_hold = tokens * resolution_payout - trade_size - trade_size * fee
+
+                    all_trades.append(ExitTrade(
+                        market_question=market["question"],
+                        side=entry_side,
+                        entry_date=entry_date,
+                        entry_price=entry_price,
+                        entry_flow=entry_flow,
+                        exit_date=date,
+                        exit_price=exit_price,
+                        exit_flow=flow,
+                        exit_reason=exit_reason,
+                        pnl=pnl,
+                        pnl_hold=pnl_hold,
+                        yes_won=yes_won,
+                    ))
+                    in_trade = False
+
+        # Still in trade → resolution
+        if in_trade and entry_price and entry_price > 0:
+            tokens = trade_size / entry_price
+            resolution_payout = 1.0 if (entry_side == "YES") == yes_won else 0.0
+            pnl = tokens * resolution_payout - trade_size - trade_size * fee
+
+            all_trades.append(ExitTrade(
+                market_question=market["question"],
+                side=entry_side,
+                entry_date=entry_date,
+                entry_price=entry_price,
+                entry_flow=entry_flow,
+                exit_date=end_date,
+                exit_price=resolution_payout,
+                exit_flow=flow_series[-1][1] if flow_series else 0,
+                exit_reason="resolution",
+                pnl=pnl,
+                pnl_hold=pnl,
+                yes_won=yes_won,
+            ))
+
+    return all_trades
+
+
+def simulate_price_exit(
+    precomputed: list[dict],
+    min_edge: float = 0.1,
+    take_profit: float = 0.95,
+    trade_size: float = 100,
+    fee: float = 0.02,
+) -> list[ExitTrade]:
+    """
+    Simulate: enter on SM signal, exit when our side price >= take_profit.
+    Hypothesis: exit at 95c is better than hold to resolution (tail risk).
+    """
+    all_trades: list[ExitTrade] = []
+
+    for item in precomputed:
+        market = item["market"]
+        flow_series = item["flow_series"]
+        end_date = item["end_date"]
+        yes_won = item["yes_won"]
+
+        in_trade = False
+        entry_date = entry_price = entry_flow = entry_side = None
+
+        for date, flow, price in flow_series:
+            if not in_trade:
+                if abs(flow) >= min_edge:
+                    in_trade = True
+                    entry_date = date
+                    entry_flow = flow
+                    entry_side = "YES" if flow > 0 else "NO"
+                    entry_price = price if entry_side == "YES" else (1.0 - price)
+            else:
+                # Our side's current price
+                our_price = price if entry_side == "YES" else (1.0 - price)
+
+                if our_price >= take_profit:
+                    tokens = trade_size / entry_price if entry_price > 0 else 0
+                    pnl = tokens * our_price - trade_size - trade_size * fee
+
+                    resolution_payout = 1.0 if (entry_side == "YES") == yes_won else 0.0
+                    pnl_hold = tokens * resolution_payout - trade_size - trade_size * fee
+
+                    all_trades.append(ExitTrade(
+                        market_question=market["question"],
+                        side=entry_side,
+                        entry_date=entry_date,
+                        entry_price=entry_price,
+                        entry_flow=entry_flow,
+                        exit_date=date,
+                        exit_price=our_price,
+                        exit_flow=flow,
+                        exit_reason=f"tp@{take_profit:.0%}",
+                        pnl=pnl,
+                        pnl_hold=pnl_hold,
+                        yes_won=yes_won,
+                    ))
+                    in_trade = False
+
+        # Still in trade → resolution
+        if in_trade and entry_price and entry_price > 0:
+            tokens = trade_size / entry_price
+            resolution_payout = 1.0 if (entry_side == "YES") == yes_won else 0.0
+            pnl = tokens * resolution_payout - trade_size - trade_size * fee
+
+            all_trades.append(ExitTrade(
+                market_question=market["question"],
+                side=entry_side,
+                entry_date=entry_date,
+                entry_price=entry_price,
+                entry_flow=entry_flow,
+                exit_date=end_date,
+                exit_price=resolution_payout,
+                exit_flow=flow_series[-1][1] if flow_series else 0,
+                exit_reason="resolution",
+                pnl=pnl,
+                pnl_hold=pnl,
+                yes_won=yes_won,
+            ))
+
+    return all_trades
+
+
+def run_price_exit_grid(precomputed: list[dict], min_edge: float = 0.10):
+    """Grid search over take-profit levels."""
+    tps = [0.85, 0.88, 0.90, 0.92, 0.93, 0.94, 0.95, 0.96, 0.97, 0.98, 0.99]
+
+    print("\n" + "=" * 105)
+    print(f"TAKE-PROFIT EXIT GRID (min_edge={min_edge}, fee=2%)")
+    print("Hypothesis: exit at ~95c beats hold to resolution (tail risk protection)")
+    print("=" * 105)
+    print(f"\n{'TP level':>10} {'Trades':>8} {'Exits':>6} {'Holds':>6} {'Wins':>6} {'Win%':>6} {'P&L tp':>10} {'P&L hold':>10} {'Advantage':>10} {'Avg/trade':>10}")
+    print("-" * 105)
+
+    # Also show pure hold baseline
+    hold_trades = simulate_on_series(precomputed, min_edge=min_edge, exit_threshold=99.0)
+    if hold_trades:
+        hold_pnl = sum(t.pnl for t in hold_trades)
+        hold_wins = sum(1 for t in hold_trades if t.pnl > 0)
+        hold_avg = hold_pnl / len(hold_trades) if hold_trades else 0
+        print(f"  {'HOLD':>8} {len(hold_trades):>8} {0:>6} {len(hold_trades):>6} {hold_wins:>6} {hold_wins/len(hold_trades)*100:>5.0f}% ${hold_pnl:>+9.1f} ${hold_pnl:>+9.1f} ${'0.0':>9} ${hold_avg:>+9.1f}")
+        print("-" * 105)
+
+    for tp in tps:
+        trades = simulate_price_exit(precomputed, min_edge=min_edge, take_profit=tp)
+        if not trades:
+            continue
+
+        total_pnl = sum(t.pnl for t in trades)
+        total_hold = sum(t.pnl_hold for t in trades)
+        wins = sum(1 for t in trades if t.pnl > 0)
+        exits = sum(1 for t in trades if t.exit_reason != "resolution")
+        holds = sum(1 for t in trades if t.exit_reason == "resolution")
+        adv = total_pnl - total_hold
+        avg = total_pnl / len(trades) if trades else 0
+
+        marker = " <<<" if total_pnl > hold_pnl else ""
+        print(f"  {tp:>8.0%} {len(trades):>8} {exits:>6} {holds:>6} {wins:>6} {wins/len(trades)*100:>5.0f}% ${total_pnl:>+9.1f} ${total_hold:>+9.1f} ${adv:>+9.1f} ${avg:>+9.1f}{marker}")
+
+
+def print_exit_simulation(trades: list[ExitTrade], min_edge: float, exit_threshold: float, step_days: int):
+    """Print exit simulation results."""
+    print("\n" + "=" * 80)
+    print(f"SM EXIT SIMULATION (min_edge={min_edge}, exit_thr={exit_threshold}, step={step_days}d, fee=2%)")
+    print("=" * 80)
+
+    if not trades:
+        print("  No trades generated.")
+        return {}
+
+    # Split by exit reason
+    by_reason: dict[str, list[ExitTrade]] = defaultdict(list)
+    for t in trades:
+        by_reason[t.exit_reason].append(t)
+
+    total_pnl = sum(t.pnl for t in trades)
+    total_pnl_hold = sum(t.pnl_hold for t in trades)
+    wins = sum(1 for t in trades if t.pnl > 0)
+
+    print(f"\nTotal trades: {len(trades)}")
+    print(f"Winners: {wins} ({wins/len(trades)*100:.0f}%)")
+    print(f"P&L (with exits):    ${total_pnl:+,.1f}")
+    print(f"P&L (hold to resol): ${total_pnl_hold:+,.1f}")
+    print(f"Exit advantage:      ${total_pnl - total_pnl_hold:+,.1f}")
+    print(f"Avg P&L/trade:       ${total_pnl/len(trades):+,.1f}")
+
+    print(f"\n{'Exit reason':<15} {'Count':>6} {'Wins':>6} {'Win%':>6} {'P&L':>10} {'vs Hold':>10}")
+    print("-" * 60)
+    for reason in ["reversal", "weak_signal", "resolution"]:
+        rt = by_reason.get(reason, [])
+        if not rt:
+            continue
+        r_wins = sum(1 for t in rt if t.pnl > 0)
+        r_pnl = sum(t.pnl for t in rt)
+        r_hold = sum(t.pnl_hold for t in rt)
+        print(f"  {reason:<13} {len(rt):>6} {r_wins:>6} {r_wins/len(rt)*100:>5.0f}% ${r_pnl:>+9.1f} ${r_pnl - r_hold:>+9.1f}")
+
+    # Per-trade details
+    print(f"\n{'Market':<35} {'Side':>4} {'Entry':>7} {'Exit':>7} {'Reason':<10} {'P&L':>8} {'Hold':>8} {'Diff':>8}")
+    print("-" * 100)
+
+    for t in sorted(trades, key=lambda x: x.entry_date):
+        q = t.market_question[:34]
+        diff = t.pnl - t.pnl_hold
+        print(f"  {q:<35} {t.side:>4} {t.entry_price:.2f}    {t.exit_price:.2f}    {t.exit_reason:<10} ${t.pnl:>+7.1f} ${t.pnl_hold:>+7.1f} ${diff:>+7.1f}")
+
+    # Grid over parameters
+    print(f"\n{'='*80}")
+    print("PARAMETER SENSITIVITY")
+    print("="*80)
+
+    return {
+        "trades": len(trades),
+        "total_pnl": total_pnl,
+        "total_pnl_hold": total_pnl_hold,
+        "win_rate": wins / len(trades) * 100 if trades else 0,
+    }
+
+
+def run_exit_grid(
+    markets: list[dict],
+    dune: DuneLoader,
+    trader_cache: dict,
+    step_days: int = 5,
+):
+    """Run exit simulation with multiple parameter combinations.
+    Computes flow series ONCE, then replays different params instantly."""
+
+    print(f"\nComputing SM flow series (step={step_days}d)... This is the slow part.")
+    precomputed = compute_flow_series_all(markets, dune, trader_cache, step_days=step_days)
+    print(f"Computed flow series for {len(precomputed)} markets.\n")
+
+    params = [
+        # (min_edge, exit_threshold)
+        (0.03, 0.0),
+        (0.05, 0.0),
+        (0.10, 0.0),
+        (0.15, 0.0),
+        (0.20, 0.0),
+        (0.05, -0.05),
+        (0.10, -0.05),
+        (0.10, -0.10),
+        (0.15, -0.05),
+        (0.15, -0.10),
+        (0.20, -0.10),
+    ]
+
+    print("=" * 100)
+    print(f"EXIT STRATEGY GRID SEARCH (step={step_days}d, fee=2%)")
+    print("=" * 100)
+    print(f"\n{'min_edge':>10} {'exit_thr':>10} {'Trades':>8} {'Exits':>6} {'Holds':>6} {'Wins':>6} {'Win%':>6} {'P&L exit':>10} {'P&L hold':>10} {'Advantage':>10}")
+    print("-" * 95)
+
+    for min_e, exit_t in params:
+        trades = simulate_on_series(precomputed, min_edge=min_e, exit_threshold=exit_t)
+        if not trades:
+            continue
+
+        total_pnl = sum(t.pnl for t in trades)
+        total_hold = sum(t.pnl_hold for t in trades)
+        wins = sum(1 for t in trades if t.pnl > 0)
+        exits = sum(1 for t in trades if t.exit_reason != "resolution")
+        holds = sum(1 for t in trades if t.exit_reason == "resolution")
+        adv = total_pnl - total_hold
+
+        print(f"  {min_e:>8.2f} {exit_t:>10.2f} {len(trades):>8} {exits:>6} {holds:>6} {wins:>6} {wins/len(trades)*100:>5.0f}% ${total_pnl:>+9.1f} ${total_hold:>+9.1f} ${adv:>+9.1f}")
+
+
 def save_results(results: list[BacktestResult], summary: dict, filename: str = "RESULTS.md"):
     """Save results to markdown file."""
     path = Path(__file__).parent / filename
@@ -583,6 +999,12 @@ def main():
     parser.add_argument("--limit", type=int, default=50, help="Max markets to discover")
     parser.add_argument("--snapshot-days", default="30,14,7", help="Days before resolution")
     parser.add_argument("--no-cache", action="store_true")
+    parser.add_argument("--simulate-exits", action="store_true", help="Run SM reversal exit simulation")
+    parser.add_argument("--grid-exits", action="store_true", help="Grid search over exit parameters")
+    parser.add_argument("--price-exit-grid", action="store_true", help="Grid search: exit at take-profit price")
+    parser.add_argument("--min-edge", type=float, default=0.1, help="Min |flow| to enter (exit sim)")
+    parser.add_argument("--exit-threshold", type=float, default=0.0, help="Flow threshold to exit")
+    parser.add_argument("--step-days", type=int, default=5, help="Days between SM snapshots (exit sim)")
     args = parser.parse_args()
 
     api_key = os.environ.get("DUNE_API_KEY")
@@ -670,7 +1092,30 @@ def main():
         print("No markets to backtest")
         sys.exit(0)
 
-    # Run backtest
+    # Exit simulation mode (uses cached data only, 0 Dune credits)
+    if args.simulate_exits or args.grid_exits or args.price_exit_grid:
+        trader_cache = load_trader_cache()
+
+        if args.grid_exits:
+            run_exit_grid(markets, dune, trader_cache, step_days=args.step_days)
+        elif args.price_exit_grid:
+            print(f"\nComputing SM flow series (step={args.step_days}d)...")
+            precomputed = compute_flow_series_all(markets, dune, trader_cache, step_days=args.step_days)
+            print(f"Computed for {len(precomputed)} markets.\n")
+            run_price_exit_grid(precomputed, min_edge=args.min_edge)
+        else:
+            print(f"\nComputing SM flow series (step={args.step_days}d)...")
+            precomputed = compute_flow_series_all(markets, dune, trader_cache, step_days=args.step_days)
+            print(f"Computed for {len(precomputed)} markets.\n")
+            exit_trades = simulate_on_series(
+                precomputed,
+                min_edge=args.min_edge,
+                exit_threshold=args.exit_threshold,
+            )
+            print_exit_simulation(exit_trades, args.min_edge, args.exit_threshold, args.step_days)
+        sys.exit(0)
+
+    # Standard backtest
     results = run_backtest(markets, dune, snapshot_days)
 
     if results:

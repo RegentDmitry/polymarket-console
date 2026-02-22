@@ -35,7 +35,7 @@ MIN_LIQUIDITY = 5_000  # минимум $5k ликвидности
 @dataclass
 class MarketResult:
     event_title: str
-    event_slug: str
+    event_slug: strd
     market_title: str
     condition_id: str
     yes_price: float

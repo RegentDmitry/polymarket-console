@@ -1,167 +1,185 @@
 # План: SM бэктест — политические рынки Polymarket
 
-## Цель
+## Статус
 
-Проверить: предсказывает ли Smart Money flow исход политических рынков?
-Конкретно: если SM говорил "YES" за 2-4 недели до резолюции, как часто рынок резолвился YES?
+**Фаза 1 завершена** (2026-02-17):
+- Инфраструктура: `dune_loader.py` + `sm_backtest.py` готовы
+- Загружено 28 рынков (tag=politics, min_volume=$500k, NegRisk only)
+- Проанализировано 24 рынка (все — US elections 2024)
+- **Hit rate: 83% (20/24), Win rate с фильтром: 94% (17/18), P&L: +$340**
 
-## Подход 1: On-chain реконструкция (ОСНОВНОЙ)
+**Фаза 2: расширение по тегам** (ожидает Dune credits)
 
-### Источник данных
+## Цель Фазы 2
 
-**data-api.polymarket.com/trades** — бесплатный, без ключа:
-```
-GET /trades?asset=<token_id>&limit=1000&offset=N
-```
-- Все сделки всех пользователей по конкретному токену
-- Поля: proxyWallet, timestamp, size, usdcSize, price, side (BUY/SELL), outcome
-- Max offset: 3000 (до ~4000 трейдов на токен)
-- Rate limit: мягкий (5+ rps без проблем), cache 300s
+Определить: **на каких типах политических рынков SM работает, а на каких нет?**
 
-### Алгоритм
+Гипотезы:
+| Категория | Гипотеза | Почему |
+|-----------|----------|--------|
+| **US elections** | SM хорош (✅ подтверждено: 83%) | Polling + insiders, ликвидность |
+| **Fed rates** | SM очень точен | Макро-трейдеры хорошо информированы |
+| **Geopolitics** | SM средний | Black swan events, но инсайдеры есть |
+| **Middle East** | SM слабый | Непредсказуемость, мало инсайдов |
+| **Trump policy** | SM средний | Зависит от одного человека |
+| **Congress/legislation** | SM хорош | Лоббисты торгуют |
+| **Trade war/tariffs** | SM слабый | Policy shifts непредсказуемы |
 
-Для каждого закрытого политического рынка:
+## Доступные данные (проверено 2026-02-17)
 
-1. **Загрузить все трейды** через пагинацию (trades?asset=token_id)
-2. **Реконструировать позиции** на каждый день:
-   - Для каждого кошелька: cumsum(BUY) - cumsum(SELL) = position at time T
-3. **Для каждого "snapshot дня"** (например, T-30, T-14, T-7 до резолюции):
-   - Взять топ-30 холдеров YES и NO
-   - Загрузить их P&L через /positions + /closed-positions
-   - Прогнать SM алгоритм (conviction × profit × shrinkage)
-   - Записать smart_flow и smart_implied
-4. **Сравнить** SM signal с фактическим outcome
+### Закрытые NegRisk рынки по тегам
 
-### Важный нюанс: P&L трейдеров
+| Тег | Events (стр.1) | NegRisk рынков | Ещё страниц? | Приоритет |
+|-----|---------------|----------------|--------------|-----------|
+| elections | 100+ (3+ стр.) | 747+ | да, тысячи | P1 — выборки по странам |
+| congress | 125 | 233 | нет | P1 |
+| fed-rates | 96 | 211 | нет | P1 — ключевой тест |
+| politics | 100+ (3+ стр.) | 237+ | да | уже частично загружено |
+| us-politics | 95 | 146 | нет | P2 |
+| us-elections | 31 | 118 | нет | перекрывается с elections |
+| china | 100 | 78 | возможно | P2 |
+| trade-war | 100 | 52 | возможно | P2 |
+| trump | 100 | 48 | возможно | P2 |
+| immigration | 22 | 34 | нет | P3 |
+| middle-east | 100 | 25 | возможно | P2 |
+| tariffs | 31 | 14 | нет | P3 |
 
-P&L трейдера через API = **текущий** совокупный P&L (включая уже зарезолвленные рынки).
-Для честного бэктеста нужно учитывать что P&L трейдера на момент T мог быть другим.
+**Итого NegRisk: ~1,500-2,000 уникальных рынков** (с дедупликацией между тегами).
 
-**Варианты решения:**
-- a) Использовать текущий P&L как прокси (assumption: профитные трейдеры остаются профитными)
-- b) Через Dune: реконструировать P&L на дату T (сложно, дорого)
-- c) Использовать только ROI и conviction (без absolute profit) — менее зависимо от точного P&L
+### Dune credits
 
-**Рекомендация:** вариант (a) + sensitivity analysis. Если SM работает с текущим P&L,
-он тем более работал с историческим (трейдеры имели ту же репутацию).
+- Бесплатный лимит: 2,500 credits/month
+- Потрачено: ~1,770 (осталось ~730)
+- Стоимость 1 рынка: ~3.5 credits (один Dune запрос)
+- **На остатке можно загрузить: ~200 рынков**
+- Для полного анализа (500+ рынков): нужно ~1,750 credits → **докупить или подождать обновления лимита**
 
-### Ограничения
+## План загрузки Фазы 2
 
-| Проблема | Влияние | Решение |
-|----------|---------|---------|
-| Max 4000 трейдов на токен | Крупные рынки (>$100M) не покрыть | Фильтровать volume < $50M |
-| P&L = текущий, не исторический | Slight lookahead bias | Sensitivity analysis |
-| Трейдер мог продать и уйти | Не видим его на snapshot | Реконструкция из трейдов решает это |
-| Rate limits /positions | 60 запросов на snapshot × N snapshots | Кеш + throttle |
-
-## Подход 2: Проспективный сбор (ПАРАЛЛЕЛЬНО)
-
-### Cron job
+### Приоритет 1 (~300 credits, ~85 рынков)
 
 ```bash
-# Каждый день в 10:00 UTC (17:00 Bali)
-0 10 * * * /opt/polymarket/sm_snapshot.sh
+# Fed rates — ключевой тест гипотезы "SM хорош для макро"
+python politics/backtest/sm_backtest.py --query-id 6707297 \
+    --discover --tag fed-rates --min-volume 100000 --limit 50
+
+# Congress — законодательные рынки
+python politics/backtest/sm_backtest.py --query-id 6707297 \
+    --discover --tag congress --min-volume 200000 --limit 40
 ```
 
-Скрипт:
-1. Получить все открытые политические рынки (Gamma API, tag=politics, closed=false)
-2. Для каждого рынка запустить smart_money.py
-3. Сохранить результат в CSV/JSON: date, slug, market, smart_flow, smart_implied, pm_price
+### Приоритет 2 (~500 credits, ~140 рынков)
 
-Через 3-6 месяцев: реальный проспективный бэктест без bias.
+```bash
+# Geopolitics / Middle East / China
+python politics/backtest/sm_backtest.py --query-id 6707297 \
+    --discover --tag geopolitics --min-volume 100000 --limit 50
 
-## Выбор рынков для бэктеста
+python politics/backtest/sm_backtest.py --query-id 6707297 \
+    --discover --tag middle-east --min-volume 50000 --limit 40
 
-### Теги (из Gamma API)
+python politics/backtest/sm_backtest.py --query-id 6707297 \
+    --discover --tag china --min-volume 100000 --limit 30
 
-| Тег | Закрытых событий | Примеры |
-|-----|-----------------|---------|
-| politics | ~4,846 | Всё политическое |
-| us-politics | ~500 | Выборы, конгресс, президент |
-| geopolitics | ~2,000 | Войны, санкции, дипломатия |
-| elections | ~500 | Все выборы мира |
-| fed-rates | ~100 | Решения ФРС |
-| middle-east | ~200 | Иран, Израиль, Газа |
-| trump | ~300 | Трамп-специфичные |
-| ukraine | ~150 | Украина/Россия |
+python politics/backtest/sm_backtest.py --query-id 6707297 \
+    --discover --tag trump --min-volume 200000 --limit 30
+```
 
-### Фильтры для бэктеста
+### Приоритет 3 (~300 credits, ~85 рынков)
 
-- Объём > $100k (ликвидные рынки, SM значим)
-- Binary markets (YES/NO) — проще анализировать
-- Не crypto-tagged (отдельный бэктест)
-- Закрыт > 30 дней назад (есть время для snapshot за T-30)
+```bash
+# Trade war / tariffs / immigration
+python politics/backtest/sm_backtest.py --query-id 6707297 \
+    --discover --tag trade-war --min-volume 100000 --limit 40
 
-**Оценка: ~500-1000 рынков** подходят для анализа.
+python politics/backtest/sm_backtest.py --query-id 6707297 \
+    --discover --tag tariffs --min-volume 50000 --limit 20
 
-## Категории для hit rate
+python politics/backtest/sm_backtest.py --query-id 6707297 \
+    --discover --tag immigration --min-volume 100000 --limit 25
+```
 
-| Категория | Гипотеза |
-|-----------|----------|
-| **Fed rates** | SM должен быть очень точен (информированные трейдеры) |
-| **US elections** | SM хорош (polling + insiders) |
-| **Geopolitics/wars** | SM менее точен (black swan events) |
-| **Middle East** | SM слабый (непредсказуемость) |
-| **Персональные** (health, death) | SM = шум |
-| **Deadlines** (by date X) | SM может быть хорош (информация о переговорах) |
+**Итого: ~1,100 credits на ~310 рынков** (плюс 28 уже загруженных).
 
-## Выходные метрики
+## Технические детали
 
-Для каждой категории:
-- **SM Hit Rate @ T-30**: % случаев когда SM предсказал правильный исход за 30 дней
-- **SM Hit Rate @ T-14**: то же за 14 дней
-- **SM Hit Rate @ T-7**: то же за 7 дней
-- **SM ROI**: если бы мы покупали по SM сигналу, какой P&L?
-- **SM vs Naive**: SM лучше чем просто "покупать текущую цену > 50%"?
-- **SM Confidence**: корреляция |smart_flow| с hit rate (сильный сигнал = точнее?)
-
-## Архитектура
-
-### Файлы
+### Инфраструктура (готова)
 
 ```
 politics/backtest/
 ├── PLAN.md              — этот файл
-├── data_loader.py       — загрузка закрытых рынков + трейдов
-├── position_reconstructor.py — реконструкция позиций на дату T
-├── sm_backtest.py       — основной бэктест + отчёт
-├── daily_collector.py   — cron-скрипт для проспективного сбора
-├── cache/               — кеш трейдов и рынков
-└── RESULTS.md           — результаты
+├── RESULTS.md           — результаты (24 рынка, elections)
+├── dune_loader.py       — Dune API + кеш + discover + reconstruct positions
+├── sm_backtest.py       — SM алгоритм + backtest engine + P&L sim
+└── cache/
+    ├── dune_trades_*.json      — 28 файлов с on-chain трейдами
+    ├── markets_politics.json   — 66 обнаруженных рынков
+    └── trader_stats_cache.json — кеш P&L трейдеров
 ```
 
-### CLI
+### Dune запрос
 
-```bash
-# Полный бэктест по всем закрытым политическим рынкам
-python3 politics/backtest/sm_backtest.py
+- Query ID: **6707297** (параметр `{{token_id}}`)
+- Таблица: `polymarket_polygon.NegRiskCTFExchange_evt_OrderFilled`
+- API key: в `.env` файле (`DUNE_API_KEY`)
+- Лимит: 32,000 строк на запрос (достаточно для большинства рынков)
 
-# Только определённая категория
-python3 politics/backtest/sm_backtest.py --tag fed-rates
-python3 politics/backtest/sm_backtest.py --tag us-elections
+### SM алгоритм
 
-# С фильтром по объёму
-python3 politics/backtest/sm_backtest.py --min-volume 1000000
-
-# Snapshot на конкретную дату (для отладки)
-python3 politics/backtest/sm_backtest.py --slug "presidential-election-winner-2024" --snapshot-days 30,14,7
+```
+weight = log_profit × roi_mult × health × conviction × shrinkage
+smart_flow = Σ(signed_weight) / Σ(|signed_weight|)   # [-1, +1]
 ```
 
-## Порядок реализации
+- YES holders: positive weight (из on-chain позиций)
+- NO holders: negative balance в YES token = net sellers (proxy)
+- Trader stats: текущий P&L через data-api (приближение — не исторический)
+- Cap: max 15% от сигнала на одного трейдера
 
-1. [ ] Сохранить план
-2. [ ] Проверить на одном рынке: загрузить трейды, реконструировать позиции, прогнать SM
-3. [ ] data_loader.py — discover + load trades + cache
-4. [ ] position_reconstructor.py — snapshot позиций на дату T
-5. [ ] sm_backtest.py — основной цикл + отчёт по категориям
-6. [ ] Тестовый запуск на ~50 рынках
-7. [ ] Полный прогон на ~500+ рынках
-8. [ ] daily_collector.py — cron для проспективного сбора
-9. [ ] Анализ результатов, сохранить в RESULTS.md
+### Приближения и bias
 
-## Зависимости
+| Фактор | Влияние | Критичность |
+|--------|---------|-------------|
+| P&L трейдеров = текущий | Lookahead bias (трейдер мог стать профитным позже) | Среднее |
+| 32k row limit на Dune | Крупные рынки теряют последние дни данных | Низкое |
+| NegRisk only | CTF рынки не анализируем | Низкое (большинство политики = NegRisk) |
+| NO side = proxy | Не настоящие NO holders, а net YES sellers | Среднее |
+| Выборка = elections 2024 | Результаты могут не переноситься на другие типы | Высокое (именно это проверяем в Фазе 2) |
 
-- `tqdm` — прогресс-бары
-- `crypto/smart_money.py` — SM алгоритм (импорт логики)
-- Gamma API — метаданные рынков
-- Data API — трейды + позиции трейдеров
+## Метрики для сравнения тегов
+
+Для каждого тега:
+1. **Hit Rate @ T-30**: SM предсказал правильно за 30 дней
+2. **Hit Rate @ T-14**: SM предсказал правильно за 14 дней
+3. **Strong Signal Hit Rate**: |flow| > 0.3
+4. **P&L** (buy $100 per signal, |flow| > 0.1 filter)
+5. **Win Rate**: % профитных сделок
+6. **Avg P&L/trade**: средний profit
+
+### Ожидаемый вывод Фазы 2
+
+```
+═══ SM HIT RATE BY CATEGORY ═══
+
+Category          Markets  T-30   T-14   Strong  P&L      Win%
+elections            24    75%    83%    90%    +$340     94%
+fed-rates            35    ??%    ??%    ??%    $???      ??%
+congress             28    ??%    ??%    ??%    $???      ??%
+geopolitics          30    ??%    ??%    ??%    $???      ??%
+middle-east          15    ??%    ??%    ??%    $???      ??%
+trump                20    ??%    ??%    ??%    $???      ??%
+trade-war            25    ??%    ??%    ??%    $???      ??%
+
+═══ TRADING STRATEGY IMPLICATIONS ═══
+
+✅ USE SM for: [categories with hit rate > 70%]
+⚠️  CAUTION with SM for: [categories with 50-70%]
+❌ IGNORE SM for: [categories with < 50%]
+```
+
+## Что дальше после Фазы 2
+
+1. **Проспективный сбор** — cron job для ежедневных SM snapshot по открытым рынкам
+2. **Grid search** по параметрам SM (conviction threshold, holder count, shrinkage_k)
+3. **Комбинация SM + price momentum** — SM как фильтр, momentum как тайминг
+4. **Автоматизация** — интеграция в торгового бота (если SM надёжен для категории)
