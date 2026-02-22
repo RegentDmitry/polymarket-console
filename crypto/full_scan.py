@@ -253,8 +253,8 @@ def main():
 
                 edge_d0 = calc_edge(spot, strike, iv, T, pm, is_up, 0.0)
                 edge_fut = calc_edge(spot, strike, iv, T, pm, is_up, drift_fut)
-                edge_d27 = calc_edge(spot, strike, iv, T, pm, is_up, 0.27)
-                edge_mc = mc_edge(spot, strike, iv, T, pm, is_up, mu=0.0)
+                edge_mc0 = mc_edge(spot, strike, iv, T, pm, is_up, mu=0.0)
+                edge_mcf = mc_edge(spot, strike, iv, T, pm, is_up, mu=drift_fut)
 
                 period = (
                     "Feb" if "february" in slug
@@ -268,8 +268,8 @@ def main():
                     "pm": pm,
                     "edge_d0": edge_d0,
                     "edge_fut": edge_fut,
-                    "edge_d27": edge_d27,
-                    "edge_mc": edge_mc,
+                    "edge_mc0": edge_mc0,
+                    "edge_mcf": edge_mcf,
                 })
         except Exception as e:
             print(f"  [{slug}]: {e}")
@@ -277,34 +277,34 @@ def main():
     results.sort(key=lambda x: x["edge_d0"], reverse=True)
 
     print(f"Найдено {len(results)} активных рынков")
-    print(f"MC Student-t: df={STUDENT_DF}, {MC_PATHS:,} paths, drift=0")
+    print(f"MC Student-t: df={STUDENT_DF}, {MC_PATHS:,} paths")
     print()
     hdr = (
         f"{'Рынок':<25} {'Пер':<6} {'St':<4} {'PM':<6}"
-        f" {'Edge d=0':>8} {'Edge fut':>9} {'Edge d=27':>9} {'MC t-dist':>9}   {'Вердикт':<22}"
+        f" {'GBM d=0':>8} {'GBM fut':>9} {'MC d=0':>8} {'MC fut':>8}   {'Вердикт':<22}"
     )
     print(hdr)
     print("=" * 108)
     for r in results:
         pm_str = f"{r['pm']*100:.0f}c"
-        e0, ef, e27, emc = r["edge_d0"], r["edge_fut"], r["edge_d27"], r["edge_mc"]
+        e0, ef, mc0, mcf = r["edge_d0"], r["edge_fut"], r["edge_mc0"], r["edge_mcf"]
         if e0 > 0.03 and ef > 0.03:
             verdict = "*** EDGE d=0 + fut ***"
         elif e0 > 0.0 and ef > 0.0:
             verdict = "edge d=0 + fut"
-        elif ef > 0.03 and e27 > 0.03:
-            verdict = "edge fut + d=27"
+        elif ef > 0.03 and mcf > 0.03:
+            verdict = "edge fut + MC"
         elif ef > 0.0:
             verdict = "edge при fut"
-        elif e27 > 0.05:
-            verdict = "ТОЛЬКО d=27%"
-        elif e27 > 0.0:
-            verdict = "нужен drift"
+        elif mc0 > 0.03:
+            verdict = "MC fat tails"
+        elif mc0 > 0.0:
+            verdict = "нужен MC drift"
         else:
             verdict = "—"
         print(
             f"{r['market']:<25} {r['period']:<6} {r['side']:<4} {pm_str:<6}"
-            f" {e0*100:>+6.1f}%  {ef*100:>+6.1f}%   {e27*100:>+6.1f}%  {emc*100:>+6.1f}%   {verdict}"
+            f" {e0*100:>+6.1f}%  {ef*100:>+6.1f}%  {mc0*100:>+6.1f}%  {mcf*100:>+6.1f}%   {verdict}"
         )
 
 
