@@ -70,11 +70,34 @@ class EarthquakeScanner(BaseScanner):
 
     @property
     def significant_extra_events(self) -> List[dict]:
-        """Extra events with magnitude >= 6.5 (affect trading markets)."""
-        return [
-            e for e in self._extra_events
-            if e.get('best_magnitude', 0) >= self._min_significant_magnitude
-        ]
+        """Extra events with discounted magnitude >= 6.5.
+
+        Applies magnitude discount based on source count (fewer sources = less confidence).
+        Also ignores events older than EXTRA_EVENT_MAX_AGE_MINUTES without USGS confirmation.
+        """
+        from trading_bot.constants import get_mag_discount, EXTRA_EVENT_MAX_AGE_MINUTES
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        result = []
+        for e in self._extra_events:
+            mag = e.get('best_magnitude', 0)
+            sc = e.get('source_count', 1)
+            # Skip old events without USGS confirmation
+            ev_time_str = e.get('event_time')
+            if ev_time_str:
+                try:
+                    ev_time = datetime.fromisoformat(ev_time_str)
+                    if ev_time.tzinfo is None:
+                        ev_time = ev_time.replace(tzinfo=timezone.utc)
+                    age_minutes = (now - ev_time).total_seconds() / 60
+                    if age_minutes > EXTRA_EVENT_MAX_AGE_MINUTES:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+            discount = get_mag_discount(sc)
+            if mag - discount >= self._min_significant_magnitude:
+                result.append(e)
+        return result
 
     @property
     def has_extra_events(self) -> bool:
@@ -145,13 +168,20 @@ class EarthquakeScanner(BaseScanner):
                 if self._extra_events:
                     # Log all events
                     logger.log_info(f"Monitor bot: {len(self._extra_events)} extra events total")
-                    # Log significant events (M6.5+) that affect trading
+                    # Log significant events (with discount applied)
+                    from trading_bot.constants import get_mag_discount
                     significant = self.significant_extra_events
-                    if significant:
-                        for ev in significant:
-                            mag = ev.get('best_magnitude', 0)
-                            loc = ev.get('location_name', 'Unknown')[:30]
-                            logger.log_info(f"  SIGNIFICANT: M{mag:.1f} {loc} (early detection!)")
+                    for ev in self._extra_events:
+                        mag = ev.get('best_magnitude', 0)
+                        sc = ev.get('source_count', 1)
+                        loc = ev.get('location_name', 'Unknown')[:30]
+                        discount = get_mag_discount(sc)
+                        eff = mag - discount
+                        is_sig = ev in significant
+                        tag = "SIGNIFICANT" if is_sig else "discounted"
+                        logger.log_info(f"  {tag}: M{mag:.1f} ({sc} src) → eff M{eff:.1f} {loc}")
+                    if not significant:
+                        logger.log_info("  No significant extra events after discount")
 
             # Run the same analysis as main_tested.py
             self._opportunities = run_analysis(

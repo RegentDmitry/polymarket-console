@@ -344,18 +344,27 @@ def analyze_market_tested(
     usgs_count = len(earthquakes)
 
     # Добавляем extra events из monitor_bot (обнаружены, но ещё не в USGS)
+    # Применяем дисконт магнитуды: меньше источников = больше неопределённость
+    from trading_bot.constants import get_mag_discount, EXTRA_EVENT_MAX_AGE_MINUTES
     extra_count = 0
     if extra_events:
         for ev in extra_events:
             ev_mag = ev.get('best_magnitude', 0)
             ev_time_str = ev.get('event_time')
-            if ev_mag >= magnitude and ev_time_str:
+            source_count = ev.get('source_count', 1)
+            if ev_time_str:
                 try:
                     ev_time = datetime.fromisoformat(ev_time_str)
                     if ev_time.tzinfo is None:
                         ev_time = ev_time.replace(tzinfo=timezone.utc)
-                    # Проверяем, что событие в окне рынка
-                    if start <= ev_time <= now:
+                    # Пропускаем старые события без USGS подтверждения
+                    age_minutes = (now - ev_time).total_seconds() / 60
+                    if age_minutes > EXTRA_EVENT_MAX_AGE_MINUTES:
+                        continue
+                    # Дисконтируем магнитуду по количеству источников
+                    discount = get_mag_discount(source_count)
+                    effective_mag = ev_mag - discount
+                    if effective_mag >= magnitude and start <= ev_time <= now:
                         extra_count += 1
                 except (ValueError, TypeError):
                     pass
