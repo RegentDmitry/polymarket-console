@@ -99,7 +99,7 @@ def calc_edge(spot, strike, iv, T, pm, is_up, mu):
 
 
 # --- Student-t Monte Carlo touch probability ---
-MC_PATHS = 50_000
+MC_PATHS = 150_000
 STUDENT_DF = 2.95  # from btc_model.ipynb calibration
 
 
