@@ -26,39 +26,23 @@ Proxy wallet: `0x33359238C1842Ac90B989077168Fd43c918F5300`
 
 ## Шаг 1: Получить текущие рыночные данные
 
-Данные уже получены из API (Шаг 0). Также получи данные по февральским крипто-рынкам: https://polymarket.com/event/what-price-will-bitcoin-hit-in-february-2026
+Данные уже получены из API (Шаг 0).
 
-### Политические позиции (~$900 портфель)
+**НЕ ИСПОЛЬЗУЙ ЗАХАРДКОЖЕННЫЕ ДАННЫЕ НИЖЕ КАК ИСТОЧНИК ИСТИНЫ.** Таблицы ниже — справочные (stop/TP уровни и ссылки). Актуальные позиции, шейры, цены — ТОЛЬКО из API (Шаг 0). Если позиция есть в таблице но нет в API — она продана, не упоминай её.
 
-| # | Ставка | Шейры | Вход | Размер | Stop-loss | Take-profit | Резолюция | Ссылка |
-|---|--------|-------|------|--------|-----------|-------------|-----------|--------|
-| 1 | Khamenei out Mar 31 NO | 298.0 | 84¢ | $250.00 | 65¢ | 92¢→50%, 97¢→100% | 31 мар 2026 | https://polymarket.com/event/khamenei-out-as-supreme-leader-of-iran-by-march-31 |
-| 2 | Trump acquires Greenland NO | 227.3 | 88¢ | $200.00 | 75¢ | 97¢→100% | конец 2026 | https://polymarket.com/event/will-trump-acquire-greenland-before-2027 |
-| 3 | US acquires Greenland 2026 NO | 176.5 | 85¢ | $150.00 | 70¢ | 97¢→100% | 31 дек 2026 | https://polymarket.com/event/will-the-us-acquire-any-part-of-greenland-in-2026 |
-| 4 | Bolsonaro Brazil Pres YES | 334 | 30¢ | $100.20 | 15¢ | 50¢→30%, 70¢→50%, 90¢→100% | окт 2026 | https://polymarket.com/event/brazil-presidential-election |
-| 5 | J.D. Vance GOP 2028 YES | 425.9 | 47¢ | $200.16 | 30¢ | 65¢→30%, 80¢→40%, 90¢→100% | 2028 | https://polymarket.com/event/republican-presidential-nominee-2028 |
+### Политические позиции (справочные stop/TP)
 
-### Крипто позиции (~$1,836 портфель)
+| # | Ставка | Stop-loss | Take-profit | Резолюция | Ссылка |
+|---|--------|-----------|-------------|-----------|--------|
+| 1 | Khamenei out Mar 31 NO | 65¢ | 92¢→50%, 97¢→100% | 31 мар 2026 | https://polymarket.com/event/khamenei-out-as-supreme-leader-of-iran-by-march-31 |
+| 2 | Trump acquires Greenland NO | 75¢ | 97¢→100% | конец 2026 | https://polymarket.com/event/will-trump-acquire-greenland-before-2027 |
+| 3 | US acquires Greenland 2026 NO | 70¢ | 97¢→100% | 31 дек 2026 | https://polymarket.com/event/will-the-us-acquire-any-part-of-greenland-in-2026 |
+| 4 | Bolsonaro (Flávio) Brazil Pres YES | 15¢ | 50¢→30%, 70¢→50%, 90¢→100% | окт 2026 | https://polymarket.com/event/brazil-presidential-election |
+| 5 | J.D. Vance GOP 2028 YES | 30¢ | 65¢→30%, 80¢→40%, 90¢→100% | 2028 | https://polymarket.com/event/republican-presidential-nominee-2028 |
 
-#### Годовые (до 31 дек 2026)
-Рынок: https://polymarket.com/event/what-price-will-bitcoin-hit-before-2027
+### Крипто позиции (справочные)
 
-| # | Контракт | Сторона | Шейры | Вход | Размер | Резолюция |
-|---|----------|---------|-------|------|--------|-----------|
-| 1 | BTC > $120k | YES | 1,342.9 | 22¢ | $295.44 | 31 дек 2026 |
-| 2 | BTC dip $55k | NO | 1,057.3 | 33¢ | $344.80 | 31 дек 2026 |
-| 3 | BTC > $150k | YES | 1,561.0 | 11¢ | $171.71 | 31 дек 2026 |
-| 4 | BTC > $100k | YES | 428.9 | 46¢ | $199.35 | 31 дек 2026 |
-
-#### Краткосрочные (февраль)
-Рынок: https://polymarket.com/event/what-price-will-bitcoin-hit-in-february-2026
-
-| # | Контракт | Сторона | Шейры | Вход | Размер | Резолюция |
-|---|----------|---------|-------|------|--------|-----------|
-| 5 | BTC dip $60k Feb | NO | ~630 | ~73¢ | ~$460 | 28 фев 2026 |
-| 6 | BTC dip $55k Feb | NO | ~578 | ~90¢ | ~$521 | 28 фев 2026 |
-
-**Итого вложено: ~$2,720** (обновлено 2026-02-22; +$157 в $60k Feb NO)
+Актуальные позиции берутся из API. SM запускается только по позициям из API.
 
 ---
 
@@ -112,23 +96,26 @@ ETH futures: Feb $X,XXX (drift X.X%), ... Dec $X,XXX (drift X.X%)
 rm -f /tmp/pm_trader_cache.json
 ```
 
-### Команды SM — запускай ВСЕ параллельно через отдельные Bash вызовы с `run_in_background: true`:
+### Команды SM — формируй ДИНАМИЧЕСКИ из API позиций
+
+Для каждой позиции из API (Шаг 0) запусти SM анализ параллельно (`run_in_background: true`):
+- Используй `eventSlug` из API как аргумент
+- Для рынков с несколькими суб-рынками (brazil, republican-nominee, crypto) добавляй `--market "фильтр"` по ключевому слову из `title`
 
 ```bash
-# Политика
-.venv/bin/python crypto/smart_money.py khamenei-out-as-supreme-leader-of-iran-by-march-31
-.venv/bin/python crypto/smart_money.py will-trump-acquire-greenland-before-2027
-.venv/bin/python crypto/smart_money.py will-the-us-acquire-any-part-of-greenland-in-2026
-.venv/bin/python crypto/smart_money.py brazil-presidential-election --market "Bolsonaro"
-.venv/bin/python crypto/smart_money.py republican-presidential-nominee-2028 --market "Vance"
-
-# Крипто
-.venv/bin/python crypto/smart_money.py what-price-will-bitcoin-hit-before-2027 --market "100"
-.venv/bin/python crypto/smart_money.py what-price-will-bitcoin-hit-before-2027 --market "120"
-.venv/bin/python crypto/smart_money.py what-price-will-bitcoin-hit-before-2027 --market "55"
-.venv/bin/python crypto/smart_money.py what-price-will-bitcoin-hit-in-february-2026 --market "60"
-.venv/bin/python crypto/smart_money.py what-price-will-bitcoin-hit-in-february-2026 --market "55"
+# Пример (формируй из реальных API данных):
+.venv/bin/python crypto/smart_money.py <eventSlug>
+.venv/bin/python crypto/smart_money.py <eventSlug> --market "<keyword>"
 ```
+
+**Политика** — slug берём из API поля `eventSlug`:
+- khamenei → `--market` не нужен (один рынок)
+- brazil → `--market "Bolsonaro"` (отфильтрует Flávio)
+- republican-nominee → `--market "Vance"`
+
+**Крипто** — `--market` с числом из страйка:
+- what-price-will-bitcoin-hit-before-2027 → `--market "120"`, `--market "55"` и т.д.
+- Месячные slug меняются! Проверяй `eventSlug` из API.
 
 ---
 
@@ -227,30 +214,26 @@ curl -s "https://gamma-api.polymarket.com/events?slug=<event-slug>" | python3 -m
 
 > **Урок из Gov't Shutdown:** Мы купили YES @ 94¢ думая что DHS partial shutdown = government shutdown. Оказалось, рынок требовал "новый" шатдаун (не продолжение Jan 31), и дедлайн 14 фев 23:59 ET мог не захватить шатдаун начавшийся 15-го. Потеря: -$145. ВСЕГДА читай мелкий шрифт.
 
-### 5e. Сверка крипто с Deribit опционами
+### 5e. Основная метрика: MC Student-t + Deribit IV + Futures drift
 
-Запусти скрипт сравнения Polymarket с Deribit implied probabilities:
+**Основной инструмент:** `full_scan.py` (Шаг 5f). Он уже использует правильную методологию:
+- **IV из Deribit** опционов (не историческая)
+- **Drift из фьючерсной кривой** (подбирается по сроку рынка)
+- **Student-t распределение** (fat tails, df=2.61 BTC / 2.88 ETH)
+- Считает touch probability через Monte Carlo
 
+**Колонка "MC fut" — ОСНОВНАЯ метрика для принятия решений.**
+"MC d=0" — консервативная оценка (drift=0, risk-neutral).
+
+**Дополнительно** можно запустить `deribit_compare.py --drift 0.0` для BS-сравнения:
 ```bash
 .venv/bin/python crypto/deribit_compare.py --drift 0.0
-.venv/bin/python crypto/deribit_compare.py --drift 0.27
 ```
+Это даёт Black-Scholes touch probability (нормальное распределение, без fat tails). Полезно для сравнения с MC Student-t:
+- MC Student-t даёт МЕНЬШЕ touch prob для dip-рынков чем BS (fat tails увеличивают шанс ухода от страйка)
+- MC Student-t даёт БОЛЬШЕ touch prob для reach-рынков чем BS
 
-Скрипт `crypto/deribit_compare.py` автоматически:
-1. Загружает IV из Deribit Dec 2026 опционов
-2. Считает terminal probability (Black-Scholes N(d2)) и touch probability (first passage time)
-3. Сравнивает с ценами на Polymarket
-
-Для КАЖДОЙ крипто позиции добавь в отчёт:
-- **Deribit Touch prob** — при drift=0 (консервативно) и drift=+27% (базовый бычий)
-- **Edge vs PM** — если Deribit touch > PM цена → PM недооценивает (edge для YES)
-- **Согласованность** — совпадают ли Deribit, SM и PM?
-
-Интерпретация:
-- Touch prob >= Terminal prob ВСЕГДА
-- Если Terminal > PM → гарантированный mispricing на Polymarket
-- Если все три (SM, Deribit, цена) против нас → серьёзный сигнал на выход
-- Если SM против, но Deribit подтверждает → SM может быть шумом
+**ВАЖНО: все edge в отчёте — ДЛЯ НАШЕЙ СТОРОНЫ (YES или NO).** Не путай edge для YES с edge для NO. `mc_edge()` уже считает для правильной стороны (для dip-рынков = NO edge, для reach-рынков = YES edge).
 
 ### 5f. ПОЛНЫЙ СКАН крипто рынков + Анализ ротации
 
@@ -262,20 +245,10 @@ curl -s "https://gamma-api.polymarket.com/events?slug=<event-slug>" | python3 -m
 # из crypto/deribit_compare.py (НЕ пиши свои — там баги с нижним барьером).
 ```
 
-Event slugs для сканирования:
-```
-what-price-will-bitcoin-hit-before-2027
-what-price-will-bitcoin-hit-in-february-2026
-what-price-will-bitcoin-hit-in-march-2026
-what-price-will-ethereum-hit-before-2027
-what-price-will-ethereum-hit-in-february-2026
-what-price-will-ethereum-hit-in-march-2026
-```
-
-**ВАЖНО:** Добавляй новые месячные slugs по мере появления! (april-2026, may-2026 и т.д.)
+Скрипт `full_scan.py` уже содержит все актуальные slugs (BTC + ETH, annual + monthly). Он сканирует все активные рынки автоматически через Gamma API.
 
 Для каждой текущей крипто позиции:
-1. Записать текущий edge (из Deribit touch prob vs PM price)
+1. Записать текущий **MC fut edge** (основная метрика)
 2. Найти лучшую доступную возможность среди ВСЕХ рынков (не только наших)
 3. Если лучшая возможность имеет edge на **3%+ выше** чем худшая текущая позиция → рекомендовать ротацию
 
@@ -314,7 +287,8 @@ what-price-will-ethereum-hit-in-march-2026
 | # | Позиция | Сейчас | Stop | Пробит? | TP | Достигнут? | SM Flow | SM подтверж? | Действие |
 
 --- КРИПТО ---
-| # | Контракт | Сейчас | Touch d=0 | Edge d=0 | Touch d=27% | Edge d=27% | Действие |
+| # | Контракт | Сейчас | MC fut edge | MC d=0 edge | BS d=0 edge | Действие |
+(все edge — для НАШЕЙ стороны; MC fut = primary metric)
 
 Временные стопы (крипто):
 - Май <$65k: сработал? [да/нет]
@@ -338,7 +312,7 @@ what-price-will-ethereum-hit-in-march-2026
 ДЕТАЛЬНЫЙ ОТЧЁТ
 ═══════════════════════════════════════
 
---- ПОЛИТИКА (~$1,550) ---
+--- ПОЛИТИКА ---
 | # | Позиция | Шейры | Вход | Сейчас | Стоим. | P&L | SM Flow | Действие |
 
 Exposure по рискам:
@@ -348,10 +322,11 @@ Exposure по рискам:
 - US 2028 (Vance): $XXX (XX%)
 
 --- КРИПТО ГОДОВЫЕ ---
-| # | Контракт | Шейры | Вход | Сейчас | Стоим. | P&L | Edge d=0 | Edge fut | Edge d=27% | MC t-dist | SM Flow | Действие |
+| # | Контракт | Шейры | Вход | Сейчас | Стоим. | P&L | MC fut | MC d=0 | BS d=0 | SM Flow | Действие |
+(MC fut = Student-t + Deribit IV + futures drift — ОСНОВНАЯ МЕТРИКА)
 
 --- КРИПТО КРАТКОСРОЧНЫЕ ---
-| # | Контракт | Шейры | Вход | Сейчас | Стоим. | P&L | Edge d=0 | Edge fut | Edge d=27% | MC t-dist | SM Flow | Действие |
+| # | Контракт | Шейры | Вход | Сейчас | Стоим. | P&L | MC fut | MC d=0 | BS d=0 | SM Flow | Действие |
 
 Портфель итого: ~$X,XXX вложено → $X,XXX текущая стоимость (P&L: $XX)
 
