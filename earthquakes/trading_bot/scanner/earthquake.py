@@ -232,6 +232,10 @@ class EarthquakeScanner(BaseScanner):
                 )
                 self._markets_cache.append(market)
 
+                # Skip impossible outcomes (already exceeded max count)
+                if getattr(opp, 'model_used', '') == 'impossible':
+                    continue
+
                 # Check if meets our criteria (using top-of-book - best case)
                 # YES positions require 2x edge (time decay works against YES)
                 effective_min_edge = self.config.min_edge * 2 if opp.side == "YES" else self.config.min_edge
