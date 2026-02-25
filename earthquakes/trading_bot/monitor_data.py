@@ -153,9 +153,12 @@ def format_extra_events(data: MonitorData) -> str:
     Format extra events for display in TUI.
 
     Returns formatted string showing events not yet in USGS.
+    Shows discounted magnitude and marks filtered-out events.
     """
     if not data.has_extra_events:
         return "[dim]No extra events[/dim]"
+
+    from trading_bot.constants import get_mag_discount, EXTRA_EVENT_MAX_AGE_MINUTES
 
     lines = []
     for ev in data.extra_events:
@@ -176,8 +179,22 @@ def format_extra_events(data: MonitorData) -> str:
         # Format location (truncate if needed)
         loc = ev.location_name[:25] if len(ev.location_name) > 25 else ev.location_name
 
-        lines.append(
-            f"[yellow]M{ev.magnitude:.1f}[/yellow] {loc} ({sources_str}) {age_str}"
-        )
+        # Discount info
+        discount = get_mag_discount(ev.source_count)
+        eff_mag = ev.magnitude - discount
+        expired = age_minutes > EXTRA_EVENT_MAX_AGE_MINUTES
+
+        if expired:
+            lines.append(
+                f"[dim]M{ev.magnitude:.1f}→{eff_mag:.1f} {loc} ({sources_str}) {age_str} EXPIRED[/dim]"
+            )
+        elif discount > 0:
+            lines.append(
+                f"[yellow]M{ev.magnitude:.1f}→{eff_mag:.1f}[/yellow] {loc} ({sources_str}) {age_str}"
+            )
+        else:
+            lines.append(
+                f"[yellow]M{ev.magnitude:.1f}[/yellow] {loc} ({sources_str}) {age_str}"
+            )
 
     return "\n".join(lines)
