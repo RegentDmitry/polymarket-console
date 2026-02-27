@@ -394,7 +394,7 @@ def analyze_market_tested(
     ]
 
     if config["type"] == "count":
-        for outcome_name, min_k, max_k in config["outcomes"]:
+        for outcome_name, min_k, max_k in config.get("outcomes", []):
             if outcome_name not in market_prices:
                 continue
 

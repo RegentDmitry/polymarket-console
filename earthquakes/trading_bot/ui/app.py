@@ -749,6 +749,48 @@ class TradingBotApp(App):
                     f"RESOLVED {result_str}: {pos.market_slug[:40]} - "
                     f"P&L: ${pnl:+.2f}"
                 )
+
+                # Redeem winning tokens
+                if won and pos.market_id:
+                    # Get token_id from market cache or position
+                    token_id = None
+                    if pos.market_slug in self._markets_cache:
+                        market = self._markets_cache[pos.market_slug]
+                        token_id = market.yes_token_id if pos.outcome.upper() == "YES" else market.no_token_id
+
+                    # Fallback: try to get token_id from earthquake_markets.json config
+                    if not token_id:
+                        try:
+                            import json
+                            from pathlib import Path
+                            config_file = Path(__file__).parent.parent.parent / "earthquake_markets.json"
+                            if config_file.exists():
+                                with open(config_file) as f:
+                                    markets_config = json.load(f)
+                                    # Extract base market slug (remove outcome suffix)
+                                    parts = pos.market_slug.rsplit('-', 2)
+                                    if len(parts) >= 3:
+                                        base_slug = '-'.join(parts[:-2])
+                                        outcome_name = parts[-2]
+                                        market_config = markets_config.get(base_slug)
+                                        if market_config and "token_ids" in market_config:
+                                            outcome_tokens = market_config["token_ids"].get(outcome_name, {})
+                                            token_id = outcome_tokens.get(pos.outcome.capitalize())
+                        except Exception as e:
+                            logger.log_warning(f"Failed to load token_id from config: {e}")
+
+                    if token_id:
+                        try:
+                            redeemed = self.executor.redeem_neg_risk(pos.market_id, pos.outcome, token_id)
+                            if redeemed:
+                                logger.log_info(f"REDEEMED: {pos.market_slug[:40]} - ${pos.tokens:.2f}")
+                            else:
+                                logger.log_warning(f"REDEEM FAILED: {pos.market_slug[:40]}")
+                        except Exception as e:
+                            logger.log_warning(f"REDEEM ERROR: {pos.market_slug[:40]} - {e}")
+                    else:
+                        logger.log_warning(f"REDEEM SKIP (no token_id): {pos.market_slug[:40]}")
+
                 self.position_storage.resolve_position(pos.id, won)
                 resolved_ids.add(pos.id)
                 self.notify(
