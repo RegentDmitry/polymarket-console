@@ -52,8 +52,8 @@ class USGSClient:
 
         params = {
             "format": "geojson",
-            "starttime": start_time.strftime("%Y-%m-%d"),
-            "endtime": end_time.strftime("%Y-%m-%d"),
+            "starttime": start_time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "endtime": end_time.strftime("%Y-%m-%dT%H:%M:%S"),
             "minmagnitude": min_magnitude,
             "orderby": "time",
         }
@@ -66,11 +66,15 @@ class USGSClient:
 
         for feature in data.get("features", []):
             props = feature["properties"]
+            eq_time = datetime.fromtimestamp(props["time"] / 1000, tz=timezone.utc)
+            # Double-check: only include if within [start_time, end_time]
+            if eq_time < start_time or eq_time > end_time:
+                continue
             eq = Earthquake(
                 id=feature["id"],
                 magnitude=props["mag"],
                 place=props["place"] or "Unknown location",
-                time=datetime.fromtimestamp(props["time"] / 1000, tz=timezone.utc),
+                time=eq_time,
                 url=props["url"],
             )
             earthquakes.append(eq)
@@ -89,8 +93,8 @@ class USGSClient:
 
         params = {
             "format": "geojson",
-            "starttime": start_time.strftime("%Y-%m-%d"),
-            "endtime": end_time.strftime("%Y-%m-%d"),
+            "starttime": start_time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "endtime": end_time.strftime("%Y-%m-%dT%H:%M:%S"),
             "minmagnitude": min_magnitude,
         }
 

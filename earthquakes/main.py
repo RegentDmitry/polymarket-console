@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from usgs_client import USGSClient
 from polymarket_client import PolymarketClient
@@ -37,24 +38,37 @@ def load_market_configs() -> dict:
         return {}
 
     # Конвертируем строки дат в datetime объекты
+    # Polymarket резолвит по US/Eastern — используем resolution_start/end если есть
+    ET = ZoneInfo("US/Eastern")
+
     configs = {}
     for slug, config in raw_config.items():
-        # Parse start date
-        start_str = config["start"].replace("Z", "+00:00")
-        start_dt = datetime.fromisoformat(start_str)
-        if start_dt.tzinfo is None:
-            start_dt = start_dt.replace(tzinfo=timezone.utc)
-
-        # Parse end date - может быть без времени ("2026-03-31")
-        end_str = config["end"]
-        if "T" not in end_str:
-            # Date only, add time and timezone
-            end_dt = datetime.fromisoformat(end_str + "T23:59:59+00:00")
+        # Resolution boundaries (ET) have priority over market creation times (UTC)
+        if "resolution_start" in config:
+            # Parse as ET, convert to UTC
+            rs = config["resolution_start"]
+            start_dt = datetime.fromisoformat(rs).replace(tzinfo=ET).astimezone(timezone.utc)
         else:
-            end_str = end_str.replace("Z", "+00:00")
-            end_dt = datetime.fromisoformat(end_str)
-            if end_dt.tzinfo is None:
-                end_dt = end_dt.replace(tzinfo=timezone.utc)
+            # Fallback: market creation time (UTC) — safe for counting (earlier than actual start)
+            start_str = config["start"].replace("Z", "+00:00")
+            start_dt = datetime.fromisoformat(start_str)
+            if start_dt.tzinfo is None:
+                start_dt = start_dt.replace(tzinfo=timezone.utc)
+
+        if "resolution_end" in config:
+            # Parse as ET, convert to UTC
+            re_ = config["resolution_end"]
+            end_dt = datetime.fromisoformat(re_).replace(tzinfo=ET).astimezone(timezone.utc)
+        else:
+            # Fallback: end date as ET 23:59:59 (Polymarket standard)
+            end_str = config["end"]
+            if "T" not in end_str:
+                end_dt = datetime.fromisoformat(end_str + "T23:59:59").replace(tzinfo=ET).astimezone(timezone.utc)
+            else:
+                end_str = end_str.replace("Z", "+00:00")
+                end_dt = datetime.fromisoformat(end_str)
+                if end_dt.tzinfo is None:
+                    end_dt = end_dt.replace(tzinfo=timezone.utc)
 
         configs[slug] = {
             "magnitude": config["magnitude"],
