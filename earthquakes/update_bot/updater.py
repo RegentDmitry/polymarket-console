@@ -557,15 +557,15 @@ class MarketsUpdater:
                 if event_slug:
                     discovered_slugs.add(event_slug)
                     discovered_event_map[event_slug] = event
-                # For binary events, also track individual market slugs
-                # Map them to parent event so they can be resolved later
+                # Map individual market slugs to parent event
+                # so saved multi-binary market slugs can be resolved
                 markets = event.get("markets", [])
-                if len(markets) <= 2:
-                    for market in markets:
-                        ms = market.get("slug", "")
-                        if ms:
+                for market in markets:
+                    ms = market.get("slug", "")
+                    if ms:
+                        discovered_event_map[ms] = event
+                        if len(markets) <= 2:
                             discovered_slugs.add(ms)
-                            discovered_event_map[ms] = event
 
             all_slugs = before_slugs | discovered_slugs
 
@@ -582,6 +582,7 @@ class MarketsUpdater:
 
             new_config = {}
             total_events_checked = 0
+            processed_event_ids = set()  # Track processed events to avoid duplicates
 
             for event_slug in all_slugs:
                 total_events_checked += 1
@@ -594,6 +595,12 @@ class MarketsUpdater:
                     if output_callback:
                         output_callback(f"  Not found: {event_slug[:50]}")
                     continue
+
+                # Skip if we already processed this event (via different slug)
+                event_id = event.get("id", event.get("slug", event_slug))
+                if event_id in processed_event_ids:
+                    continue
+                processed_event_ids.add(event_id)
 
                 # Check if event is closed
                 event_closed = event.get("closed", False)
