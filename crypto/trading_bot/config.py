@@ -30,7 +30,7 @@ class BotConfig:
     mc_paths: int = 150000     # Number of MC simulation paths
     student_df_btc: float = 2.61  # Student-t degrees of freedom for BTC
     student_df_eth: float = 2.88  # Student-t degrees of freedom for ETH
-    fast_pricing: bool = False     # Use fast analytical approx instead of MC
+    fast_pricing: bool = True      # Use fast analytical approx instead of MC
 
     # Paths
     data_dir: Path = field(default_factory=lambda: Path("trading_bot/data"))
@@ -130,9 +130,9 @@ Examples:
     )
 
     parser.add_argument(
-        "--fast-pricing",
+        "--mc-pricing",
         action="store_true",
-        help="Use fast analytical pricing (~7ms) instead of MC (~30s)"
+        help="Use MC simulation (~30s) instead of fast analytical (default)"
     )
 
     parser.add_argument(
@@ -163,7 +163,7 @@ Examples:
         active_dir=args.data_dir / "active",
         history_dir=args.data_dir / "history",
         markets_json=args.markets_json,
-        fast_pricing=args.fast_pricing,
+        fast_pricing=not args.mc_pricing,
     )
 
 
