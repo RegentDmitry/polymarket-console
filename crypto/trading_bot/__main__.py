@@ -8,40 +8,12 @@ Usage:
     cd crypto && python -m trading_bot --interval 5m      # scan every 5 minutes
 """
 
-import subprocess
 import sys
 import logging
 from pathlib import Path
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
-
-
-def _ensure_deps():
-    """Install missing dependencies automatically."""
-    required = {
-        "textual": "textual",
-        "rich": "rich",
-        "numpy": "numpy",
-        "scipy": "scipy",
-    }
-    missing = []
-    for module, package in required.items():
-        try:
-            __import__(module)
-        except ImportError:
-            missing.append(package)
-
-    if missing:
-        print(f"Installing missing dependencies: {', '.join(missing)}...")
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", *missing],
-            stdout=subprocess.DEVNULL,
-        )
-        print("Done.\n")
-
-
-_ensure_deps()
 
 # Config is lightweight - import and parse first
 from .config import parse_args, format_interval
