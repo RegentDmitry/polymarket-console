@@ -20,6 +20,7 @@ from ..pricing.touch_prob import (
     batch_touch_probabilities, get_df, MC_PATHS
 )
 from ..pricing.fast_approx import batch_fast_touch_probabilities
+from ..pricing.portfolio import kelly_fraction
 from ..logger import get_logger
 
 
@@ -229,11 +230,36 @@ class CryptoScanner(BaseScanner):
                     )
                     self._markets_cache.append(market_obj)
 
-                    # Build signal
+                    # Build signal — fetch orderbook for BUY candidates
+                    liquidity = 0.0
                     if meets_edge and meets_apy:
+                        # Get real orderbook data
+                        best_ask, usable_liq, weighted_price = \
+                            self.polymarket.get_usable_liquidity(token_id, fair_price)
+
+                        if best_ask > 0 and usable_liq >= 1.0:
+                            # Recalculate edge/APY using real ask price
+                            market_price = weighted_price
+                            edge = fair_price - market_price
+                            if market_price > 0 and market_price < 1:
+                                roi = (fair_price - market_price) / market_price
+                                annual_return = roi / T if T > 0 else 0
+                            else:
+                                roi = 0
+                                annual_return = 0
+                            liquidity = usable_liq
+
+                            # Re-check filters with real prices
+                            meets_edge = edge >= effective_min_edge
+                            meets_apy = annual_return >= self.config.min_apy
+
+                    if meets_edge and meets_apy and liquidity >= 1.0:
                         signal_type = SignalType.BUY
                     else:
                         signal_type = SignalType.SKIP
+
+                    # Compute Kelly fraction for BUY signals
+                    sig_kelly = kelly_fraction(edge, market_price) if signal_type == SignalType.BUY else 0.0
 
                     signal = Signal(
                         type=signal_type,
@@ -249,6 +275,8 @@ class CryptoScanner(BaseScanner):
                         token_id=token_id,
                         model_used=f"{'Fast' if self.config.fast_pricing else 'MC'}-t(df={df:.2f})",
                         annual_return=annual_return,
+                        liquidity=liquidity,
+                        kelly=sig_kelly,
                     )
                     signals.append(signal)
                     logger.log_signal(signal)
@@ -338,61 +366,82 @@ class CryptoScanner(BaseScanner):
     ) -> List[dict]:
         """Identify rotation opportunities: sell position A to fund better position B.
 
+        Uses real orderbook bid prices and liquidity to ensure rotations are executable.
+
         Returns list of rotation proposals:
         {
             "sell_position": Position,
-            "sell_bid": float,
-            "sell_proceeds": float,
+            "sell_bid": float,           # weighted bid price
+            "sell_bid_liquidity": float,  # $ available on bid side
+            "sell_proceeds": float,       # min(position_value, bid_liquidity)
             "sell_loss": float,
             "buy_signal": Signal,
             "buy_edge": float,
-            "net_improvement": float,  # positive = rotation is profitable
+            "buy_kelly": float,
+            "net_improvement": float,     # positive = rotation is profitable
         }
         """
         logger = get_logger()
 
-        # Only consider BUY signals we can't afford
-        affordable_threshold = balance
-        unaffordable_buys = [
+        # Consider all BUY signals with positive Kelly (not just unaffordable)
+        good_buys = [
             s for s in buy_signals
-            if s.type == SignalType.BUY and s.liquidity > affordable_threshold
+            if s.type == SignalType.BUY and s.kelly > 0
         ]
 
-        if not unaffordable_buys or not positions:
+        if not good_buys or not positions:
             return []
 
         rotations = []
 
-        for buy_signal in unaffordable_buys:
+        for buy_signal in good_buys:
             for position in positions:
                 # Don't sell the same market we want to buy
                 if position.market_slug == buy_signal.market_slug:
                     continue
 
-                # Get current bid for this position
-                bid_price = self._bid_prices.get(position.market_slug, 0)
-                if bid_price <= 0:
+                # Get real bid-side orderbook for this position's token
+                token_id = self._token_ids.get(position.market_slug)
+                if not token_id:
                     continue
 
-                # Calculate sell proceeds and loss
-                sell_proceeds = position.tokens * bid_price
-                sell_loss = position.unrealized_pnl(bid_price)
+                best_bid, bid_liq, weighted_bid = \
+                    self.polymarket.get_bid_liquidity(token_id)
 
-                # Calculate expected gain from new position
-                buy_edge = buy_signal.edge
-                buy_expected_gain = sell_proceeds * buy_edge
+                if best_bid <= 0 or bid_liq < 1.0:
+                    continue
 
-                # Net improvement: expected gain minus loss from selling
-                net_improvement = buy_expected_gain + sell_loss  # sell_loss is negative
+                # How much can we actually sell (limited by bid liquidity)
+                position_value = position.tokens * weighted_bid
+                sellable = min(position_value, bid_liq)
+                sell_loss = sellable - (sellable / weighted_bid * position.entry_price
+                                        if weighted_bid > 0 else position.entry_size)
 
-                if net_improvement > 0:
+                # Calculate: is new position's Kelly better than old one's current edge?
+                old_fair = self._fair_prices.get(position.market_slug, 0)
+                old_edge = old_fair - weighted_bid if old_fair > 0 else 0
+                old_kelly = kelly_fraction(old_edge, weighted_bid) if old_edge > 0 else 0
+
+                # Rotation is worthwhile if new Kelly > old Kelly
+                if buy_signal.kelly <= old_kelly:
+                    continue
+
+                # Net improvement: expected gain from better Kelly
+                buy_expected_gain = sellable * buy_signal.edge
+                sell_pnl = position.unrealized_pnl(weighted_bid)
+                actual_sell = min(sellable, position_value)
+                net_improvement = buy_expected_gain + sell_pnl
+
+                if net_improvement > 0 and actual_sell >= 1.0:
                     rotations.append({
                         "sell_position": position,
-                        "sell_bid": bid_price,
-                        "sell_proceeds": sell_proceeds,
-                        "sell_loss": sell_loss,
+                        "sell_bid": weighted_bid,
+                        "sell_bid_liquidity": bid_liq,
+                        "sell_proceeds": actual_sell,
+                        "sell_loss": sell_pnl,
                         "buy_signal": buy_signal,
-                        "buy_edge": buy_edge,
+                        "buy_edge": buy_signal.edge,
+                        "buy_kelly": buy_signal.kelly,
                         "net_improvement": net_improvement,
                     })
 
@@ -404,9 +453,9 @@ class CryptoScanner(BaseScanner):
             for r in rotations[:3]:
                 logger.log_info(
                     f"  ROTATE: sell {r['sell_position'].market_slug[:25]} "
-                    f"(loss ${r['sell_loss']:+.2f}) → "
+                    f"(P&L ${r['sell_loss']:+.2f}, bid_liq ${r['sell_bid_liquidity']:.0f}) → "
                     f"buy {r['buy_signal'].market_slug[:25]} "
-                    f"(edge {r['buy_edge']:.1%}, net +${r['net_improvement']:.2f})"
+                    f"(edge {r['buy_edge']:.1%}, kelly {r['buy_kelly']:.1%}, net +${r['net_improvement']:.2f})"
                 )
 
         return rotations

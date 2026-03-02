@@ -34,6 +34,7 @@ from ..storage.positions import PositionStorage
 from ..storage.history import HistoryStorage
 from ..storage.sell_orders import SellOrderStore
 from ..executor.polymarket import PolymarketExecutor, OrderResult
+from ..pricing.portfolio import allocate_sizes, get_portfolio_breakdown
 from ..logger import get_logger
 
 
@@ -84,10 +85,9 @@ class StatusBar(Static):
         line1_parts = [
             f"  UTC: {utc_now}",
             f"Balance: ${self.balance:,.2f}",
-            f"POL: {pol_str}",
+            f"MATIC: {pol_str}",
             f"Positions: {self.positions_count}",
             f"Invested: ${self.invested:,.2f}",
-            f"Scanned: {scan_time}",
         ]
         line1 = "  |  ".join(line1_parts)
 
@@ -95,12 +95,10 @@ class StatusBar(Static):
         pnl_str = f"+${self.unrealized_pnl:.2f}" if self.unrealized_pnl >= 0 else f"-${abs(self.unrealized_pnl):.2f}"
         pnl_pct = f"+{self.unrealized_pnl_pct:.1%}" if self.unrealized_pnl_pct >= 0 else f"{self.unrealized_pnl_pct:.1%}"
 
-        missed_str = f"  |  Missed: ${self.missed_liquidity:,.0f}" if self.missed_liquidity > 0 else ""
-
         line2 = (
             f"  Mode: {mode}  |  "
             f"Scan: {format_interval(self.config.scan_interval)}  |  "
-            f"Unrealized: {pnl_str} ({pnl_pct}){missed_str}"
+            f"Unrealized: {pnl_str} ({pnl_pct})"
         )
 
         text = Text()
@@ -177,8 +175,9 @@ class ScannerPanel(Static):
         for signal in buy_signals:
             lines.append(f"[green]+ {signal.market_slug}[/green]")
             lines.append(f"  {signal.market_name}")
-            lines.append(f"  Price: {signal.current_price:.1%}  Fair: {signal.fair_price:.1%}  ({signal.model_used.upper()})")
-            lines.append(f"  APY: {signal.annual_return:.0%}  Edge: {signal.edge:.1%}  Days: {signal.days_remaining}")
+            lines.append(f"  Price: {signal.current_price:.1%}  Fair: {signal.fair_price:.1%}")
+            kelly_str = f"  Kelly: {signal.kelly:.0%}" if signal.kelly > 0 else ""
+            lines.append(f"  APY: {signal.annual_return:.0%}  Edge: {signal.edge:.1%}  Days: {signal.days_remaining}{kelly_str}")
 
             liq_str = f"${signal.liquidity:.0f}" if signal.liquidity else "$0"
             size_str = f"${signal.suggested_size:.0f}" if signal.suggested_size > 0 else "-"
@@ -222,9 +221,12 @@ class ScannerPanel(Static):
             for r in self.rotation_proposals[:3]:
                 sell_pos = r["sell_position"]
                 buy_sig = r["buy_signal"]
-                lines.append(f"[magenta]↻ Sell {sell_pos.market_slug[:25]}[/magenta]")
-                lines.append(f"  Loss: ${r['sell_loss']:+.2f}  →  Buy {buy_sig.market_slug[:25]}")
-                lines.append(f"  Edge: {r['buy_edge']:.1%}  Net: +${r['net_improvement']:.2f}")
+                bid_liq = r.get("sell_bid_liquidity", 0)
+                buy_kelly = r.get("buy_kelly", 0)
+                lines.append(f"[magenta]\u21bb Sell {sell_pos.market_slug[:25]}[/magenta]")
+                lines.append(f"  Bid: {r['sell_bid']:.1%}  Liq: ${bid_liq:.0f}  P&L: ${r['sell_loss']:+.2f}")
+                lines.append(f"  \u2192 Buy {buy_sig.market_slug[:25]}")
+                lines.append(f"  Edge: {r['buy_edge']:.1%}  Kelly: {buy_kelly:.0%}  Net: +${r['net_improvement']:.2f}")
                 lines.append("")
 
         content = "\n".join(lines) if lines else "No signals"
@@ -373,7 +375,7 @@ class LiveDataPanel(Static):
         self.eth_spot = 0.0
         self.btc_iv = 0.0
         self.eth_iv = 0.0
-        self.data_age = 0  # seconds since last update
+        self._updated_at: float = 0.0  # time.monotonic() of last update
 
     def update_data(self, btc_spot: float, eth_spot: float,
                     btc_iv: float, eth_iv: float, age: int = 0) -> None:
@@ -381,8 +383,13 @@ class LiveDataPanel(Static):
         self.eth_spot = eth_spot
         self.btc_iv = btc_iv
         self.eth_iv = eth_iv
-        self.data_age = age
+        self._updated_at = time.monotonic()
         self.refresh()
+
+    def tick(self) -> None:
+        """Called every second to update age display."""
+        if self._updated_at > 0:
+            self.refresh()
 
     def render(self) -> Panel:
         lines = []
@@ -397,8 +404,10 @@ class LiveDataPanel(Static):
         else:
             lines.append("ETH  --           IV: --")
 
-        if self.data_age > 0:
-            lines.append(f"Updated: {self.data_age}s ago")
+        lines.append("")
+        if self._updated_at > 0:
+            age = int(time.monotonic() - self._updated_at)
+            lines.append(f"Updated: {age}s ago")
         else:
             lines.append("Updated: --")
 
@@ -411,26 +420,116 @@ class FuturesCurvePanel(Static):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.curve_data: List[dict] = []
+        self.btc_curve: list = []
+        self.eth_curve: list = []
+        self._updated_at: float = 0.0
 
-    def update_curve(self, curve: List[dict]) -> None:
-        self.curve_data = curve
+    def update_curve(self, btc_curve: list, eth_curve: list, age: int = 0) -> None:
+        self.btc_curve = btc_curve
+        self.eth_curve = eth_curve
+        self._updated_at = time.monotonic()
         self.refresh()
+
+    def tick(self) -> None:
+        """Called every second to update age display."""
+        if self._updated_at > 0:
+            self.refresh()
 
     def render(self) -> Panel:
         lines = []
 
-        if not self.curve_data:
+        if not self.btc_curve and not self.eth_curve:
             lines.append("[dim]No futures data[/dim]")
         else:
-            for item in self.curve_data[:8]:  # Show up to 8 entries
-                name = item.get("name", "?")
-                price = item.get("price", 0)
-                drift = item.get("drift", 0)
-                lines.append(f"{name:<16} ${price:>10,.0f}  drift {drift:>+6.1%}")
+            for curve_list in [self.btc_curve, self.eth_curve]:
+                for item in curve_list:
+                    if isinstance(item, (list, tuple)):
+                        _days, drift, price, name = item
+                    else:
+                        name = item.get("name", "?")
+                        price = item.get("price", 0)
+                        drift = item.get("drift", 0)
+                    lines.append(f"{name:<16} ${price:>10,.0f}  drift {drift:>+6.1%}")
+                if curve_list is not self.eth_curve and self.eth_curve:
+                    lines.append("")  # separator between BTC and ETH
+
+        lines.append("")
+        if self._updated_at > 0:
+            age = int(time.monotonic() - self._updated_at)
+            lines.append(f"Updated: {age}s ago")
 
         content = "\n".join(lines)
         return Panel(content, title="FUTURES CURVE", border_style="yellow")
+
+
+class PortfolioRiskPanel(Static):
+    """Panel showing portfolio risk breakdown by currency and direction."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._breakdown: dict = {}
+        self._total_kelly: float = 0.0
+        self._max_positions: int = 20
+        self._updated_at: float = 0.0
+
+    def update_risk(self, positions: list, balance: float,
+                    total_kelly: float = 0.0, max_positions: int = 20) -> None:
+        self._breakdown = get_portfolio_breakdown(positions, balance)
+        self._total_kelly = total_kelly
+        self._max_positions = max_positions
+        self._updated_at = time.monotonic()
+        self.refresh()
+
+    def tick(self) -> None:
+        if self._updated_at > 0:
+            self.refresh()
+
+    def render(self) -> Panel:
+        lines = []
+        bd = self._breakdown
+
+        if not bd or bd.get("total_portfolio", 0) <= 0:
+            lines.append("[dim]No data[/dim]")
+        else:
+            total = bd["total_portfolio"]
+            bar_width = 20
+
+            # Currency breakdown
+            for cur in ["BTC", "ETH"]:
+                amt = bd["currency"].get(cur, 0)
+                pct = amt / total if total > 0 else 0
+                filled = int(pct * bar_width)
+                bar = "\u2588" * filled + "\u2591" * (bar_width - filled)
+                lines.append(f"{cur}  {bar} {pct:>5.0%} (${amt:,.0f})")
+
+            lines.append("")
+
+            # Direction breakdown
+            labels = {"up": "\u2191 UP ", "down": "\u2193 DN "}
+            for d in ["up", "down"]:
+                amt = bd["direction"].get(d, 0)
+                pct = amt / total if total > 0 else 0
+                filled = int(pct * bar_width)
+                bar = "\u2588" * filled + "\u2591" * (bar_width - filled)
+                lines.append(f"{labels[d]} {bar} {pct:>5.0%} (${amt:,.0f})")
+
+            lines.append("")
+            pos_count = bd.get("position_count", 0)
+            invested = bd.get("total_invested", 0)
+            bal = bd.get("balance", 0)
+            lines.append(
+                f"Positions: {pos_count}/{self._max_positions}  "
+                f"Kelly: {self._total_kelly:.0%}  "
+                f"Inv: ${invested:,.0f}  Free: ${bal:,.0f}"
+            )
+
+        lines.append("")
+        if self._updated_at > 0:
+            age = int(time.monotonic() - self._updated_at)
+            lines.append(f"Updated: {age}s ago")
+
+        content = "\n".join(lines)
+        return Panel(content, title="PORTFOLIO RISK", border_style="magenta")
 
 
 class TradingBotApp(App):
@@ -471,25 +570,31 @@ class TradingBotApp(App):
     #right-panel {
         width: 60%;
         height: 100%;
-        layout: vertical;
+        overflow-y: auto;
     }
 
     #positions-panel {
-        height: 50%;
+        height: auto;
+        min-height: 8;
         border: solid green;
         border-title-color: green;
     }
 
     #trades-panel {
-        height: 15%;
+        height: auto;
+        min-height: 4;
     }
 
     #live-data-panel {
-        height: 15%;
+        height: auto;
     }
 
     #futures-panel {
-        height: 20%;
+        height: auto;
+    }
+
+    #portfolio-panel {
+        height: auto;
     }
 
     ScannerPanel {
@@ -501,12 +606,14 @@ class TradingBotApp(App):
         Binding("q", "quit", "Quit", key_display="Q"),
         Binding("r", "refresh", "Scan", key_display="R"),
         Binding("h", "history", "History", key_display="H"),
+        Binding("p", "refresh_portfolio", "Portfolio", key_display="P"),
         Binding("y", "confirm_yes", "Yes", show=False),
         Binding("n", "confirm_no", "No", show=False),
         # Russian keyboard layout support
         Binding("й", "quit", "Quit", show=False),
         Binding("к", "refresh", "Scan", show=False),
         Binding("р", "history", "History", show=False),
+        Binding("з", "refresh_portfolio", "Portfolio", show=False),
         Binding("н", "confirm_yes", "Yes", show=False),
         Binding("т", "confirm_no", "No", show=False),
     ]
@@ -554,14 +661,19 @@ class TradingBotApp(App):
         # Background data threads
         self._data_threads_started = False
 
+        # Portfolio risk tracking
+        self._portfolio_update_counter = 0
+        self._portfolio_update_interval = 10  # scans between portfolio updates
+
     def compose(self) -> ComposeResult:
         yield Static(self.title, id="app-header")
         yield Static(id="status-bar")
         with Horizontal(id="main-container"):
             with Vertical(id="left-panel"):
                 yield ScannerPanel()
-            with Vertical(id="right-panel"):
+            with VerticalScroll(id="right-panel"):
                 yield PositionsPanel(id="positions-panel")
+                yield PortfolioRiskPanel(id="portfolio-panel")
                 yield RecentTradesPanel(self.history_storage, id="trades-panel")
                 yield LiveDataPanel(id="live-data-panel")
                 yield FuturesCurvePanel(id="futures-panel")
@@ -589,6 +701,9 @@ class TradingBotApp(App):
         # Start background data threads
         self._start_data_threads()
 
+        # Initial portfolio panel
+        self._refresh_portfolio_panel()
+
         # Start countdown timer immediately
         self.countdown_timer = self.set_interval(1, self.update_countdown)
 
@@ -602,7 +717,7 @@ class TradingBotApp(App):
             return
         self._data_threads_started = True
 
-        # Binance spot: update every 10 seconds
+        # Binance spot: update immediately, then every 10 seconds
         def binance_loop():
             while not self._shutting_down:
                 try:
@@ -614,30 +729,34 @@ class TradingBotApp(App):
                         return
                     time.sleep(0.1)
 
-        # Deribit IV + futures: update every 5 minutes
+        # Deribit spot + IV + futures: update immediately, then every 30 seconds
         def deribit_loop():
             while not self._shutting_down:
                 try:
                     self.scanner.deribit.update()
-                    # Update live data panel from thread
                     snap = self.scanner.deribit.get_snapshot()
                     binance_snap = self.scanner.binance.get_snapshot()
                     btc_spot = snap.get("btc_spot", 0) or binance_snap.get("btc_price", 0)
                     eth_spot = snap.get("eth_spot", 0) or binance_snap.get("eth_price", 0)
+                    deribit_age = self.scanner.deribit.age_seconds
+                    age = int(deribit_age) if deribit_age < 1e9 else 0
                     try:
                         self.call_from_thread(
                             self._update_live_data_panel,
                             btc_spot, eth_spot,
                             snap.get("btc_iv", 0), snap.get("eth_iv", 0),
                         )
-                        # Update futures curve panel
-                        curve = snap.get("btc_curve", []) + snap.get("eth_curve", [])
-                        self.call_from_thread(self._update_futures_panel, curve)
+                        self.call_from_thread(
+                            self._update_futures_panel,
+                            snap.get("btc_curve", []),
+                            snap.get("eth_curve", []),
+                            age,
+                        )
                     except RuntimeError:
                         pass  # App shutting down
                 except Exception:
                     pass
-                for _ in range(3000):  # 5min in 0.1s increments
+                for _ in range(300):  # 30s in 0.1s increments
                     if self._shutting_down:
                         return
                     time.sleep(0.1)
@@ -668,11 +787,11 @@ class TradingBotApp(App):
         except Exception:
             pass
 
-    def _update_futures_panel(self, curve):
+    def _update_futures_panel(self, btc_curve, eth_curve, age=0):
         """Update futures curve panel (called from thread)."""
         try:
             panel = self.query_one(FuturesCurvePanel)
-            panel.update_curve(curve)
+            panel.update_curve(btc_curve, eth_curve, age)
         except Exception:
             pass
 
@@ -697,8 +816,23 @@ class TradingBotApp(App):
         sell_orders = self.sell_order_store.load_all()
         positions_panel.update_positions(positions, self._current_prices, fair_prices, bid_prices, sell_orders)
 
+    def _refresh_portfolio_panel(self, positions=None, signals=None) -> None:
+        """Refresh portfolio risk panel."""
+        try:
+            if positions is None:
+                positions = self._get_all_positions()
+            balance = self.executor.get_balance() if self.executor.initialized else 0
+            if self.config.dry_run:
+                balance = max(balance, 1000.0)
+            total_kelly = sum(s.kelly for s in (signals or [])
+                              if s.type == SignalType.BUY and s.kelly > 0)
+            panel = self.query_one(PortfolioRiskPanel)
+            panel.update_risk(positions, balance, total_kelly, self.config.max_positions)
+        except Exception:
+            pass
+
     def update_countdown(self) -> None:
-        """Update countdown to next scan."""
+        """Update countdown to next scan + tick data panels."""
         if self.scanning:
             return
 
@@ -708,6 +842,14 @@ class TradingBotApp(App):
 
         scanner_panel = self.query_one(ScannerPanel)
         scanner_panel.set_next_scan(self.next_scan_seconds)
+
+        # Tick live data panels (updates "Xs ago" every second)
+        try:
+            self.query_one(LiveDataPanel).tick()
+            self.query_one(FuturesCurvePanel).tick()
+            self.query_one(PortfolioRiskPanel).tick()
+        except Exception:
+            pass
 
     async def do_scan(self) -> None:
         """Perform market scan."""
@@ -764,14 +906,13 @@ class TradingBotApp(App):
             # Prefer short-term positions with high annualized return
             entry_signals.sort(key=lambda s: (s.annual_return, s.edge), reverse=True)
 
-            # Allocate balance to signals (no reserve logic for crypto)
-            total_balance = self.executor.get_balance() if self.executor.initialized else 0
-            remaining_balance = total_balance
+            # Kelly-based allocation
+            if self.config.dry_run:
+                total_balance = max(self.executor.get_balance() if self.executor.initialized else 0, 1000.0)
+            else:
+                total_balance = self.executor.get_balance() if self.executor.initialized else 0
 
-            for signal in entry_signals:
-                if signal.type == SignalType.BUY and signal.liquidity > 0 and remaining_balance > 0:
-                    signal.suggested_size = min(signal.liquidity, remaining_balance)
-                    remaining_balance -= signal.suggested_size
+            allocate_sizes(entry_signals, total_balance, positions, self.config)
 
             # Track missed liquidity
             total_liquidity = sum(s.liquidity for s in entry_signals if s.liquidity > 0)
@@ -878,8 +1019,13 @@ class TradingBotApp(App):
                 btc_spot, eth_spot,
                 dsnap.get("btc_iv", 0), dsnap.get("eth_iv", 0),
             )
-            curve = dsnap.get("btc_curve", []) + dsnap.get("eth_curve", [])
-            self._update_futures_panel(curve)
+            deribit_age = self.scanner.deribit.age_seconds
+            age = int(deribit_age) if deribit_age < 1e9 else 0
+            self._update_futures_panel(
+                dsnap.get("btc_curve", []),
+                dsnap.get("eth_curve", []),
+                age,
+            )
 
         if self._shutting_down:
             return
@@ -915,8 +1061,14 @@ class TradingBotApp(App):
         if self.executor.initialized and positions:
             await self._check_balance_discrepancies()
 
+        # Update portfolio risk panel (every N scans or after trades)
+        self._portfolio_update_counter += 1
+        if self._portfolio_update_counter >= self._portfolio_update_interval:
+            self._portfolio_update_counter = 0
+            self._refresh_portfolio_panel(positions, entry_signals)
+
         # Handle signals
-        await self.process_signals(entry_signals, exit_signals)
+        await self.process_signals(entry_signals, exit_signals, rotation_proposals)
 
         # Immediate rescan if buys were made
         if self._had_buys_this_cycle:
@@ -1374,7 +1526,8 @@ class TradingBotApp(App):
                 )
 
     async def process_signals(self, entry_signals: List[Signal],
-                              exit_signals: List[Signal]) -> None:
+                              exit_signals: List[Signal],
+                              rotation_proposals: List[dict] = None) -> None:
         """Process trading signals based on mode."""
         balance = self.executor.get_balance() if self.executor.initialized else 0
         buy_signals = [
@@ -1383,15 +1536,65 @@ class TradingBotApp(App):
         ] if balance >= 1.0 else []
         actionable = buy_signals + exit_signals
 
-        if not actionable:
+        # Convert rotation proposals to SELL+BUY signal pairs
+        rotation_signals = []
+        if rotation_proposals and not buy_signals:
+            # Only do rotations when we can't afford direct buys
+            for r in rotation_proposals[:1]:  # Best rotation only
+                sell_pos = r["sell_position"]
+                buy_sig = r["buy_signal"]
+                market = self._markets_cache.get(sell_pos.market_slug)
+                if not market:
+                    continue
+                sell_signal = Signal(
+                    type=SignalType.SELL,
+                    market_id=sell_pos.market_id,
+                    market_slug=sell_pos.market_slug,
+                    market_name=sell_pos.market_name,
+                    outcome=sell_pos.outcome,
+                    current_price=r["sell_bid"],
+                    fair_price=0.0,
+                    position_id=sell_pos.id,
+                    reason=f"Rotation → {buy_sig.market_slug[:25]}",
+                    suggested_size=r["sell_proceeds"],
+                    token_id=sell_pos.token_id or "",
+                )
+                rotation_signals.append(sell_signal)
+                # BUY signal already exists with correct suggested_size
+                buy_sig_copy = Signal(
+                    type=SignalType.BUY,
+                    market_id=buy_sig.market_id,
+                    market_slug=buy_sig.market_slug,
+                    market_name=buy_sig.market_name,
+                    outcome=buy_sig.outcome,
+                    current_price=buy_sig.current_price,
+                    fair_price=buy_sig.fair_price,
+                    edge=buy_sig.edge,
+                    roi=buy_sig.roi,
+                    days_remaining=buy_sig.days_remaining,
+                    token_id=buy_sig.token_id,
+                    annual_return=buy_sig.annual_return,
+                    liquidity=buy_sig.liquidity,
+                    kelly=buy_sig.kelly,
+                    suggested_size=r["sell_proceeds"],  # Use sell proceeds as buy size
+                )
+                rotation_signals.append(buy_sig_copy)
+
+        all_signals = actionable + rotation_signals
+
+        if not all_signals:
             return
 
         if self.config.auto_mode:
-            for signal in actionable:
+            for signal in all_signals:
                 await self.execute_signal(signal)
+                # After rotation trades, update portfolio panel
+                if rotation_signals:
+                    self._portfolio_update_counter = 0
+                    self._refresh_portfolio_panel()
         else:
             needs_confirm = []
-            for signal in actionable:
+            for signal in all_signals:
                 if signal.type == SignalType.BUY:
                     needs_confirm.append(signal)
                 else:
@@ -1505,6 +1708,7 @@ class TradingBotApp(App):
 
                 self._current_prices[signal.market_slug] = signal.current_price
                 self._refresh_positions_panel()
+                self._refresh_portfolio_panel()
                 positions = self._get_all_positions()
                 self.update_status_bar(positions, self._current_prices)
             else:
@@ -1533,6 +1737,7 @@ class TradingBotApp(App):
                     logger.log_position_closed(closed_position, signal.current_price, pnl)
                 self.notify(f"SELL order placed: {result.order_id}", markup=False)
                 self._refresh_positions_panel()
+                self._refresh_portfolio_panel()
                 positions = self._get_all_positions()
                 self.update_status_bar(positions, self._current_prices)
             else:
@@ -1578,6 +1783,11 @@ class TradingBotApp(App):
             self.notify("No trading history yet")
         else:
             self.notify(f"Total trades: {stats['total_trades']}, Win rate: {stats['win_rate']:.0%}")
+
+    def action_refresh_portfolio(self) -> None:
+        """Manually refresh portfolio risk panel."""
+        self._refresh_portfolio_panel()
+        self.notify("Portfolio risk updated")
 
     def action_toggle_mode(self) -> None:
         """Toggle between AUTO and CONFIRM mode."""

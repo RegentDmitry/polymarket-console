@@ -385,6 +385,81 @@ class PolymarketData:
                 pass
         return None
 
+    @staticmethod
+    def get_orderbook(token_id: str) -> dict:
+        """Fetch orderbook from CLOB API (public, no auth needed).
+
+        Returns dict with 'asks' and 'bids' lists.
+        Each entry: {"price": "0.55", "size": "100.0"}
+        """
+        try:
+            url = f"https://clob.polymarket.com/book?token_id={token_id}"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            resp = urllib.request.urlopen(req, timeout=10, context=_ctx)
+            return json.loads(resp.read())
+        except Exception:
+            return {"asks": [], "bids": []}
+
+    @staticmethod
+    def get_usable_liquidity(token_id: str, fair_price: float) -> tuple:
+        """Get available liquidity at prices below fair price.
+
+        Returns (best_ask, usable_liquidity_usd, weighted_price).
+        usable_liquidity = total $ available at ask prices <= fair_price.
+        weighted_price = volume-weighted average ask price across usable levels.
+        """
+        try:
+            ob = PolymarketData.get_orderbook(token_id)
+            asks = ob.get("asks", [])
+            if not asks:
+                return 0.0, 0.0, 0.0
+
+            best_ask = min(float(a["price"]) for a in asks)
+            total_size = 0.0
+            total_cost = 0.0
+            for a in asks:
+                price = float(a["price"])
+                size = float(a["size"])
+                if price <= fair_price:
+                    cost = price * size
+                    total_size += size
+                    total_cost += cost
+
+            weighted_price = total_cost / total_size if total_size > 0 else best_ask
+            return best_ask, total_cost, weighted_price
+        except Exception:
+            return 0.0, 0.0, 0.0
+
+    @staticmethod
+    def get_bid_liquidity(token_id: str, min_price: float = 0.0) -> tuple:
+        """Get bid-side liquidity for selling.
+
+        Returns (best_bid, usable_liquidity_usd, weighted_bid_price).
+        usable_liquidity = total $ of bids at prices >= min_price.
+        weighted_bid_price = volume-weighted average bid price.
+        """
+        try:
+            ob = PolymarketData.get_orderbook(token_id)
+            bids = ob.get("bids", [])
+            if not bids:
+                return 0.0, 0.0, 0.0
+
+            best_bid = max(float(b["price"]) for b in bids)
+            total_size = 0.0
+            total_cost = 0.0
+            for b in bids:
+                price = float(b["price"])
+                size = float(b["size"])
+                if price >= min_price:
+                    cost = price * size
+                    total_size += size
+                    total_cost += cost
+
+            weighted_price = total_cost / total_size if total_size > 0 else best_bid
+            return best_bid, total_cost, weighted_price
+        except Exception:
+            return 0.0, 0.0, 0.0
+
     def get_snapshot(self) -> dict:
         """Get a thread-safe snapshot."""
         with self._lock:

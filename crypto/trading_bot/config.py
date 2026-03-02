@@ -32,6 +32,11 @@ class BotConfig:
     student_df_eth: float = 2.88  # Student-t degrees of freedom for ETH
     fast_pricing: bool = True      # Use fast analytical approx instead of MC
 
+    # Portfolio limits (Kelly sizing)
+    max_position_pct: float = 0.25   # Max 25% of portfolio per position
+    max_direction_pct: float = 0.60  # Max 60% in one direction (up/down)
+    min_position_size: float = 5.0   # Skip positions smaller than $5
+
     # Paths
     data_dir: Path = field(default_factory=lambda: Path("trading_bot/data"))
     active_dir: Path = field(default_factory=lambda: Path("trading_bot/data/active"))

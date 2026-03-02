@@ -68,7 +68,7 @@ class PolymarketExecutor:
                 self.initialized = False
 
     def get_balance(self) -> float:
-        """Get current USDC balance."""
+        """Get current USDC balance. Tries API first, falls back to on-chain."""
         if not self.client:
             return 0.0
 
@@ -76,9 +76,9 @@ class PolymarketExecutor:
             balance_info = self.client.get_balance()
             balance_raw = float(balance_info.get("balance", 0))
             return balance_raw / 1e6  # USDC has 6 decimals
-        except Exception as e:
-            print(f"Error getting balance: {e}")
-            return 0.0
+        except Exception:
+            # Fallback: on-chain USDC.e balance
+            return self.get_usdc_balance_onchain()
 
     def get_address(self) -> str:
         """Get wallet address."""
@@ -278,18 +278,74 @@ class PolymarketExecutor:
         except Exception as e:
             return OrderResult(success=False, error=str(e))
 
-    def get_matic_balance(self) -> float:
-        """Get MATIC (POL) balance for gas fees."""
+    def _get_eoa_address(self) -> str:
+        """Get EOA address from private key."""
         if not self.client or not self.client.pk:
+            return ""
+        try:
+            from eth_account import Account
+            return Account.from_key(self.client.pk).address
+        except ImportError:
+            # Fallback: derive from private key without web3
+            try:
+                import hashlib
+                import binascii
+                pk_bytes = bytes.fromhex(self.client.pk.replace("0x", ""))
+                from coincurve import PublicKey
+                pub = PublicKey.from_valid_secret(pk_bytes).format(compressed=False)[1:]
+                addr = "0x" + hashlib.new("keccak256", pub).hexdigest()[-40:]
+                return addr
+            except ImportError:
+                return ""
+
+    def _rpc_call(self, method: str, params: list) -> str:
+        """Make a JSON-RPC call to Polygon (tries multiple RPCs)."""
+        import json, os, ssl, urllib.request
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        primary = os.getenv("POLYGON_RPC", "https://polygon-bor-rpc.publicnode.com")
+        rpcs = [primary, "https://polygon.llamarpc.com", "https://1rpc.io/matic"]
+
+        payload = json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": method, "params": params
+        }).encode()
+
+        for rpc in rpcs:
+            try:
+                req = urllib.request.Request(rpc, data=payload,
+                                             headers={"Content-Type": "application/json"})
+                resp = urllib.request.urlopen(req, timeout=10, context=ctx)
+                result = json.loads(resp.read())
+                return result.get("result", "0x0")
+            except Exception:
+                continue
+        return "0x0"
+
+    def get_matic_balance(self) -> float:
+        """Get MATIC (POL) balance for gas fees via JSON-RPC."""
+        addr = self._get_eoa_address()
+        if not addr:
             return 0.0
         try:
-            import os
-            from web3 import Web3
-            rpc = os.getenv("POLYGON_RPC", "https://polygon-bor-rpc.publicnode.com")
-            w3 = Web3(Web3.HTTPProvider(rpc))
-            account = w3.eth.account.from_key(self.client.pk)
-            balance_wei = w3.eth.get_balance(account.address)
-            return float(w3.from_wei(balance_wei, "ether"))
+            hex_balance = self._rpc_call("eth_getBalance", [addr, "latest"])
+            return int(hex_balance, 16) / 1e18
+        except Exception:
+            return 0.0
+
+    def get_usdc_balance_onchain(self) -> float:
+        """Get USDC.e balance via on-chain JSON-RPC (no API key needed)."""
+        addr = self._get_eoa_address()
+        if not addr:
+            return 0.0
+        try:
+            # USDC.e on Polygon: 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
+            usdc = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+            # balanceOf(address) selector = 0x70a08231
+            padded_addr = "0x70a08231" + addr.lower().replace("0x", "").zfill(64)
+            hex_balance = self._rpc_call("eth_call", [{"to": usdc, "data": padded_addr}, "latest"])
+            return int(hex_balance, 16) / 1e6  # USDC has 6 decimals
         except Exception:
             return 0.0
 
