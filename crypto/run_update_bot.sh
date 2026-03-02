@@ -30,15 +30,16 @@ if [ ! -d "$VENV_DIR" ]; then
     echo -e "${GREEN}Virtual environment created${NC}"
 fi
 
-source "$VENV_DIR/bin/activate"
+PYTHON="$VENV_DIR/bin/python3"
+PIP="$VENV_DIR/bin/pip"
 
 # Check and install dependencies
-if ! python -c "import textual" 2>/dev/null; then
+if ! "$PYTHON" -c "import textual" 2>/dev/null; then
     echo -e "${YELLOW}Installing dependencies...${NC}"
-    pip install -q textual rich
+    "$PIP" install -q textual rich
     echo -e "${GREEN}Dependencies installed${NC}"
 fi
 
 echo -e "${GREEN}Launching update_bot...${NC}"
 echo ""
-python -m update_bot "$@"
+"$PYTHON" -m update_bot "$@"

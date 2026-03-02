@@ -72,12 +72,13 @@ if [ ! -d "$VENV_DIR" ]; then
     echo -e "${GREEN}Virtual environment created${NC}"
 fi
 
-source "$VENV_DIR/bin/activate"
+PYTHON="$VENV_DIR/bin/python3"
+PIP="$VENV_DIR/bin/pip"
 
 # Check and install dependencies
-if ! python -c "import textual" 2>/dev/null; then
+if ! "$PYTHON" -c "import textual" 2>/dev/null; then
     echo -e "${YELLOW}Installing dependencies...${NC}"
-    pip install -q textual rich numpy scipy
+    "$PIP" install -q textual rich numpy scipy
     echo -e "${GREEN}Dependencies installed${NC}"
 fi
 
@@ -90,7 +91,7 @@ while true; do
     echo -e "${GREEN}Launching trading_bot...${NC}"
     echo ""
 
-    python -m trading_bot \
+    "$PYTHON" -m trading_bot \
         --min-edge "$MIN_EDGE" \
         --min-apy "$MIN_APY" \
         --interval "$SCAN_INTERVAL" \
