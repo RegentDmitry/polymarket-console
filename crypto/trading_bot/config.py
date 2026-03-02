@@ -23,7 +23,7 @@ class BotConfig:
     max_positions: int = 20
 
     # Strategy parameters
-    min_edge: float = 0.01  # 1% (noise protection)
+    min_edge: float = 0.05  # 5%
     min_apy: float = 0.30   # 30% annualized
 
     # Monte Carlo parameters
@@ -111,8 +111,8 @@ Examples:
     parser.add_argument(
         "--min-edge",
         type=float,
-        default=0.01,
-        help="Minimum edge to enter. Default: 0.01 (1%%)"
+        default=0.05,
+        help="Minimum edge to enter. Default: 0.05 (5%%)"
     )
 
     parser.add_argument(
