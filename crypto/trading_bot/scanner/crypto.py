@@ -19,6 +19,7 @@ from ..market_data.polymarket import PolymarketData, CryptoMarket
 from ..pricing.touch_prob import (
     batch_touch_probabilities, get_df, MC_PATHS
 )
+from ..pricing.fast_approx import batch_fast_touch_probabilities
 from ..logger import get_logger
 
 
@@ -142,20 +143,32 @@ class CryptoScanner(BaseScanner):
                 strikes_below = [m.strike for m in markets_in_group if not m.is_up]
 
                 if progress_callback:
+                    mode = "Fast" if self.config.fast_pricing else "MC"
                     progress_callback(
-                        f"MC {currency} {days}d: {len(strikes_above)}↑ {len(strikes_below)}↓"
+                        f"{mode} {currency} {days}d: {len(strikes_above)}↑ {len(strikes_below)}↓"
                     )
 
-                above_probs, below_probs = batch_touch_probabilities(
-                    spot=spot,
-                    iv=iv,
-                    days=days,
-                    strikes_above=strikes_above,
-                    strikes_below=strikes_below,
-                    drift=drift,
-                    df=df,
-                    n_paths=self.config.mc_paths,
-                )
+                if self.config.fast_pricing:
+                    above_probs, below_probs = batch_fast_touch_probabilities(
+                        spot=spot,
+                        iv=iv,
+                        days=days,
+                        strikes_above=strikes_above,
+                        strikes_below=strikes_below,
+                        drift=drift,
+                        df=df,
+                    )
+                else:
+                    above_probs, below_probs = batch_touch_probabilities(
+                        spot=spot,
+                        iv=iv,
+                        days=days,
+                        strikes_above=strikes_above,
+                        strikes_below=strikes_below,
+                        drift=drift,
+                        df=df,
+                        n_paths=self.config.mc_paths,
+                    )
 
                 # Generate signals for each market
                 for m in markets_in_group:
@@ -234,7 +247,7 @@ class CryptoScanner(BaseScanner):
                         roi=roi,
                         days_remaining=days,
                         token_id=token_id,
-                        model_used=f"MC-t(df={df:.2f})",
+                        model_used=f"{'Fast' if self.config.fast_pricing else 'MC'}-t(df={df:.2f})",
                         annual_return=annual_return,
                     )
                     signals.append(signal)
