@@ -1278,6 +1278,8 @@ class TradingBotApp(App):
             so = sell_orders.get(pos.id)
             if so and so.get("token_id"):
                 token_positions.setdefault(so["token_id"], []).append(pos)
+            elif pos.token_id:
+                token_positions.setdefault(pos.token_id, []).append(pos)
 
         if not token_positions:
             return
@@ -1320,34 +1322,18 @@ class TradingBotApp(App):
                         excess -= pos.tokens
                         total_corrected += 1
                     else:
-                        import copy
-                        old_tokens = pos.tokens
-                        removed = min(excess, old_tokens - 0.01)
-                        proportion = removed / old_tokens
-                        removed_entry_size = pos.entry_size * proportion
-
-                        partial = copy.deepcopy(pos)
-                        partial.id = f"{pos.id[:6]}p{int(datetime.utcnow().timestamp()) % 100000:05d}"
-                        partial.tokens = removed
-                        partial.entry_size = removed_entry_size
-                        partial.close(sell_price)
-                        self.position_storage.move_to_history(partial)
-
-                        pos.tokens = old_tokens - removed
-                        pos.entry_size = pos.entry_size - removed_entry_size
-                        pos.entry_price = (
-                            pos.entry_size / pos.tokens
-                            if pos.tokens > 0 else pos.entry_price
+                        removed = min(excess, pos.tokens - 0.01)
+                        partial, remaining = self.position_storage.partial_close(
+                            pos.id, removed, sell_price
                         )
-                        self.position_storage.save(pos)
-
-                        pnl = partial.exit_size - partial.entry_size
-                        logger.log_info(
-                            f"  PARTIAL-CLOSE: {pos.id} "
-                            f"{old_tokens:.2f} -> {pos.tokens:.2f} tokens "
-                            f"(removed {removed:.2f}, P&L: ${pnl:+.2f})"
-                        )
-                        total_corrected += 1
+                        if partial:
+                            pnl = (partial.exit_size or 0) - partial.entry_size
+                            logger.log_info(
+                                f"  PARTIAL-CLOSE: {pos.id} "
+                                f"removed {partial.tokens:.2f} tokens, P&L: ${pnl:+.2f}"
+                            )
+                            self.sell_order_store.remove(pos.id)
+                            total_corrected += 1
                         excess = 0
 
         if total_corrected:
@@ -1503,22 +1489,31 @@ class TradingBotApp(App):
                 logger.log_warning(f"SELL ORDER check failed: {e}")
 
             if is_filled:
-                pnl = pos.tokens * existing["price"] - pos.entry_size
-                get_trade_journal().log_sell_filled(
-                    pos, existing["price"], pnl, pos.age_days
-                )
-                logger.log_info(
-                    f"SELL FILLED: {pos.market_slug[:40]} @ {existing['price']:.1%} "
-                    f"P&L: ${pnl:+.2f}"
-                )
-                self.position_storage.close_position(
-                    pos.id, existing["price"], existing["order_id"]
-                )
-                self.sell_order_store.remove(pos.id)
-                self.notify(
-                    f"SOLD: {pos.market_slug[:30]} @ {existing['price']:.1%} P&L: ${pnl:+.2f}",
-                    markup=False,
-                )
+                if status == "MATCHED":
+                    # Fully filled — close entire position
+                    pnl = pos.tokens * existing["price"] - pos.entry_size
+                    get_trade_journal().log_sell_filled(
+                        pos, existing["price"], pnl, pos.age_days
+                    )
+                    logger.log_info(
+                        f"SELL FILLED: {pos.market_slug[:40]} @ {existing['price']:.1%} "
+                        f"P&L: ${pnl:+.2f}"
+                    )
+                    self.position_storage.close_position(
+                        pos.id, existing["price"], existing["order_id"]
+                    )
+                    self.sell_order_store.remove(pos.id)
+                    self.notify(
+                        f"SOLD: {pos.market_slug[:30]} @ {existing['price']:.1%} P&L: ${pnl:+.2f}",
+                        markup=False,
+                    )
+                else:
+                    # Partial fill — remove stale sell_order, let balance check handle
+                    logger.log_info(
+                        f"SELL PARTIAL FILL: {pos.market_slug[:40]} "
+                        f"matched={size_matched:.1f} status={status}"
+                    )
+                    self.sell_order_store.remove(pos.id)
             elif status == "LIVE":
                 pass
             else:
@@ -1574,7 +1569,7 @@ class TradingBotApp(App):
 
             token_groups.setdefault(token_id, []).append((pos, fair))
 
-        # Calculate sell prices: fair_at_entry × 0.9 for REACH positions
+        # Calculate sell prices for REACH positions
         final_groups: dict[str, list] = {}
         for token_id, group in token_groups.items():
             for pos, fair in group:
@@ -1916,18 +1911,59 @@ class TradingBotApp(App):
             result = self.executor.sell(signal, position, market)
 
             if result.success:
-                closed_position = self.position_storage.close_position(
-                    signal.position_id, signal.current_price, result.order_id
-                )
-                if closed_position:
-                    self.history_storage.record_sell(closed_position, result.order_id)
-                    pnl = closed_position.realized_pnl()
-                    logger.log_trade_executed(
-                        "SELL", signal.market_slug, signal.outcome,
-                        signal.current_price, position.tokens, signal.suggested_size
+                time.sleep(3)  # let matching engine process
+
+                # Check actual fill
+                actual_matched = position.tokens  # fallback: assume full
+                try:
+                    order_info = self.executor.client.client.get_order(result.order_id)
+                    if order_info:
+                        matched_raw = float(order_info.get("size_matched", 0))
+                        ord_status = order_info.get("status", "").upper()
+                        if ord_status == "MATCHED":
+                            actual_matched = position.tokens
+                        elif matched_raw > 0:
+                            actual_matched = matched_raw
+                        else:
+                            actual_matched = 0
+                except Exception as e:
+                    logger.log_warning(f"SELL fill check failed: {e}")
+
+                if actual_matched >= position.tokens - 0.5:
+                    # Full fill
+                    closed_position = self.position_storage.close_position(
+                        signal.position_id, signal.current_price, result.order_id
                     )
-                    logger.log_position_closed(closed_position, signal.current_price, pnl)
-                self.notify(f"SELL order placed: {result.order_id}", markup=False)
+                    if closed_position:
+                        self.history_storage.record_sell(closed_position, result.order_id)
+                        pnl = closed_position.realized_pnl()
+                        logger.log_trade_executed(
+                            "SELL", signal.market_slug, signal.outcome,
+                            signal.current_price, position.tokens, signal.suggested_size
+                        )
+                        logger.log_position_closed(closed_position, signal.current_price, pnl)
+                    self.notify(f"SOLD: {signal.market_slug[:30]}", markup=False)
+                elif actual_matched > 0:
+                    # Partial fill
+                    partial, remaining = self.position_storage.partial_close(
+                        signal.position_id, actual_matched, signal.current_price, result.order_id
+                    )
+                    if partial:
+                        self.history_storage.record_sell(partial, result.order_id)
+                        pnl = (partial.exit_size or 0) - partial.entry_size
+                        logger.log_info(
+                            f"SELL PARTIAL: {signal.market_slug[:40]} "
+                            f"sold={actual_matched:.1f}/{position.tokens:.1f} P&L: ${pnl:+.2f}"
+                        )
+                    self.notify(
+                        f"SELL PARTIAL: {signal.market_slug[:30]} "
+                        f"sold {actual_matched:.0f}/{position.tokens:.0f}",
+                        markup=False,
+                    )
+                else:
+                    logger.log_warning(f"SELL 0 FILL: {signal.market_slug[:40]}")
+                    self.notify(f"SELL: 0 tokens filled for {signal.market_slug[:30]}", markup=False)
+
                 self._refresh_positions_panel()
                 self._refresh_portfolio_panel()
                 positions = self._get_all_positions()
@@ -2004,21 +2040,72 @@ class TradingBotApp(App):
         order_id = self.executor.market_sell(token_id, sell_size)
 
         if order_id:
-            pnl = position.unrealized_pnl(signal.current_price)
-            self.position_storage.close_position(
-                signal.position_id, signal.current_price, order_id
-            )
-            self.sell_order_store.remove(signal.position_id)
-            get_trade_journal().log_edge_exit(position, signal, pnl)
-            logger.log_info(
-                f"EDGE EXIT EXECUTED: {signal.market_slug[:40]} @ {signal.current_price:.1%} "
-                f"edge={signal.edge:+.1%} P&L: ${pnl:+.2f}"
-            )
-            self.notify(
-                f"EDGE EXIT: {signal.market_slug[:30]} @ {signal.current_price:.1%} "
-                f"P&L: ${pnl:+.2f}",
-                markup=False,
-            )
+            time.sleep(3)  # let matching engine process
+
+            # Check actual fill
+            actual_matched = sell_size  # fallback: assume full
+            try:
+                order_info = self.executor.client.client.get_order(order_id)
+                if order_info:
+                    matched_raw = float(order_info.get("size_matched", 0))
+                    ord_status = order_info.get("status", "").upper()
+                    if ord_status == "MATCHED":
+                        actual_matched = sell_size
+                    elif matched_raw > 0:
+                        actual_matched = matched_raw
+                    else:
+                        actual_matched = 0
+                    logger.log_info(
+                        f"EDGE EXIT fill check: status={ord_status} "
+                        f"matched={actual_matched:.1f}/{sell_size:.1f}"
+                    )
+            except Exception as e:
+                logger.log_warning(f"EDGE EXIT fill check failed: {e}")
+
+            if actual_matched >= sell_size - 0.5:
+                # Full fill — close position entirely
+                pnl = position.unrealized_pnl(signal.current_price)
+                self.position_storage.close_position(
+                    signal.position_id, signal.current_price, order_id
+                )
+                self.sell_order_store.remove(signal.position_id)
+                get_trade_journal().log_edge_exit(position, signal, pnl)
+                logger.log_info(
+                    f"EDGE EXIT EXECUTED: {signal.market_slug[:40]} @ {signal.current_price:.1%} "
+                    f"edge={signal.edge:+.1%} P&L: ${pnl:+.2f}"
+                )
+                self.notify(
+                    f"EDGE EXIT: {signal.market_slug[:30]} @ {signal.current_price:.1%} "
+                    f"P&L: ${pnl:+.2f}",
+                    markup=False,
+                )
+            elif actual_matched > 0:
+                # Partial fill — partial close
+                partial, remaining = self.position_storage.partial_close(
+                    signal.position_id, actual_matched, signal.current_price, order_id
+                )
+                if partial:
+                    pnl = (partial.exit_size or 0) - partial.entry_size
+                    get_trade_journal().log_edge_exit(partial, signal, pnl)
+                    logger.log_info(
+                        f"EDGE EXIT PARTIAL: {signal.market_slug[:40]} "
+                        f"sold={actual_matched:.1f}/{sell_size:.1f} P&L: ${pnl:+.2f}"
+                    )
+                    self.notify(
+                        f"EDGE EXIT PARTIAL: {signal.market_slug[:30]} "
+                        f"sold {actual_matched:.0f}/{sell_size:.0f}",
+                        markup=False,
+                    )
+            else:
+                # Nothing filled
+                logger.log_warning(
+                    f"EDGE EXIT 0 FILL: {signal.market_slug[:40]}"
+                )
+                self.notify(
+                    f"EDGE EXIT: 0 tokens filled for {signal.market_slug[:30]}",
+                    markup=False,
+                )
+
             self._refresh_positions_panel()
             self._refresh_portfolio_panel()
             positions = self._get_all_positions()

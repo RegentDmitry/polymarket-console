@@ -98,6 +98,47 @@ class PositionStorage:
         self.move_to_history(position)
         return position
 
+    def partial_close(self, position_id: str, tokens_sold: float,
+                      exit_price: float, order_id: Optional[str] = None
+                      ) -> tuple[Optional[Position], Optional[Position]]:
+        """Partially close a position: move sold portion to history, keep remainder.
+
+        Returns (closed_partial, updated_remaining). Both None if position not found.
+        If tokens_sold >= position.tokens, does full close and returns (closed, None).
+        """
+        import copy
+        from datetime import datetime
+
+        position = self.load(position_id)
+        if not position:
+            return None, None
+
+        if tokens_sold >= position.tokens - 0.01:
+            closed = self.close_position(position_id, exit_price, order_id)
+            return closed, None
+
+        old_tokens = position.tokens
+        removed = min(tokens_sold, old_tokens - 0.01)
+        proportion = removed / old_tokens
+        removed_entry = position.entry_size * proportion
+
+        partial = copy.deepcopy(position)
+        partial.id = f"{position.id[:6]}p{int(datetime.utcnow().timestamp()) % 100000:05d}"
+        partial.tokens = removed
+        partial.entry_size = removed_entry
+        partial.close(exit_price, order_id)
+        self.move_to_history(partial)
+
+        position.tokens = old_tokens - removed
+        position.entry_size = position.entry_size - removed_entry
+        position.entry_price = (
+            position.entry_size / position.tokens
+            if position.tokens > 0 else position.entry_price
+        )
+        self.save(position)
+
+        return partial, position
+
     def resolve_position(self, position_id: str, won: bool) -> Optional[Position]:
         """Resolve a position (market resolved) and move to history."""
         position = self.load(position_id)
