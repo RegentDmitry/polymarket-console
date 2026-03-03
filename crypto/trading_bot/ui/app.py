@@ -510,18 +510,16 @@ class PortfolioRiskPanel(Static):
         super().__init__(**kwargs)
         self._breakdown: dict = {}
         self._total_kelly: float = 0.0
-        self._max_positions: int = 20
         self._target_alloc: float = 1.0
         self._updated_at: float = 0.0
         self._mc_outcome = None
         self._mc_computing: bool = False
 
     def update_risk(self, positions: list, balance: float,
-                    total_kelly: float = 0.0, max_positions: int = 20,
+                    total_kelly: float = 0.0,
                     target_alloc: float = 1.0) -> None:
         self._breakdown = get_portfolio_breakdown(positions, balance)
         self._total_kelly = total_kelly
-        self._max_positions = max_positions
         self._target_alloc = target_alloc
         self._updated_at = time.monotonic()
         self.refresh()
@@ -565,7 +563,7 @@ class PortfolioRiskPanel(Static):
             bal = bd.get("balance", 0)
             alloc_pct = invested / total if total > 0 else 0
             lines.append(
-                f"Positions: {pos_count}/{self._max_positions}  "
+                f"Positions: {pos_count}  "
                 f"Kelly: {self._total_kelly:.0%}  "
                 f"Alloc: {alloc_pct:.0%}/{self._target_alloc:.0%}"
             )
@@ -922,7 +920,7 @@ class TradingBotApp(App):
                               if s.type == SignalType.BUY and s.kelly > 0)
             panel = self.query_one(PortfolioRiskPanel)
             panel.update_risk(positions, balance, total_kelly,
-                              self.config.max_positions, self.config.target_alloc)
+                              self.config.target_alloc)
 
             # Launch background MC simulation
             if positions and not self._mc_thread_running:

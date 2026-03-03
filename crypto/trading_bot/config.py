@@ -19,9 +19,6 @@ class BotConfig:
     # Scan settings
     scan_interval: int = 60  # seconds (1 minute default)
 
-    # Position limits
-    max_positions: int = 20
-
     # Strategy parameters
     min_edge: float = 0.05  # 5%
     min_apy: float = 0.30   # 30% annualized
@@ -109,13 +106,6 @@ Examples:
     )
 
     parser.add_argument(
-        "--max-positions", "-m",
-        type=int,
-        default=20,
-        help="Maximum number of open positions. Default: 20"
-    )
-
-    parser.add_argument(
         "--min-edge",
         type=float,
         default=0.05,
@@ -169,7 +159,6 @@ Examples:
         auto_mode=args.auto,
         dry_run=not args.live,  # dry-run by default, --live disables it
         scan_interval=parse_interval(args.interval),
-        max_positions=args.max_positions,
         min_edge=args.min_edge,
         min_apy=args.min_apy,
         mc_paths=args.mc_paths,
