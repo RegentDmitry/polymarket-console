@@ -5,7 +5,7 @@
 # =============================================================================
 
 # --- Signal Filters ---
-MIN_EDGE="0.02"              # 2% minimum edge
+MIN_EDGE="0.05"              # 5% minimum edge
 MIN_APY="0.30"               # 30% minimum APY
 
 # --- Scan Settings ---

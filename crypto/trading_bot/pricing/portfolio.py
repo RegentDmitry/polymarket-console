@@ -34,7 +34,7 @@ def kelly_fraction(edge: float, market_price: float) -> float:
         return 0.0
     kelly = (fair_prob * odds - (1.0 - fair_prob)) / odds
     kelly = max(0.0, min(kelly, 0.5))  # cap at 50%
-    return kelly * 0.5  # half-Kelly
+    return kelly  # full Kelly
 
 
 def allocate_sizes(
@@ -43,13 +43,16 @@ def allocate_sizes(
     positions: list,
     config,
 ) -> None:
-    """Allocate balance across BUY signals using Kelly criterion.
+    """Allocate budget across BUY signals using Kelly proportions.
+
+    Kelly determines relative weights between positions (not absolute sizes).
+    The alloc budget is distributed proportionally to Kelly weights.
 
     Modifies signals in-place: sets signal.kelly and signal.suggested_size.
 
-    Concentration limits:
-    - max_position_pct: max fraction per single position (default 25%)
-    - max_direction_pct: max fraction in one direction (up/down) including existing positions
+    Limits:
+    - max_position_pct: max fraction per single position (default 30%)
+    - max_direction_pct: max fraction in one direction (up/down)
     - min_position_size: skip if allocation < this (default $5)
     """
     from ..models.signal import SignalType
@@ -57,7 +60,7 @@ def allocate_sizes(
     if balance <= 0:
         return
 
-    max_pos_pct = getattr(config, "max_position_pct", 0.25)
+    max_pos_pct = getattr(config, "max_position_pct", 0.30)
     max_dir_pct = getattr(config, "max_direction_pct", 0.60)
     min_size = getattr(config, "min_position_size", 5.0)
     target_alloc = getattr(config, "target_alloc", 1.0)
@@ -85,12 +88,17 @@ def allocate_sizes(
     for s in buy_signals:
         s.kelly = kelly_fraction(s.edge, s.current_price)
 
-    # Normalize: if total Kelly > 1.0, scale down proportionally
-    total_kelly = sum(s.kelly for s in buy_signals)
-    if total_kelly > 1.0:
-        scale = 1.0 / total_kelly
-        for s in buy_signals:
-            s.kelly *= scale
+    # Existing position sizes by market slug
+    pos_by_slug: Dict[str, float] = {}
+    for p in positions:
+        pos_by_slug[p.market_slug] = pos_by_slug.get(p.market_slug, 0.0) + p.entry_size
+
+    # Kelly as proportional weights: distribute alloc_budget by Kelly ratio
+    eligible = [(s, s.kelly) for s in buy_signals if s.kelly > 0]
+    if not eligible:
+        return
+
+    total_kelly = sum(k for _, k in eligible)
 
     # Allocate sizes with concentration limits
     remaining = alloc_budget
@@ -99,12 +107,19 @@ def allocate_sizes(
             s.suggested_size = 0.0
             continue
 
-        # Kelly-based raw allocation (scaled to alloc budget)
-        raw_size = s.kelly * alloc_budget
+        # Target size from total portfolio (Kelly as proportion)
+        raw_size = (s.kelly / total_kelly) * target_invested
 
-        # Cap by position limit
+        # Subtract already invested in this market
+        already_in = pos_by_slug.get(s.market_slug, 0.0)
+        raw_size = raw_size - already_in
+        if raw_size < min_size:
+            s.suggested_size = 0.0
+            continue
+
+        # Cap by position limit (30% of portfolio)
         max_per_position = max_pos_pct * total_portfolio
-        raw_size = min(raw_size, max_per_position)
+        raw_size = min(raw_size, max_per_position - already_in)
 
         # Cap by direction limit
         direction = _signal_direction(s)
@@ -128,6 +143,7 @@ def allocate_sizes(
         s.suggested_size = raw_size
         remaining -= raw_size
         dir_exposure[direction] += raw_size
+        pos_by_slug[s.market_slug] = already_in + raw_size
 
 
 def get_portfolio_breakdown(
