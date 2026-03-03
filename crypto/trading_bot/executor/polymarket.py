@@ -774,3 +774,120 @@ class PolymarketExecutor:
         except Exception as e:
             print(f"Error getting positions from API: {e}")
             return []
+
+    def sync_positions(self, storage) -> list[Position]:
+        """Sync positions with Polymarket API.
+
+        Fetches positions from API and creates local Position objects
+        for any that don't exist locally. Uses token_id matching against
+        crypto_markets.json to identify markets.
+        """
+        logger = get_logger()
+
+        if not self.client:
+            logger.log_warning("Cannot sync positions - client not initialized")
+            return []
+
+        logger.log_info("Syncing positions with Polymarket API...")
+
+        api_positions = self.get_api_positions()
+        if not api_positions:
+            logger.log_info("No positions found on Polymarket API")
+            return []
+
+        logger.log_info(f"Found {len(api_positions)} positions on Polymarket")
+
+        active_positions = storage.load_all_active()
+
+        # If we already have crypto positions, skip sync to avoid duplicates
+        has_crypto = any(p.strategy == "crypto" for p in active_positions)
+        if has_crypto:
+            logger.log_info("SYNC SKIP: crypto positions exist, skipping API sync")
+            return []
+
+        existing_slugs = {p.market_slug for p in active_positions}
+
+        # Build token_id → market info map from crypto_markets.json
+        token_map = {}
+        try:
+            import json
+            markets_json = Path(__file__).parent.parent.parent / "crypto_markets.json"
+            if markets_json.exists():
+                with open(markets_json) as f:
+                    markets_data = json.load(f)
+                for m in markets_data:
+                    slug = m.get("slug", "")
+                    yes_tid = m.get("yes_token_id", "")
+                    no_tid = m.get("no_token_id", "")
+                    if yes_tid:
+                        token_map[yes_tid] = {"slug": slug, "outcome": "YES", "market": m}
+                    if no_tid:
+                        token_map[no_tid] = {"slug": slug, "outcome": "NO", "market": m}
+        except Exception as e:
+            logger.log_warning(f"Failed to load crypto_markets.json for sync: {e}")
+
+        new_positions = []
+        for api_pos in api_positions:
+            token_id = api_pos.get("asset", "")
+            size = float(api_pos.get("size", 0))
+            avg_price = float(api_pos.get("avgPrice", 0))
+            initial_value = float(api_pos.get("initialValue", 0))
+
+            if size <= 0:
+                continue
+
+            # Try matching via crypto_markets.json token map
+            market_info = token_map.get(token_id)
+            if market_info:
+                slug = market_info["slug"]
+                outcome = market_info["outcome"]
+                m = market_info["market"]
+                condition_id = m.get("condition_id", "")
+                title = m.get("question", slug)
+                end_date = m.get("end_date")
+                direction = m.get("direction", "")
+            else:
+                # Fallback: use API fields directly
+                slug = api_pos.get("slug", api_pos.get("conditionId", ""))
+                outcome = api_pos.get("outcome", "Yes")
+                condition_id = api_pos.get("conditionId", "")
+                title = api_pos.get("title", slug)
+                end_date = api_pos.get("endDate")
+                direction = ""
+
+            if not slug or slug in existing_slugs:
+                continue
+
+            entry_price = avg_price if avg_price > 0 else (initial_value / size if size > 0 else 0.5)
+            entry_size = initial_value if initial_value > 0 else size * entry_price
+
+            position = Position(
+                market_id=condition_id,
+                market_slug=slug,
+                market_name=title[:50],
+                outcome=outcome,
+                resolution_date=end_date,
+                entry_price=entry_price,
+                entry_time=datetime.utcnow().isoformat() + "Z",
+                entry_size=entry_size,
+                tokens=size,
+                strategy="crypto",
+                fair_price_at_entry=entry_price,
+                token_id=token_id,
+                direction=direction,
+            )
+
+            storage.save(position)
+            new_positions.append(position)
+            existing_slugs.add(slug)
+
+            logger.log_info(
+                f"Synced position: {slug} ({outcome}) - {size:.2f} tokens @ {entry_price:.2%}"
+            )
+
+        if new_positions:
+            logger.log_info(f"Synced {len(new_positions)} new positions from API")
+        else:
+            logger.log_info("All API positions already exist locally")
+
+        return new_positions

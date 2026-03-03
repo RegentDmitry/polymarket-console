@@ -766,6 +766,10 @@ class TradingBotApp(App):
 
         # Sync positions with Polymarket API (unless dry run)
         if not self.config.dry_run and self.executor.initialized:
+            synced = self.executor.sync_positions(self.position_storage)
+            if synced:
+                self.notify(f"Synced {len(synced)} positions from Polymarket")
+
             self._init_sell_orders()
             self.call_later(self._check_balance_discrepancies)
 
@@ -978,7 +982,7 @@ class TradingBotApp(App):
                 btc_drift=btc_drift, eth_drift=eth_drift,
                 btc_df=self.config.student_df_btc,
                 eth_df=self.config.student_df_eth,
-                n_paths=100_000,
+                n_paths=500_000,
                 balance=balance,
             )
 
