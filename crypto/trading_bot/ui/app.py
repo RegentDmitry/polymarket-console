@@ -714,6 +714,7 @@ class TradingBotApp(App):
 
         # Track buys in current scan cycle
         self._had_buys_this_cycle = False
+        self._cached_balance: Optional[float] = None
 
         # Virtual positions for DRY RUN mode
         self._dry_run_positions: List[Position] = []
@@ -1194,8 +1195,9 @@ class TradingBotApp(App):
         if self._shutting_down:
             return
 
-        # Update POL balance (gas)
+        # Update balances from API (authoritative after scan)
         if self.executor.initialized:
+            self._cached_balance = self.executor.get_balance()
             self._pol_balance = self.executor.get_matic_balance()
 
         # Update status bar
@@ -1255,7 +1257,10 @@ class TradingBotApp(App):
             unrealized_pnl = 0
             unrealized_pnl_pct = 0
 
-        balance = self.executor.get_balance()
+        if self._cached_balance is not None:
+            balance = self._cached_balance
+        else:
+            balance = self.executor.get_balance() if self.executor.initialized else 0
 
         status_bar = StatusBar(self.config)
         status_bar.update_status(
@@ -1922,6 +1927,11 @@ class TradingBotApp(App):
                     logger.log_position_opened(position)
                 self.history_storage.record_buy(position, result.order_id)
                 self._had_buys_this_cycle = True
+                # Update cached balance immediately (API may lag)
+                if self._cached_balance is not None:
+                    self._cached_balance -= position.entry_size
+                else:
+                    self._cached_balance = (self.executor.get_balance() if self.executor.initialized else 0)
                 self.notify(f"BUY order placed: {result.order_id}", markup=False)
 
                 logger.log_trade_executed(
