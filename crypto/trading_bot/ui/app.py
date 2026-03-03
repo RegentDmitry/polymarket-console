@@ -315,7 +315,8 @@ class PositionsPanel(VerticalScroll):
                 else:
                     pnl_raw = f"+$0.00"
 
-                slug = pos.market_slug[:MW] if len(pos.market_slug) > MW else pos.market_slug
+                label = f"{pos.market_slug} ({pos.outcome})"
+                slug = label[:MW] if len(label) > MW else label
 
                 row_prefix = (
                     f"{slug:<{MW}} {pos.entry_price:>{EW}.1%} {fair:>{FW}.1%} {current:>{CW}.1%} {bid_str} {sell_str}"
@@ -463,21 +464,36 @@ class FuturesCurvePanel(Static):
 
 
 class PortfolioRiskPanel(Static):
-    """Panel showing portfolio risk breakdown by currency and direction."""
+    """Panel showing portfolio risk breakdown, allocation, and MC outcome distribution."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._breakdown: dict = {}
         self._total_kelly: float = 0.0
         self._max_positions: int = 20
+        self._target_alloc: float = 1.0
         self._updated_at: float = 0.0
+        self._mc_outcome = None
+        self._mc_computing: bool = False
 
     def update_risk(self, positions: list, balance: float,
-                    total_kelly: float = 0.0, max_positions: int = 20) -> None:
+                    total_kelly: float = 0.0, max_positions: int = 20,
+                    target_alloc: float = 1.0) -> None:
         self._breakdown = get_portfolio_breakdown(positions, balance)
         self._total_kelly = total_kelly
         self._max_positions = max_positions
+        self._target_alloc = target_alloc
         self._updated_at = time.monotonic()
+        self.refresh()
+
+    def update_mc_outcome(self, outcome) -> None:
+        self._mc_outcome = outcome
+        self._mc_computing = False
+        self._updated_at = time.monotonic()
+        self.refresh()
+
+    def set_mc_computing(self, computing: bool) -> None:
+        self._mc_computing = computing
         self.refresh()
 
     def tick(self) -> None:
@@ -517,11 +533,32 @@ class PortfolioRiskPanel(Static):
             pos_count = bd.get("position_count", 0)
             invested = bd.get("total_invested", 0)
             bal = bd.get("balance", 0)
+            alloc_pct = invested / total if total > 0 else 0
             lines.append(
                 f"Positions: {pos_count}/{self._max_positions}  "
                 f"Kelly: {self._total_kelly:.0%}  "
-                f"Inv: ${invested:,.0f}  Free: ${bal:,.0f}"
+                f"Alloc: {alloc_pct:.0%}/{self._target_alloc:.0%}"
             )
+            lines.append(f"Inv: ${invested:,.0f}  Free: ${bal:,.0f}")
+
+            # MC Outcome Distribution
+            lines.append("")
+            if self._mc_computing:
+                lines.append("[dim]Computing outcomes...[/dim]")
+            elif self._mc_outcome and self._mc_outcome.n_paths > 0:
+                mc = self._mc_outcome
+                lines.append("[bold]OUTCOME AT EXPIRY[/bold]")
+                for pct, label in [(5, "Worst 5%"), (25, "25th    "),
+                                   (50, "Median  "), (75, "75th    "),
+                                   (95, "Best 95%")]:
+                    val = mc.percentiles.get(pct, 0)
+                    color = "green" if val >= 0 else "red"
+                    lines.append(f"  {label} [{color}]{val:>+9.2f}[/{color}]")
+                color_wp = "green" if mc.win_prob >= 0.5 else "red"
+                lines.append(f"  Win prob [{color_wp}]{mc.win_prob:>8.0%}[/{color_wp}]")
+                color_ev = "green" if mc.mean_pnl >= 0 else "red"
+                lines.append(f"  E[P&L]   [{color_ev}]{mc.mean_pnl:>+9.2f}[/{color_ev}]")
+                lines.append(f"  [dim]({mc.n_paths // 1000}k paths, {mc.compute_time_ms:.0f}ms)[/dim]")
 
         lines.append("")
         if self._updated_at > 0:
@@ -591,10 +628,12 @@ class TradingBotApp(App):
 
     #futures-panel {
         height: auto;
+        min-height: 20;
     }
 
     #portfolio-panel {
         height: auto;
+        min-height: 25;
     }
 
     ScannerPanel {
@@ -664,6 +703,7 @@ class TradingBotApp(App):
         # Portfolio risk tracking
         self._portfolio_update_counter = 0
         self._portfolio_update_interval = 10  # scans between portfolio updates
+        self._mc_thread_running = False
 
     def compose(self) -> ComposeResult:
         yield Static(self.title, id="app-header")
@@ -673,10 +713,10 @@ class TradingBotApp(App):
                 yield ScannerPanel()
             with VerticalScroll(id="right-panel"):
                 yield PositionsPanel(id="positions-panel")
-                yield PortfolioRiskPanel(id="portfolio-panel")
                 yield RecentTradesPanel(self.history_storage, id="trades-panel")
                 yield LiveDataPanel(id="live-data-panel")
                 yield FuturesCurvePanel(id="futures-panel")
+                yield PortfolioRiskPanel(id="portfolio-panel")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -707,9 +747,9 @@ class TradingBotApp(App):
         # Start countdown timer immediately
         self.countdown_timer = self.set_interval(1, self.update_countdown)
 
-        # Delay first scan by 5 seconds to let UI render and data load
-        self.next_scan_seconds = 5
-        self.set_timer(5, self.start_scanning)
+        # Wait for market data, then start scanning
+        self.next_scan_seconds = 1
+        self.set_timer(1, self._wait_for_data_then_scan)
 
     def _start_data_threads(self) -> None:
         """Start background threads for data updates."""
@@ -795,6 +835,20 @@ class TradingBotApp(App):
         except Exception:
             pass
 
+    def _wait_for_data_then_scan(self) -> None:
+        """Poll until Deribit data is available, then start scanning."""
+        if self.scanner and self.scanner.deribit.btc_iv > 0:
+            self.start_scanning()
+        else:
+            # Update scanner panel with waiting status
+            try:
+                scanner_panel = self.query_one(ScannerPanel)
+                scanner_panel.set_scan_status("Waiting for Deribit data...")
+            except Exception:
+                pass
+            self.next_scan_seconds = 1
+            self.set_timer(1, self._wait_for_data_then_scan)
+
     def start_scanning(self) -> None:
         """Start scanning after initial delay."""
         self.scan_timer = self.set_interval(self.config.scan_interval, self.do_scan)
@@ -817,7 +871,7 @@ class TradingBotApp(App):
         positions_panel.update_positions(positions, self._current_prices, fair_prices, bid_prices, sell_orders)
 
     def _refresh_portfolio_panel(self, positions=None, signals=None) -> None:
-        """Refresh portfolio risk panel."""
+        """Refresh portfolio risk panel and launch MC simulation."""
         try:
             if positions is None:
                 positions = self._get_all_positions()
@@ -827,9 +881,81 @@ class TradingBotApp(App):
             total_kelly = sum(s.kelly for s in (signals or [])
                               if s.type == SignalType.BUY and s.kelly > 0)
             panel = self.query_one(PortfolioRiskPanel)
-            panel.update_risk(positions, balance, total_kelly, self.config.max_positions)
+            panel.update_risk(positions, balance, total_kelly,
+                              self.config.max_positions, self.config.target_alloc)
+
+            # Launch background MC simulation
+            if positions and not self._mc_thread_running:
+                self._mc_thread_running = True
+                t = threading.Thread(
+                    target=self._run_portfolio_mc,
+                    args=(list(positions), balance),
+                    name="portfolio-mc",
+                    daemon=True,
+                )
+                t.start()
         except Exception:
             pass
+
+    def _run_portfolio_mc(self, positions, balance) -> None:
+        """Run portfolio MC simulation in background thread."""
+        try:
+            if not self.scanner:
+                return
+
+            crypto_markets = self.scanner._crypto_markets
+            if not crypto_markets:
+                return
+
+            dsnap = self.scanner.deribit.get_snapshot()
+            btc_spot = dsnap.get("btc_spot", 0)
+            eth_spot = dsnap.get("eth_spot", 0)
+            btc_iv = dsnap.get("btc_iv", 0)
+            eth_iv = dsnap.get("eth_iv", 0)
+
+            if btc_spot <= 0 or eth_spot <= 0 or btc_iv <= 0 or eth_iv <= 0:
+                return
+
+            from ..pricing.portfolio_mc import simulate_portfolio_outcomes, positions_to_specs
+
+            specs = positions_to_specs(positions, crypto_markets)
+            if not specs:
+                return
+
+            # Mark computing
+            try:
+                self.call_from_thread(
+                    self.query_one(PortfolioRiskPanel).set_mc_computing, True
+                )
+            except Exception:
+                pass
+
+            # Per-maturity drift: use weighted average
+            avg_days = sum(s.days_remaining for s in specs) / len(specs)
+            btc_drift = self.scanner.deribit.drift_for_days("BTC", int(avg_days))
+            eth_drift = self.scanner.deribit.drift_for_days("ETH", int(avg_days))
+
+            outcome = simulate_portfolio_outcomes(
+                positions=specs,
+                btc_spot=btc_spot, eth_spot=eth_spot,
+                btc_iv=btc_iv, eth_iv=eth_iv,
+                btc_drift=btc_drift, eth_drift=eth_drift,
+                btc_df=self.config.student_df_btc,
+                eth_df=self.config.student_df_eth,
+                n_paths=20_000,
+                balance=balance,
+            )
+
+            try:
+                self.call_from_thread(
+                    self.query_one(PortfolioRiskPanel).update_mc_outcome, outcome
+                )
+            except Exception:
+                pass
+        except Exception:
+            pass
+        finally:
+            self._mc_thread_running = False
 
     def update_countdown(self) -> None:
         """Update countdown to next scan + tick data panels."""
@@ -1622,21 +1748,39 @@ class TradingBotApp(App):
         if self.config.dry_run:
             if signal.type == SignalType.BUY:
                 tokens = self._dry_run_size / signal.current_price if signal.current_price > 0 else 0
-                position = Position(
-                    market_id=signal.market_id,
-                    market_slug=signal.market_slug,
-                    market_name=signal.market_name,
-                    outcome=signal.outcome,
-                    entry_price=signal.current_price,
-                    entry_time=datetime.now().isoformat() + "Z",
-                    entry_size=self._dry_run_size,
-                    tokens=tokens,
-                    strategy="dry_run",
-                    fair_price_at_entry=signal.fair_price,
-                    edge_at_entry=signal.edge,
-                )
-                self._dry_run_positions.append(position)
-                self.notify(f"[DRY] Bought {signal.market_slug} @ {signal.current_price:.1%}")
+
+                # Consolidate: if we already have a dry-run position in this market, add to it
+                existing = None
+                for p in self._dry_run_positions:
+                    if p.market_slug == signal.market_slug and p.outcome == signal.outcome:
+                        existing = p
+                        break
+
+                if existing:
+                    # Weighted average entry price
+                    old_cost = existing.entry_size
+                    new_cost = self._dry_run_size
+                    total_tokens = existing.tokens + tokens
+                    existing.entry_size = old_cost + new_cost
+                    existing.tokens = total_tokens
+                    existing.entry_price = existing.entry_size / total_tokens if total_tokens > 0 else existing.entry_price
+                    self.notify(f"[DRY] Added to {signal.market_slug} @ {signal.current_price:.1%} (total ${existing.entry_size:.0f})")
+                else:
+                    position = Position(
+                        market_id=signal.market_id,
+                        market_slug=signal.market_slug,
+                        market_name=signal.market_name,
+                        outcome=signal.outcome,
+                        entry_price=signal.current_price,
+                        entry_time=datetime.now().isoformat() + "Z",
+                        entry_size=self._dry_run_size,
+                        tokens=tokens,
+                        strategy="dry_run",
+                        fair_price_at_entry=signal.fair_price,
+                        edge_at_entry=signal.edge,
+                    )
+                    self._dry_run_positions.append(position)
+                    self.notify(f"[DRY] Bought {signal.market_slug} @ {signal.current_price:.1%}")
 
                 logger.log_trade_executed(
                     "BUY", signal.market_slug, signal.outcome,

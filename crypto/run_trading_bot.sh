@@ -5,7 +5,7 @@
 # =============================================================================
 
 # --- Signal Filters ---
-MIN_EDGE="0.05"              # 5% minimum edge
+MIN_EDGE="0.02"              # 2% minimum edge
 MIN_APY="0.30"               # 30% minimum APY
 
 # --- Scan Settings ---
@@ -15,7 +15,10 @@ SCAN_INTERVAL="1m"           # Scan every 1 minute
 # (no flags)         : dry-run with confirmation (default)
 # --live             : real trades with confirmation
 # --live --auto      : fully automatic trading
-MODE="--live"
+MODE=""
+
+# --- Allocation ---
+TARGET_ALLOC="1.0"           # 1.0 = invest all, 0.5 = gradual cashout
 
 # --- Pricing ---
 # (default)          : fast analytical pricing (~25ms)
@@ -48,6 +51,7 @@ echo "Configuration:"
 echo "  Min Edge:      $MIN_EDGE"
 echo "  Min APY:       $MIN_APY"
 echo "  Scan Interval: $SCAN_INTERVAL"
+echo "  Alloc:         $TARGET_ALLOC"
 echo "  Mode:          ${MODE:-(dry-run)}"
 echo "  Pricing:       ${PRICING:-fast (default)}"
 echo ""
@@ -95,6 +99,7 @@ while true; do
         --min-edge "$MIN_EDGE" \
         --min-apy "$MIN_APY" \
         --interval "$SCAN_INTERVAL" \
+        --alloc "$TARGET_ALLOC" \
         $MODE \
         $PRICING
 

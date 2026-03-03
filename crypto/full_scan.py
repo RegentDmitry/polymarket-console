@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 import numpy as np
 from scipy.stats import norm, t as student_t
 
+from trading_bot.pricing.fast_approx import fast_touch_prob
+
 ctx = ssl.create_default_context()
 ctx.check_hostname = False
 ctx.verify_mode = ssl.CERT_NONE
@@ -172,6 +174,19 @@ def mc_edge(spot, strike, iv, T, pm, is_up, mu=0, df=STUDENT_DF_BTC):
         return (1 - tp) - pm
 
 
+def hybrid_edge(spot, strike, iv, T, pm, is_up, mu=0, df=STUDENT_DF_BTC):
+    """Edge using hybrid model: Student-t for dip, GBM for reach.
+
+    Backtest-optimal: Student-t wins on dip, GBM wins on reach.
+    Uses fast analytical approx (not MC).
+    """
+    tp = fast_touch_prob(spot, strike, iv, T, drift=mu, df=df, hybrid=True)
+    if is_up:
+        return tp - pm
+    else:
+        return (1 - tp) - pm
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--futures-only", action="store_true", help="Only show futures curve")
@@ -254,6 +269,7 @@ def main():
                 drift_matched = drift_for_days(curve, days_to_exp)
                 edge_mc0 = mc_edge(spot, strike, iv, T, pm, is_up, mu=0.0, df=df)
                 edge_mcf = mc_edge(spot, strike, iv, T, pm, is_up, mu=drift_matched, df=df)
+                edge_hyb = hybrid_edge(spot, strike, iv, T, pm, is_up, mu=drift_matched, df=df)
 
                 period = (
                     "Feb" if "february" in slug
@@ -267,39 +283,41 @@ def main():
                     "pm": pm,
                     "edge_mc0": edge_mc0,
                     "edge_mcf": edge_mcf,
+                    "edge_hyb": edge_hyb,
                     "drift_used": drift_matched,
                 })
         except Exception as e:
             print(f"  [{slug}]: {e}")
 
-    results.sort(key=lambda x: x["edge_mc0"], reverse=True)
+    results.sort(key=lambda x: x["edge_hyb"], reverse=True)
 
     print(f"Найдено {len(results)} активных рынков")
     print(f"MC Student-t: BTC df={STUDENT_DF_BTC}, ETH df={STUDENT_DF_ETH}, {MC_PATHS:,} paths")
+    print(f"Hybrid = Student-t(dip) + GBM(reach) + drift")
     print()
     hdr = (
         f"{'Рынок':<25} {'Пер':<6} {'St':<4} {'PM':<6}"
-        f" {'MC d=0':>8} {'MC fut':>8} {'d_fut':>6}   {'Вердикт':<22}"
+        f" {'MC d=0':>8} {'MC fut':>8} {'Hybrid':>8} {'d_fut':>6}   {'Вердикт':<22}"
     )
     print(hdr)
-    print("=" * 96)
+    print("=" * 106)
     for r in results:
         pm_str = f"{r['pm']*100:.0f}c"
-        mc0, mcf = r["edge_mc0"], r["edge_mcf"]
+        mc0, mcf, hyb = r["edge_mc0"], r["edge_mcf"], r["edge_hyb"]
         d_str = f"{r['drift_used']*100:+.1f}%"
-        if mc0 > 0.03 and mcf > 0.03:
-            verdict = "*** EDGE d=0 + fut ***"
-        elif mc0 > 0.0 and mcf > 0.0:
-            verdict = "edge d=0 + fut"
+        if hyb > 0.05:
+            verdict = "*** HYBRID EDGE ***"
+        elif hyb > 0.03:
+            verdict = "hybrid edge"
         elif mcf > 0.03:
-            verdict = "edge при fut"
+            verdict = "MC fut edge"
         elif mcf > 0.0:
             verdict = "нужен drift"
         else:
             verdict = "—"
         print(
             f"{r['market']:<25} {r['period']:<6} {r['side']:<4} {pm_str:<6}"
-            f" {mc0*100:>+6.1f}%  {mcf*100:>+6.1f}%  {d_str:>6}   {verdict}"
+            f" {mc0*100:>+6.1f}%  {mcf*100:>+6.1f}%  {hyb*100:>+6.1f}%  {d_str:>6}   {verdict}"
         )
 
     # Save raw data

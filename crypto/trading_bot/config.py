@@ -31,11 +31,13 @@ class BotConfig:
     student_df_btc: float = 2.61  # Student-t degrees of freedom for BTC
     student_df_eth: float = 2.88  # Student-t degrees of freedom for ETH
     fast_pricing: bool = True      # Use fast analytical approx instead of MC
+    hybrid_pricing: bool = True    # Hybrid: Student-t for dip, GBM for reach
 
     # Portfolio limits (Kelly sizing)
     max_position_pct: float = 0.25   # Max 25% of portfolio per position
     max_direction_pct: float = 0.60  # Max 60% in one direction (up/down)
     min_position_size: float = 5.0   # Skip positions smaller than $5
+    target_alloc: float = 1.0        # Target % of portfolio to invest (1.0 = all)
 
     # Paths
     data_dir: Path = field(default_factory=lambda: Path("trading_bot/data"))
@@ -141,6 +143,13 @@ Examples:
     )
 
     parser.add_argument(
+        "--alloc",
+        type=float,
+        default=1.0,
+        help="Target allocation: fraction of portfolio to invest (0.0-1.0). Default: 1.0"
+    )
+
+    parser.add_argument(
         "--data-dir",
         type=Path,
         default=Path("trading_bot/data"),
@@ -169,6 +178,7 @@ Examples:
         history_dir=args.data_dir / "history",
         markets_json=args.markets_json,
         fast_pricing=not args.mc_pricing,
+        target_alloc=args.alloc,
     )
 
 

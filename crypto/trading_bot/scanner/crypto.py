@@ -158,6 +158,7 @@ class CryptoScanner(BaseScanner):
                         strikes_below=strikes_below,
                         drift=drift,
                         df=df,
+                        hybrid=getattr(self.config, 'hybrid_pricing', True),
                     )
                 else:
                     above_probs, below_probs = batch_touch_probabilities(
@@ -210,9 +211,7 @@ class CryptoScanner(BaseScanner):
                         roi = 0
                         annual_return = 0
 
-                    # YES positions need 2x edge (time decay works against YES)
-                    effective_min_edge = self.config.min_edge * 2 if side == "YES" else self.config.min_edge
-                    meets_edge = edge >= effective_min_edge
+                    meets_edge = edge >= self.config.min_edge
                     meets_apy = annual_return >= self.config.min_apy
 
                     # Create Market for cache
@@ -250,7 +249,7 @@ class CryptoScanner(BaseScanner):
                             liquidity = usable_liq
 
                             # Re-check filters with real prices
-                            meets_edge = edge >= effective_min_edge
+                            meets_edge = edge >= self.config.min_edge
                             meets_apy = annual_return >= self.config.min_apy
 
                     if meets_edge and meets_apy and liquidity >= 1.0:
@@ -273,7 +272,7 @@ class CryptoScanner(BaseScanner):
                         roi=roi,
                         days_remaining=days,
                         token_id=token_id,
-                        model_used=f"{'Fast' if self.config.fast_pricing else 'MC'}-t(df={df:.2f})",
+                        model_used=f"{'Hybrid' if getattr(self.config, 'hybrid_pricing', True) else ('Fast' if self.config.fast_pricing else 'MC')}-t(df={df:.2f})",
                         annual_return=annual_return,
                         liquidity=liquidity,
                         kelly=sig_kelly,

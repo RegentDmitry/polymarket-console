@@ -60,13 +60,22 @@ def allocate_sizes(
     max_pos_pct = getattr(config, "max_position_pct", 0.25)
     max_dir_pct = getattr(config, "max_direction_pct", 0.60)
     min_size = getattr(config, "min_position_size", 5.0)
+    target_alloc = getattr(config, "target_alloc", 1.0)
 
     # Calculate existing direction exposure from open positions
-    total_portfolio = balance + sum(p.entry_size for p in positions)
+    total_invested = sum(p.entry_size for p in positions)
+    total_portfolio = balance + total_invested
     dir_exposure: Dict[str, float] = {"up": 0.0, "down": 0.0}
     for p in positions:
         direction = _position_direction(p)
         dir_exposure[direction] += p.entry_size
+
+    # Allocation budget: how much more we can invest to reach target
+    target_invested = target_alloc * total_portfolio
+    alloc_budget = min(max(0.0, target_invested - total_invested), balance)
+
+    if alloc_budget < min_size:
+        return
 
     # Compute Kelly for each BUY signal
     buy_signals = [s for s in signals if s.type == SignalType.BUY and s.liquidity > 0]
@@ -84,14 +93,14 @@ def allocate_sizes(
             s.kelly *= scale
 
     # Allocate sizes with concentration limits
-    remaining = balance
+    remaining = alloc_budget
     for s in sorted(buy_signals, key=lambda x: x.kelly, reverse=True):
         if s.kelly <= 0 or remaining <= 0:
             s.suggested_size = 0.0
             continue
 
-        # Kelly-based raw allocation
-        raw_size = s.kelly * balance
+        # Kelly-based raw allocation (scaled to alloc budget)
+        raw_size = s.kelly * alloc_budget
 
         # Cap by position limit
         max_per_position = max_pos_pct * total_portfolio
@@ -108,7 +117,7 @@ def allocate_sizes(
         # Cap by available liquidity
         raw_size = min(raw_size, s.liquidity)
 
-        # Cap by remaining balance
+        # Cap by remaining budget
         raw_size = min(raw_size, remaining)
 
         # Skip tiny positions
