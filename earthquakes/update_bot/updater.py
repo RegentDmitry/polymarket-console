@@ -564,8 +564,7 @@ class MarketsUpdater:
                     ms = market.get("slug", "")
                     if ms:
                         discovered_event_map[ms] = event
-                        if len(markets) <= 2:
-                            discovered_slugs.add(ms)
+                        discovered_slugs.add(ms)
 
             all_slugs = before_slugs | discovered_slugs
 
