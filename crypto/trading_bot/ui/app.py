@@ -50,6 +50,7 @@ class StatusBar(Static):
         self.invested = 0.0
         self.unrealized_pnl = 0.0
         self.unrealized_pnl_pct = 0.0
+        self.has_scan = False
         self.last_scan_time: Optional[datetime] = None
         self.missed_liquidity = 0.0
 
@@ -57,7 +58,8 @@ class StatusBar(Static):
                       unrealized_pnl: float, unrealized_pnl_pct: float,
                       last_scan_time: Optional[datetime] = None,
                       pol_balance: float = 0.0,
-                      missed_liquidity: float = 0.0) -> None:
+                      missed_liquidity: float = 0.0,
+                      has_scan: bool = False) -> None:
         self.balance = balance
         self.pol_balance = pol_balance
         self.missed_liquidity = missed_liquidity
@@ -65,6 +67,7 @@ class StatusBar(Static):
         self.invested = invested
         self.unrealized_pnl = unrealized_pnl
         self.unrealized_pnl_pct = unrealized_pnl_pct
+        self.has_scan = has_scan
         if last_scan_time:
             self.last_scan_time = last_scan_time
         self.refresh()
@@ -92,13 +95,17 @@ class StatusBar(Static):
         line1 = "  |  ".join(line1_parts)
 
         # Second line
-        pnl_str = f"+${self.unrealized_pnl:.2f}" if self.unrealized_pnl >= 0 else f"-${abs(self.unrealized_pnl):.2f}"
-        pnl_pct = f"+{self.unrealized_pnl_pct:.1%}" if self.unrealized_pnl_pct >= 0 else f"{self.unrealized_pnl_pct:.1%}"
+        if self.has_scan:
+            pnl_str = f"+${self.unrealized_pnl:.2f}" if self.unrealized_pnl >= 0 else f"-${abs(self.unrealized_pnl):.2f}"
+            pnl_pct = f"+{self.unrealized_pnl_pct:.1%}" if self.unrealized_pnl_pct >= 0 else f"{self.unrealized_pnl_pct:.1%}"
+            pnl_display = f"Unrealized: {pnl_str} ({pnl_pct})"
+        else:
+            pnl_display = "Unrealized: --"
 
         line2 = (
             f"  Mode: {mode}  |  "
             f"Scan: {format_interval(self.config.scan_interval)}  |  "
-            f"Unrealized: {pnl_str} ({pnl_pct})"
+            f"{pnl_display}"
         )
 
         text = Text()
@@ -261,10 +268,17 @@ class PositionsPanel(VerticalScroll):
         self.sell_orders = sell_orders or {}
 
         self.total_invested = sum(p.entry_size for p in positions)
-        total_value = sum(p.current_value(self.fair_prices.get(p.market_slug, p.fair_price_at_entry))
-                         for p in positions)
-        self.unrealized_pnl = total_value - self.total_invested
-        self.unrealized_pnl_pct = self.unrealized_pnl / self.total_invested if self.total_invested > 0 else 0
+        # Only compute P&L for positions with fresh fair prices from scanner
+        scanned = [p for p in positions if p.market_slug in self.fair_prices]
+        if scanned:
+            total_value = sum(p.current_value(self.fair_prices[p.market_slug]) for p in scanned)
+            scanned_cost = sum(p.entry_size for p in scanned)
+            self.unrealized_pnl = total_value - scanned_cost
+            self.unrealized_pnl_pct = self.unrealized_pnl / scanned_cost if scanned_cost > 0 else 0
+        else:
+            self.unrealized_pnl = 0
+            self.unrealized_pnl_pct = 0
+        self._has_scan = len(scanned) > 0
 
         self._rebuild()
 
@@ -283,60 +297,80 @@ class PositionsPanel(VerticalScroll):
             CW = 6   # Curr
             BW = 6   # Bid
             SW = 6   # Sell
+            GW = 6   # Edge
             OW = 8   # Cost
             VW = 9   # Value
             PW = 9   # P&L
-            fixed = EW + FW + CW + BW + SW + OW + VW + PW + 8
+            fixed = EW + FW + CW + BW + SW + GW + OW + VW + PW + 9
             panel_width = self.size.width - 2
             MW = max(10, panel_width - fixed)
 
             header = (
                 f"{'Market':<{MW}} {'Entry':>{EW}} {'Fair':>{FW}} {'Curr':>{CW}} {'Bid':>{BW}} {'Sell':>{SW}}"
-                f" {'Cost':>{OW}} {'Value':>{VW}} {'P&L':>{PW}}"
+                f" {'Edge':>{GW}} {'Cost':>{OW}} {'Value':>{VW}} {'P&L':>{PW}}"
             )
             lines.append(f"[bold]{header}[/bold]")
 
             for pos in self.positions:
                 current = self.current_prices.get(pos.market_slug, pos.entry_price)
-                fair = self.fair_prices.get(pos.market_slug, pos.fair_price_at_entry)
+                fair_from_scan = self.fair_prices.get(pos.market_slug)
+                has_scan = fair_from_scan is not None
+                fair = fair_from_scan if has_scan else pos.fair_price_at_entry
                 bid = self.bid_prices.get(pos.market_slug, 0)
                 sell_order = self.sell_orders.get(pos.id)
                 cost = pos.entry_size
-                value = pos.current_value(fair)
-                pnl = value - cost
 
                 sell_str = f"{sell_order['price']:>{SW}.1%}" if sell_order else f"{'--':>{SW}}"
                 bid_str = f"{bid:>{BW}.1%}" if bid > 0 else f"{'--':>{BW}}"
 
-                if pnl > 0.005:
-                    pnl_raw = f"+${pnl:.2f}"
-                elif pnl < -0.005:
-                    pnl_raw = f"-${abs(pnl):.2f}"
+                if has_scan:
+                    edge = fair - current if current > 0 else 0
+                    if edge > 0:
+                        edge_str = f"[green]{edge:>{GW}.1%}[/green]"
+                    elif edge < -0.001:
+                        edge_str = f"[red]{edge:>{GW}.1%}[/red]"
+                    else:
+                        edge_str = f"{edge:>{GW}.1%}"
+
+                    value = pos.current_value(fair)
+                    pnl = value - cost
+                    if pnl > 0.005:
+                        pnl_raw = f"+${pnl:.2f}"
+                    elif pnl < -0.005:
+                        pnl_raw = f"-${abs(pnl):.2f}"
+                    else:
+                        pnl_raw = f"+$0.00"
+                    value_str = f"${value:>{VW-1}.2f}"
                 else:
-                    pnl_raw = f"+$0.00"
+                    edge_str = f"{'--':>{GW}}"
+                    pnl_raw = f"{'--':>{PW}}"
+                    value_str = f"{'--':>{VW}}"
 
                 label = f"{pos.market_slug} ({pos.outcome})"
                 slug = label[:MW] if len(label) > MW else label
 
                 row_prefix = (
                     f"{slug:<{MW}} {pos.entry_price:>{EW}.1%} {fair:>{FW}.1%} {current:>{CW}.1%} {bid_str} {sell_str}"
-                    f" ${cost:>{OW-1}.2f} ${value:>{VW-1}.2f}"
+                    f" {edge_str} ${cost:>{OW-1}.2f} {value_str}"
                 )
                 pnl_col = f"{pnl_raw:>{PW}}"
 
-                if pnl > 0.005:
+                if has_scan and pnl > 0.005:
                     lines.append(f"{row_prefix} [green]{pnl_col}[/green]")
-                elif pnl < -0.005:
+                elif has_scan and pnl < -0.005:
                     lines.append(f"{row_prefix} [red]{pnl_col}[/red]")
                 else:
                     lines.append(f"{row_prefix} {pnl_col}")
 
-            lines.append("-" * (MW + EW + FW + CW + BW + SW + OW + VW + PW + 8))
+            lines.append("-" * (MW + EW + FW + CW + BW + SW + GW + OW + VW + PW + 9))
             lines.append(f"Total invested:  ${self.total_invested:.2f}")
 
-            pnl_str = f"+${self.unrealized_pnl:.2f}" if self.unrealized_pnl >= 0 else f"-${abs(self.unrealized_pnl):.2f}"
-            pnl_pct = f"+{self.unrealized_pnl_pct:.1%}" if self.unrealized_pnl_pct >= 0 else f"{self.unrealized_pnl_pct:.1%}"
-            lines.append(f"Unrealized P&L:  {pnl_str} ({pnl_pct})")
+            if self._has_scan:
+                pnl_str = f"+${self.unrealized_pnl:.2f}" if self.unrealized_pnl >= 0 else f"-${abs(self.unrealized_pnl):.2f}"
+                pnl_pct = f"+{self.unrealized_pnl_pct:.1%}" if self.unrealized_pnl_pct >= 0 else f"{self.unrealized_pnl_pct:.1%}"
+                lines.append(f"Unrealized P&L:  {pnl_str} ({pnl_pct})")
+            else:
+                lines.append(f"Unrealized P&L:  -- (waiting for scan)")
 
         content = "\n".join(lines)
         try:
@@ -345,26 +379,32 @@ class PositionsPanel(VerticalScroll):
             pass
 
 
-class RecentTradesPanel(Static):
-    """Panel showing recent trades."""
+class RecentTradesPanel(VerticalScroll):
+    """Panel showing recent trades with scroll."""
 
     def __init__(self, history: HistoryStorage, **kwargs):
         super().__init__(**kwargs)
         self.history = history
         self.realized_pnl_today = 0.0
 
+    def compose(self) -> ComposeResult:
+        yield Static(id="trades-content")
+
+    def on_mount(self) -> None:
+        self.border_title = "RECENT TRADES"
+        self.styles.border = ("solid", "cyan")
+        self.styles.border_title_color = "cyan"
+
     def update_trades(self) -> None:
         self.realized_pnl_today = self.history.get_realized_pnl_today()
-        self.refresh()
-
-    def render(self) -> Panel:
         lines = []
-
-        for trade in self.history.get_recent_trades(5):
+        for trade in self.history.get_recent_trades(20):
             lines.append(trade.format_line())
-
         content = "\n".join(lines) if lines else "No trades yet"
-        return Panel(content, title="RECENT TRADES", border_style="cyan")
+        try:
+            self.query_one("#trades-content", Static).update(content)
+        except Exception:
+            pass
 
 
 class LiveDataPanel(Static):
@@ -518,16 +558,6 @@ class PortfolioRiskPanel(Static):
                 bar = "\u2588" * filled + "\u2591" * (bar_width - filled)
                 lines.append(f"{cur}  {bar} {pct:>5.0%} (${amt:,.0f})")
 
-            lines.append("")
-
-            # Direction breakdown
-            labels = {"up": "\u2191 UP ", "down": "\u2193 DN "}
-            for d in ["up", "down"]:
-                amt = bd["direction"].get(d, 0)
-                pct = amt / total if total > 0 else 0
-                filled = int(pct * bar_width)
-                bar = "\u2588" * filled + "\u2591" * (bar_width - filled)
-                lines.append(f"{labels[d]} {bar} {pct:>5.0%} (${amt:,.0f})")
 
             lines.append("")
             pos_count = bd.get("position_count", 0)
@@ -572,7 +602,8 @@ class PortfolioRiskPanel(Static):
 class TradingBotApp(App):
     """Main crypto trading bot TUI application."""
 
-    TITLE = "Crypto Trading Bot"
+    from .. import __version__
+    TITLE = f"Crypto Trading Bot v{__version__}"
 
     CSS = """
     Screen {
@@ -613,13 +644,16 @@ class TradingBotApp(App):
     #positions-panel {
         height: auto;
         min-height: 8;
+        max-height: 14;
         border: solid green;
         border-title-color: green;
     }
 
     #trades-panel {
         height: auto;
-        min-height: 4;
+        min-height: 8;
+        max-height: 16;
+        overflow-y: auto;
     }
 
     #live-data-panel {
@@ -633,7 +667,8 @@ class TradingBotApp(App):
 
     #portfolio-panel {
         height: auto;
-        min-height: 25;
+        min-height: 15;
+        max-height: 26;
     }
 
     ScannerPanel {
@@ -942,7 +977,7 @@ class TradingBotApp(App):
                 btc_drift=btc_drift, eth_drift=eth_drift,
                 btc_df=self.config.student_df_btc,
                 eth_df=self.config.student_df_eth,
-                n_paths=20_000,
+                n_paths=100_000,
                 balance=balance,
             )
 
@@ -1111,9 +1146,10 @@ class TradingBotApp(App):
         self.scanning = False
         self.refresh_bindings()
 
-        # Update prices cache
-        self._current_prices = {s.market_slug: s.current_price for s in entry_signals}
-        self._current_fair_prices = {s.market_slug: s.fair_price for s in entry_signals}
+        # Update prices cache (merge, don't replace — preserve prices from previous scan)
+        for s in entry_signals:
+            self._current_prices[s.market_slug] = s.current_price
+            self._current_fair_prices[s.market_slug] = s.fair_price
 
         # Map prices for synced positions
         cid_to_price = {}
@@ -1209,10 +1245,15 @@ class TradingBotApp(App):
         """Update status bar with current data."""
         fair_prices = self._current_fair_prices
         invested = sum(p.entry_size for p in positions)
-        total_value = sum(p.current_value(fair_prices.get(p.market_slug, p.fair_price_at_entry))
-                         for p in positions)
-        unrealized_pnl = total_value - invested
-        unrealized_pnl_pct = unrealized_pnl / invested if invested > 0 else 0
+        scanned = [p for p in positions if p.market_slug in fair_prices]
+        if scanned:
+            total_value = sum(p.current_value(fair_prices[p.market_slug]) for p in scanned)
+            scanned_cost = sum(p.entry_size for p in scanned)
+            unrealized_pnl = total_value - scanned_cost
+            unrealized_pnl_pct = unrealized_pnl / scanned_cost if scanned_cost > 0 else 0
+        else:
+            unrealized_pnl = 0
+            unrealized_pnl_pct = 0
 
         balance = self.executor.get_balance()
 
@@ -1226,6 +1267,7 @@ class TradingBotApp(App):
             last_scan_time=self._last_scan_time,
             pol_balance=self._pol_balance,
             missed_liquidity=self._missed_liquidity,
+            has_scan=len(scanned) > 0,
         )
 
         status = self.query_one("#status-bar", Static)
@@ -1426,17 +1468,12 @@ class TradingBotApp(App):
                               bid_price: float = 0.0) -> float:
         """Calculate sell limit price for REACH positions.
 
-        Strategy (from backtest 2026-03-03):
-        - Sell target = fair_price_at_entry × 0.9 (10% discount from fair at entry)
+        Strategy:
+        - Sell target = current_fair × 0.9 (10% discount from current fair)
         - Floor: never sell below entry price (break-even)
         - Clamp to [0.01, 0.99]
         """
-        # Use fair at entry (fixed target), not current fair
-        fair_at_entry = position.fair_price_at_entry
-        if fair_at_entry <= 0:
-            fair_at_entry = current_fair  # fallback for old positions
-
-        sell = fair_at_entry * 0.9  # 10% discount from fair
+        sell = current_fair * 0.9  # 10% discount from current fair
         sell = max(sell, position.entry_price)  # never below entry
         sell = max(0.01, min(0.99, sell))
         return round(sell, 3)

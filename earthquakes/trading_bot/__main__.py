@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Config is lightweight - import and parse first
 from .config import parse_args, format_interval
+from . import __version__
 config = parse_args()
 
 # Show settings table immediately
@@ -24,7 +25,7 @@ min_edge_str = f"{config.min_edge:.0%}"
 min_apy_str = f"{config.min_apy:.0%}"
 print(f"""
 ┌─────────────────────────────────────────────────────────────┐
-│                    EARTHQUAKE TRADING BOT                   │
+│              EARTHQUAKE TRADING BOT v{__version__:<22} │
 ├─────────────────────────────────────────────────────────────┤
 │  Mode:      {mode:<47} │
 │  Interval:  {format_interval(config.scan_interval):<47} │

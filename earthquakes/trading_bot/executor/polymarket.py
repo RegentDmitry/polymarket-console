@@ -124,10 +124,9 @@ class PolymarketExecutor:
             if not asks:
                 return OrderResult(success=False, error="No asks in orderbook"), None
 
-            # 3. Calculate available liquidity up to fair price
-            # Buy at any price below fair_price (we still have positive edge)
-            # asks are sorted by price ascending (best price first)
-            target_price = signal.fair_price if signal.fair_price else signal.current_price
+            # 3. Buy at current market price to preserve edge
+            # fair_price is our estimate — buying up to fair loses all edge
+            target_price = signal.current_price
             available_size = 0.0  # in tokens
             total_cost = 0.0      # in USD
 

@@ -56,28 +56,30 @@ def allocate_sizes(
     - min_position_size: skip if allocation < this (default $5)
     """
     from ..models.signal import SignalType
+    from ..logger import get_logger
+    logger = get_logger()
 
     if balance <= 0:
         return
 
     max_pos_pct = getattr(config, "max_position_pct", 0.30)
-    max_dir_pct = getattr(config, "max_direction_pct", 0.60)
     min_size = getattr(config, "min_position_size", 5.0)
     target_alloc = getattr(config, "target_alloc", 1.0)
 
-    # Calculate existing direction exposure from open positions
     total_invested = sum(p.entry_size for p in positions)
     total_portfolio = balance + total_invested
-    dir_exposure: Dict[str, float] = {"up": 0.0, "down": 0.0}
-    for p in positions:
-        direction = _position_direction(p)
-        dir_exposure[direction] += p.entry_size
 
     # Allocation budget: how much more we can invest to reach target
     target_invested = target_alloc * total_portfolio
     alloc_budget = min(max(0.0, target_invested - total_invested), balance)
 
+    logger.log_info(
+        f"ALLOC: portfolio=${total_portfolio:.0f} invested=${total_invested:.0f} "
+        f"budget=${alloc_budget:.0f}"
+    )
+
     if alloc_budget < min_size:
+        logger.log_info(f"ALLOC: budget ${alloc_budget:.1f} < min ${min_size:.0f}, skipping")
         return
 
     # Compute Kelly for each BUY signal
@@ -121,14 +123,6 @@ def allocate_sizes(
         max_per_position = max_pos_pct * total_portfolio
         raw_size = min(raw_size, max_per_position - already_in)
 
-        # Cap by direction limit
-        direction = _signal_direction(s)
-        dir_budget = max_dir_pct * total_portfolio - dir_exposure[direction]
-        if dir_budget <= 0:
-            s.suggested_size = 0.0
-            continue
-        raw_size = min(raw_size, dir_budget)
-
         # Cap by available liquidity
         raw_size = min(raw_size, s.liquidity)
 
@@ -142,7 +136,6 @@ def allocate_sizes(
 
         s.suggested_size = raw_size
         remaining -= raw_size
-        dir_exposure[direction] += raw_size
         pos_by_slug[s.market_slug] = already_in + raw_size
 
 

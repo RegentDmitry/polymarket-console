@@ -122,8 +122,9 @@ class PolymarketExecutor:
             if not asks:
                 return OrderResult(success=False, error="No asks in orderbook"), None
 
-            # Calculate available liquidity up to fair price
-            target_price = signal.fair_price if signal.fair_price else signal.current_price
+            # Buy at current market price (not fair price!) to preserve edge
+            # fair_price is our estimate of true value — buying up to fair loses all edge
+            target_price = signal.current_price
             available_size = 0.0
             total_cost = 0.0
 
@@ -162,6 +163,20 @@ class PolymarketExecutor:
             # Record balance before buy to measure actual cost (incl. fees)
             balance_before_buy = self.get_balance()
 
+            # Ensure on-chain USDC approval for exchange contracts (one-time)
+            self.ensure_buy_approval()
+
+            # Sync USDC COLLATERAL allowance with CLOB API
+            logger = get_logger()
+            try:
+                from polymarket_console.clob_types import BalanceAllowanceParams, AssetType
+                params = BalanceAllowanceParams(
+                    asset_type=AssetType.COLLATERAL,
+                )
+                self.client.client.update_balance_allowance(params)
+            except Exception as e:
+                logger.log_warning(f"BUY allowance sync failed: {e}")
+
             # Try placing order, retry with half size on balance error
             last_error = None
             for attempt in range(3):
@@ -177,6 +192,17 @@ class PolymarketExecutor:
                 except Exception as e:
                     err_str = str(e)
                     if "not enough balance" in err_str and attempt < 2:
+                        # Refresh allowance on balance error
+                        try:
+                            from polymarket_console.clob_types import BalanceAllowanceParams, AssetType
+                            params = BalanceAllowanceParams(
+                                asset_type=AssetType.COLLATERAL,
+                            )
+                            self.client.client.update_balance_allowance(params)
+                        except Exception:
+                            pass
+                        import time
+                        time.sleep(2)
                         available_size = available_size / 2
                         total_cost = total_cost / 2
                         avg_price = total_cost / available_size if available_size > 0 else target_price
@@ -222,6 +248,7 @@ class PolymarketExecutor:
                     edge_at_entry=signal.edge,
                     entry_order_id=order_id,
                     direction=signal.direction,
+                    token_id=token_id,
                 )
 
                 return OrderResult(
@@ -372,6 +399,82 @@ class PolymarketExecutor:
         except Exception as e:
             print(f"Error canceling order {order_id}: {e}")
             return False
+
+    def ensure_buy_approval(self):
+        """Ensure USDC.e ERC20 approval for exchange contracts (one-time on-chain tx).
+
+        For BUY orders, exchange contracts need allowance to spend USDC.e.
+        This is an on-chain approve() call, different from the API-level
+        update_balance_allowance() which just syncs the CLOB server.
+        """
+        if not self.client or getattr(self, '_buy_approved', False):
+            return
+        logger = get_logger()
+        try:
+            import os
+            from web3 import Web3
+
+            pk = self.client.pk
+            if not pk:
+                return
+
+            rpc = os.getenv("POLYGON_RPC", "https://polygon-bor-rpc.publicnode.com")
+            w3 = Web3(Web3.HTTPProvider(rpc))
+
+            account = w3.eth.account.from_key(pk)
+            usdc_address = w3.to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
+
+            erc20_abi = [
+                {"inputs": [{"name": "spender", "type": "address"}, {"name": "amount", "type": "uint256"}],
+                 "name": "approve", "outputs": [{"name": "", "type": "bool"}],
+                 "stateMutability": "nonpayable", "type": "function"},
+                {"inputs": [{"name": "owner", "type": "address"}, {"name": "spender", "type": "address"}],
+                 "name": "allowance", "outputs": [{"name": "", "type": "uint256"}],
+                 "stateMutability": "view", "type": "function"},
+            ]
+            usdc = w3.eth.contract(address=usdc_address, abi=erc20_abi)
+
+            exchanges = [
+                "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+                "0xC5d563A36AE78145C45a50134d48A1215220f80a",
+                "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296",
+            ]
+
+            MAX_UINT256 = 2**256 - 1
+            MIN_ALLOWANCE = 1000 * 10**6  # $1000 in USDC (6 decimals)
+
+            all_approved = True
+            for ex in exchanges:
+                ex_addr = w3.to_checksum_address(ex)
+                current = usdc.functions.allowance(account.address, ex_addr).call()
+                logger.log_info(f"USDC allowance {ex[:10]}... = {current / 1e6:.2f}")
+                if current < MIN_ALLOWANCE:
+                    matic = float(w3.from_wei(w3.eth.get_balance(account.address), "ether"))
+                    if matic < 0.001:
+                        logger.log_warning(f"Cannot approve USDC: no MATIC for gas (balance: {matic:.6f})")
+                        all_approved = False
+                        continue
+                    logger.log_info(f"Approving USDC for exchange {ex[:10]}... (MATIC: {matic:.4f})")
+                    nonce = w3.eth.get_transaction_count(account.address)
+                    tx = usdc.functions.approve(ex_addr, MAX_UINT256).build_transaction({
+                        "from": account.address,
+                        "nonce": nonce,
+                        "gas": 100000,
+                        "gasPrice": max(w3.eth.gas_price * 2, w3.to_wei(50, "gwei")),
+                        "chainId": 137,
+                    })
+                    signed = w3.eth.account.sign_transaction(tx, pk)
+                    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+                    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+                    logger.log_info(f"USDC approval tx: {tx_hash.hex()} status={receipt['status']}")
+                    nonce += 1  # increment for next approval in same batch
+
+            self._buy_approved = all_approved
+            if not all_approved:
+                logger.log_warning("USDC approval incomplete - will retry next time")
+
+        except Exception as e:
+            logger.log_warning(f"USDC buy approval error: {e}")
 
     def ensure_sell_approval(self):
         """Ensure CTF token approval for exchange contracts (one-time on-chain tx)."""

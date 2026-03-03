@@ -56,7 +56,7 @@ def simulate_portfolio_outcomes(
     btc_df: float = 2.61,
     eth_df: float = 2.88,
     correlation: float = DEFAULT_CORRELATION,
-    n_paths: int = 20_000,
+    n_paths: int = 100_000,
     balance: float = 0.0,
 ) -> PortfolioOutcome:
     """Simulate portfolio P&L distribution at expiration.

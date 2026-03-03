@@ -5,7 +5,7 @@
 # =============================================================================
 
 # --- Signal Filters ---
-MIN_EDGE="0.05"              # 5% minimum edge
+MIN_EDGE="0.04"              # 4% minimum edge
 MIN_APY="0.30"               # 30% minimum APY
 
 # --- Scan Settings ---
@@ -80,9 +80,9 @@ PYTHON="$VENV_DIR/bin/python3"
 PIP="$VENV_DIR/bin/pip"
 
 # Check and install dependencies
-if ! "$PYTHON" -c "import textual" 2>/dev/null; then
+if ! "$PYTHON" -c "import textual" 2>/dev/null || ! "$PYTHON" -c "import web3" 2>/dev/null; then
     echo -e "${YELLOW}Installing dependencies...${NC}"
-    "$PIP" install -q textual rich numpy scipy
+    "$PIP" install -q textual rich numpy scipy web3
     echo -e "${GREEN}Dependencies installed${NC}"
 fi
 

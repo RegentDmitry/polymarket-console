@@ -401,7 +401,8 @@ class ExtraEventsPanel(Static):
 class TradingBotApp(App):
     """Main trading bot TUI application."""
 
-    TITLE = "Earthquake Trading Bot"
+    from .. import __version__
+    TITLE = f"Earthquake Trading Bot v{__version__}"
 
     CSS = """
     Screen {

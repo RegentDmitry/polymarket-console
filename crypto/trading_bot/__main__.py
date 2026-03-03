@@ -17,14 +17,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Config is lightweight - import and parse first
 from .config import parse_args, format_interval
+from . import __version__
 config = parse_args()
 
 # Show settings table immediately
 mode = "DRY RUN" if config.dry_run else ("AUTO" if config.auto_mode else "CONFIRM")
 pricing = "Fast (analytical)" if config.fast_pricing else f"MC ({config.mc_paths:,} paths)"
+alloc_str = f"{config.target_alloc:.0%}" + (" (all)" if config.target_alloc >= 1.0 else "")
 print(f"""
 ┌─────────────────────────────────────────────────────────────┐
-│                    CRYPTO TRADING BOT                       │
+│                CRYPTO TRADING BOT v{__version__:<24} │
 │                    BTC/ETH • Polymarket                     │
 ├─────────────────────────────────────────────────────────────┤
 │  Mode:      {mode:<47} │
@@ -32,6 +34,7 @@ print(f"""
 │  Interval:  {format_interval(config.scan_interval):<47} │
 │  Min Edge:  {f"{config.min_edge:.0%}":<47} │
 │  Min APY:   {f"{config.min_apy:.0%}":<47} │
+│  Alloc:     {alloc_str:<47} │
 └─────────────────────────────────────────────────────────────┘
 """)
 
