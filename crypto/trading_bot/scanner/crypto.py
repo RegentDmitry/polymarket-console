@@ -306,8 +306,8 @@ class CryptoScanner(BaseScanner):
         - DIP (below/NO): edge_exit is the PRIMARY exit mechanism.
           No sell limit orders — rely solely on edge dropping below 0.
 
-        For both: edge_exit when fair_price < market_price (edge < 0).
-        Also: bid >= fair triggers immediate sell (legacy, rare).
+        Edge check uses best_bid from orderbook (not midpoint), because
+        market_sell executes at bid. Only exit when fair < bid.
         """
         signals = []
         logger = get_logger()
@@ -326,37 +326,43 @@ class CryptoScanner(BaseScanner):
             if not token_id:
                 continue
 
-            # Get market price for our side from current_prices (set by scan_for_entries)
+            # Get midpoint price for display
             market_price = current_prices.get(position.market_slug, 0)
-
-            self._bid_prices[position.market_slug] = market_price
-
             if market_price <= 0:
                 continue
 
-            edge = fair_price - market_price
+            # Get real best_bid from orderbook — this is what we'd actually sell at
+            best_bid, _, _ = self.polymarket.get_bid_liquidity(token_id)
+            if best_bid <= 0:
+                best_bid = market_price  # fallback to midpoint
+
+            self._bid_prices[position.market_slug] = best_bid
+
+            edge_vs_mid = fair_price - market_price
+            edge_vs_bid = fair_price - best_bid
 
             logger.log_info(
                 f"EXIT CHECK: {position.market_slug[:40]} - "
-                f"mkt {market_price:.1%} vs fair {fair_price:.1%} edge={edge:+.1%}"
+                f"mid {market_price:.1%} bid {best_bid:.1%} fair {fair_price:.1%} "
+                f"edge(mid)={edge_vs_mid:+.1%} edge(bid)={edge_vs_bid:+.1%}"
             )
 
-            # Edge exit: fair value dropped below market price → edge gone
-            if edge < 0:
-                current_value = position.current_value(market_price)
-                pnl = position.unrealized_pnl(market_price)
+            # Edge exit: fair value dropped below best bid → no edge even at sell price
+            if edge_vs_bid < 0:
+                current_value = position.current_value(best_bid)
+                pnl = position.unrealized_pnl(best_bid)
                 signal = Signal(
                     type=SignalType.SELL,
                     market_id=position.market_id,
                     market_slug=position.market_slug,
                     market_name=position.market_name,
                     outcome=position.outcome,
-                    current_price=market_price,
+                    current_price=best_bid,
                     fair_price=fair_price,
-                    target_price=market_price,
-                    edge=edge,
+                    target_price=best_bid,
+                    edge=edge_vs_bid,
                     position_id=position.id,
-                    reason=f"edge_exit: edge={edge:+.1%}",
+                    reason=f"edge_exit: edge(bid)={edge_vs_bid:+.1%}",
                     suggested_size=current_value,
                     token_id=token_id,
                     direction=position.direction,
@@ -365,33 +371,39 @@ class CryptoScanner(BaseScanner):
 
                 logger.log_info(
                     f"EDGE EXIT: {position.market_slug} - "
-                    f"edge={edge:+.1%} P&L: ${pnl:+.2f}"
+                    f"edge(bid)={edge_vs_bid:+.1%} P&L: ${pnl:+.2f}"
+                )
+            elif edge_vs_mid < 0:
+                # Edge gone vs midpoint but still positive vs bid — hold
+                logger.log_info(
+                    f"EDGE HOLD: {position.market_slug[:40]} - "
+                    f"edge(mid)={edge_vs_mid:+.1%} but edge(bid)={edge_vs_bid:+.1%} — holding"
                 )
 
             # Bid above fair: immediate profit-take (rare, legacy)
-            elif market_price >= fair_price:
-                current_value = position.current_value(market_price)
+            elif best_bid >= fair_price:
+                current_value = position.current_value(best_bid)
                 signal = Signal(
                     type=SignalType.SELL,
                     market_id=position.market_id,
                     market_slug=position.market_slug,
                     market_name=position.market_name,
                     outcome=position.outcome,
-                    current_price=market_price,
+                    current_price=best_bid,
                     fair_price=fair_price,
-                    target_price=market_price,
+                    target_price=best_bid,
                     position_id=position.id,
-                    reason=f"Bid {market_price:.1%} >= Fair {fair_price:.1%}",
+                    reason=f"Bid {best_bid:.1%} >= Fair {fair_price:.1%}",
                     suggested_size=current_value,
                     token_id=token_id,
                     direction=position.direction,
                 )
                 signals.append(signal)
 
-                pnl = position.unrealized_pnl(market_price)
+                pnl = position.unrealized_pnl(best_bid)
                 logger.log_info(
                     f"EXIT SIGNAL: {position.market_slug} - "
-                    f"bid {market_price:.1%} >= fair {fair_price:.1%}, P&L: ${pnl:+.2f}"
+                    f"bid {best_bid:.1%} >= fair {fair_price:.1%}, P&L: ${pnl:+.2f}"
                 )
 
         return signals
