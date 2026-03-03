@@ -15,7 +15,7 @@ SCAN_INTERVAL="1m"           # Scan every 1 minute
 # (no flags)         : dry-run with confirmation (default)
 # --live             : real trades with confirmation
 # --live --auto      : fully automatic trading
-MODE=""
+MODE="--live --auto"
 
 # --- Allocation ---
 TARGET_ALLOC="1.0"           # 1.0 = invest all, 0.5 = gradual cashout
