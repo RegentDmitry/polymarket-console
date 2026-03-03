@@ -4,6 +4,7 @@ Detailed event logger for the trading bot.
 Logs all events with context to help reconstruct decision logic.
 """
 
+import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -197,8 +198,111 @@ class BotLogger:
         self._write(f"ERROR: {message}")
 
 
+class TradeJournal:
+    """Structured trade journal — one JSONL line per trading event.
+
+    Separate from the debug log. Records all live trading decisions
+    with full context for post-hoc analysis.
+
+    File: trading_bot/data/trades.jsonl
+    """
+
+    def __init__(self, data_dir: Optional[str] = None):
+        if data_dir is None:
+            data_dir = Path(__file__).parent / "data"
+        else:
+            data_dir = Path(data_dir)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        self.journal_file = data_dir / "trades.jsonl"
+
+    def _write(self, record: dict):
+        """Append a JSON record to the journal."""
+        record["ts"] = datetime.utcnow().isoformat() + "Z"
+        with open(self.journal_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, default=str) + "\n")
+
+    def log_buy(self, position: Position, signal: Signal, order_id: str = ""):
+        """Record a BUY execution."""
+        self._write({
+            "action": "BUY",
+            "slug": position.market_slug,
+            "outcome": position.outcome,
+            "direction": position.direction,
+            "entry_price": round(position.entry_price, 4),
+            "fair_price": round(signal.fair_price, 4),
+            "edge": round(signal.edge, 4),
+            "apy": round(signal.annual_return, 2),
+            "size_usd": round(position.entry_size, 2),
+            "tokens": round(position.tokens, 4),
+            "days_remaining": round(signal.days_remaining, 1),
+            "model": signal.model_used,
+            "kelly": round(signal.kelly, 4),
+            "order_id": order_id,
+        })
+
+    def log_sell_limit(self, position: Position, sell_price: float, reason: str = ""):
+        """Record a sell limit order placement."""
+        self._write({
+            "action": "SELL_LIMIT",
+            "slug": position.market_slug,
+            "outcome": position.outcome,
+            "direction": position.direction,
+            "entry_price": round(position.entry_price, 4),
+            "fair_at_entry": round(position.fair_price_at_entry, 4),
+            "sell_target": round(sell_price, 4),
+            "tokens": round(position.tokens, 4),
+            "reason": reason,
+        })
+
+    def log_sell_filled(self, position: Position, fill_price: float,
+                        pnl: float, hold_days: int = 0):
+        """Record a sell limit order fill."""
+        self._write({
+            "action": "SELL_FILLED",
+            "slug": position.market_slug,
+            "outcome": position.outcome,
+            "direction": position.direction,
+            "entry_price": round(position.entry_price, 4),
+            "fill_price": round(fill_price, 4),
+            "pnl": round(pnl, 2),
+            "tokens": round(position.tokens, 4),
+            "hold_days": hold_days,
+        })
+
+    def log_edge_exit(self, position: Position, signal: Signal, pnl: float):
+        """Record an edge_exit market sell."""
+        self._write({
+            "action": "EDGE_EXIT",
+            "slug": position.market_slug,
+            "outcome": position.outcome,
+            "direction": position.direction,
+            "entry_price": round(position.entry_price, 4),
+            "exit_price": round(signal.current_price, 4),
+            "fair_price": round(signal.fair_price, 4),
+            "edge": round(signal.edge, 4),
+            "pnl": round(pnl, 2),
+            "tokens": round(position.tokens, 4),
+            "hold_days": position.age_days,
+        })
+
+    def log_resolution(self, position: Position, won: bool, pnl: float):
+        """Record a market resolution."""
+        self._write({
+            "action": "RESOLVED",
+            "slug": position.market_slug,
+            "outcome": position.outcome,
+            "direction": position.direction,
+            "won": won,
+            "entry_price": round(position.entry_price, 4),
+            "pnl": round(pnl, 2),
+            "tokens": round(position.tokens, 4),
+            "hold_days": position.age_days,
+        })
+
+
 # Global logger instance
 _logger: Optional[BotLogger] = None
+_trade_journal: Optional[TradeJournal] = None
 
 
 def get_logger() -> BotLogger:
@@ -207,6 +311,14 @@ def get_logger() -> BotLogger:
     if _logger is None:
         _logger = BotLogger()
     return _logger
+
+
+def get_trade_journal() -> TradeJournal:
+    """Get or create the global trade journal instance."""
+    global _trade_journal
+    if _trade_journal is None:
+        _trade_journal = TradeJournal()
+    return _trade_journal
 
 
 def init_logger(log_dir: Optional[str] = None) -> BotLogger:

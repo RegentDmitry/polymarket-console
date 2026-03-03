@@ -35,7 +35,7 @@ from ..storage.history import HistoryStorage
 from ..storage.sell_orders import SellOrderStore
 from ..executor.polymarket import PolymarketExecutor, OrderResult
 from ..pricing.portfolio import allocate_sizes, get_portfolio_breakdown
-from ..logger import get_logger
+from ..logger import get_logger, get_trade_journal
 
 
 class StatusBar(Static):
@@ -1095,6 +1095,8 @@ class TradingBotApp(App):
                             logger.log_warning(f"REDEEM ERROR: {pos.market_slug[:40]} - {e}")
 
                 self.position_storage.resolve_position(pos.id, won)
+                if not self.config.dry_run:
+                    get_trade_journal().log_resolution(pos, won, pnl)
                 self.notify(
                     f"Market resolved ({result_str}): {pos.market_slug[:30]} P&L: ${pnl:+.2f}",
                     markup=False,
@@ -1434,11 +1436,22 @@ class TradingBotApp(App):
             else:
                 logger.log_warning(f"REDEEM FAILED: {pos.market_slug[:40]} — will retry next cycle")
 
-    def _calculate_sell_price(self, entry_price: float, fair_price: float,
+    def _calculate_sell_price(self, position: Position, current_fair: float,
                               bid_price: float = 0.0) -> float:
-        """Calculate sell price = max(fair_price, bid * 0.9)."""
-        bid_floor = bid_price * 0.9 if bid_price > 0 else 0.0
-        sell = max(fair_price, bid_floor)
+        """Calculate sell limit price for REACH positions.
+
+        Strategy (from backtest 2026-03-03):
+        - Sell target = fair_price_at_entry × 0.9 (10% discount from fair at entry)
+        - Floor: never sell below entry price (break-even)
+        - Clamp to [0.01, 0.99]
+        """
+        # Use fair at entry (fixed target), not current fair
+        fair_at_entry = position.fair_price_at_entry
+        if fair_at_entry <= 0:
+            fair_at_entry = current_fair  # fallback for old positions
+
+        sell = fair_at_entry * 0.9  # 10% discount from fair
+        sell = max(sell, position.entry_price)  # never below entry
         sell = max(0.01, min(0.99, sell))
         return round(sell, 3)
 
@@ -1491,6 +1504,9 @@ class TradingBotApp(App):
 
             if is_filled:
                 pnl = pos.tokens * existing["price"] - pos.entry_size
+                get_trade_journal().log_sell_filled(
+                    pos, existing["price"], pnl, pos.age_days
+                )
                 logger.log_info(
                     f"SELL FILLED: {pos.market_slug[:40]} @ {existing['price']:.1%} "
                     f"P&L: ${pnl:+.2f}"
@@ -1512,10 +1528,27 @@ class TradingBotApp(App):
         if self._shutting_down:
             return
 
-        # Phase 2: Group positions by token_id, place consolidated sell orders
+        # Phase 2: Group REACH positions by token_id, place consolidated sell orders
+        # DIP (below/NO) positions: NO sell limit — exit via edge_exit only
         token_groups: dict[str, list] = {}
 
         for pos in positions:
+            # Determine direction: use position field, fallback to outcome
+            direction = pos.direction or ''
+            if not direction:
+                direction = "above" if pos.outcome.upper() == "YES" else "below"
+
+            # DIP positions: skip sell limit orders entirely (edge_exit only)
+            if direction == "below":
+                # Cancel any existing sell order for this dip position
+                existing_so = self.sell_order_store.get(pos.id)
+                if existing_so and existing_so.get("order_id"):
+                    if existing_so["order_id"] in open_ids:
+                        self.executor.cancel_order(existing_so["order_id"])
+                        logger.log_info(f"CANCELLED dip sell order: {pos.market_slug[:40]}")
+                    self.sell_order_store.remove(pos.id)
+                continue
+
             fair = fair_prices.get(pos.market_slug)
             if not fair or fair <= 0 or fair >= 1:
                 continue
@@ -1541,12 +1574,11 @@ class TradingBotApp(App):
 
             token_groups.setdefault(token_id, []).append((pos, fair))
 
-        # Calculate sell prices with bid floor
+        # Calculate sell prices: fair_at_entry × 0.9 for REACH positions
         final_groups: dict[str, list] = {}
         for token_id, group in token_groups.items():
-            bid_price = 0.0
             for pos, fair in group:
-                sell_price = self._calculate_sell_price(pos.entry_price, fair, bid_price)
+                sell_price = self._calculate_sell_price(pos, fair)
                 final_groups.setdefault(token_id, []).append((pos, sell_price))
                 logger.log_info(
                     f"SELL GROUP: {pos.market_slug[:40]} token={token_id[:12]}... sell={sell_price:.1%}"
@@ -1611,10 +1643,12 @@ class TradingBotApp(App):
             order_id = self.executor.place_sell_limit(token_id, target_price, sell_size)
             if order_id:
                 placed_price = round(target_price, 2)
+                journal = get_trade_journal()
                 for pos, sp in group:
                     self.sell_order_store.save(
                         pos.id, order_id, placed_price, token_id, pos.tokens, pos.market_slug
                     )
+                    journal.log_sell_limit(pos, placed_price, "reach_limit")
                 slug_sample = group[0][0].market_slug[:40]
                 logger.log_info(
                     f"SELL LIMIT placed: {slug_sample} "
@@ -1654,13 +1688,25 @@ class TradingBotApp(App):
     async def process_signals(self, entry_signals: List[Signal],
                               exit_signals: List[Signal],
                               rotation_proposals: List[dict] = None) -> None:
-        """Process trading signals based on mode."""
+        """Process trading signals based on mode.
+
+        Edge_exit signals are always auto-executed (no confirmation needed).
+        They cancel existing sell limits and do market sell at best bid.
+        """
+        # Separate edge_exit signals — these auto-execute regardless of mode
+        edge_exit_signals = [s for s in exit_signals if "edge_exit" in s.reason]
+        other_exit_signals = [s for s in exit_signals if "edge_exit" not in s.reason]
+
+        # Process edge_exit immediately (auto-execute, no confirmation)
+        for signal in edge_exit_signals:
+            await self._execute_edge_exit(signal)
+
         balance = self.executor.get_balance() if self.executor.initialized else 0
         buy_signals = [
             s for s in entry_signals
             if s.type == SignalType.BUY and s.suggested_size >= 1.0
         ] if balance >= 1.0 else []
-        actionable = buy_signals + exit_signals
+        actionable = buy_signals + other_exit_signals
 
         # Convert rotation proposals to SELL+BUY signal pairs
         rotation_signals = []
@@ -1778,6 +1824,7 @@ class TradingBotApp(App):
                         strategy="dry_run",
                         fair_price_at_entry=signal.fair_price,
                         edge_at_entry=signal.edge,
+                        direction=signal.direction,
                     )
                     self._dry_run_positions.append(position)
                     self.notify(f"[DRY] Bought {signal.market_slug} @ {signal.current_price:.1%}")
@@ -1849,6 +1896,7 @@ class TradingBotApp(App):
                     "BUY", signal.market_slug, signal.outcome,
                     signal.current_price, position.tokens, position.entry_size
                 )
+                get_trade_journal().log_buy(position, signal, result.order_id or "")
 
                 self._current_prices[signal.market_slug] = signal.current_price
                 self._refresh_positions_panel()
@@ -1887,6 +1935,97 @@ class TradingBotApp(App):
             else:
                 self.notify(f"SELL failed: {result.error}", markup=False)
                 logger.log_trade_failed("SELL", signal.market_slug, result.error or "Unknown error")
+
+    async def _execute_edge_exit(self, signal: Signal) -> None:
+        """Execute edge_exit: cancel sell limit, then market sell at best bid.
+
+        Edge_exit is a stop-loss — auto-executes without confirmation.
+        """
+        logger = get_logger()
+
+        if self.config.dry_run:
+            # Dry run: just close the position
+            if signal.position_id:
+                sold = None
+                for p in self._dry_run_positions:
+                    if p.id == signal.position_id:
+                        sold = p
+                        break
+                if sold:
+                    pnl = sold.unrealized_pnl(signal.current_price)
+                    self._dry_run_positions = [
+                        p for p in self._dry_run_positions if p.id != signal.position_id
+                    ]
+                    self.notify(
+                        f"[DRY] EDGE EXIT: {signal.market_slug[:30]} @ {signal.current_price:.1%} "
+                        f"(edge={signal.edge:+.1%}, P&L: ${pnl:+.2f})",
+                        markup=False,
+                    )
+                    logger.log_info(f"[DRY] EDGE EXIT: {signal.market_slug} P&L: ${pnl:+.2f}")
+            self._refresh_positions_panel()
+            return
+
+        if not self.executor.initialized or not signal.position_id:
+            return
+
+        position = self.position_storage.load(signal.position_id)
+        if not position:
+            return
+
+        token_id = signal.token_id
+        if not token_id:
+            token_id = self.scanner._token_ids.get(signal.market_slug) if self.scanner else None
+        if not token_id:
+            logger.log_warning(f"EDGE EXIT: no token_id for {signal.market_slug}")
+            return
+
+        # Step 1: Cancel existing sell limit order
+        existing_so = self.sell_order_store.get(signal.position_id)
+        if existing_so and existing_so.get("order_id"):
+            self.executor.cancel_order(existing_so["order_id"])
+            self.sell_order_store.remove(signal.position_id)
+            logger.log_info(f"EDGE EXIT: cancelled sell limit for {signal.market_slug[:40]}")
+            time.sleep(2)
+
+        # Step 2: Get on-chain balance for accurate size
+        on_chain = self._get_token_balance(token_id)
+        if on_chain is not None:
+            sell_size = math.floor(on_chain * 100) / 100
+        else:
+            sell_size = math.floor(position.tokens * 100) / 100
+
+        if sell_size < 5:
+            logger.log_info(f"EDGE EXIT skip (< 5 tokens): {signal.market_slug[:40]}")
+            if on_chain is not None and on_chain < 0.01:
+                self.position_storage.close_position(signal.position_id, 0.0)
+            return
+
+        # Step 3: Market sell at best bid
+        order_id = self.executor.market_sell(token_id, sell_size)
+
+        if order_id:
+            pnl = position.unrealized_pnl(signal.current_price)
+            self.position_storage.close_position(
+                signal.position_id, signal.current_price, order_id
+            )
+            self.sell_order_store.remove(signal.position_id)
+            get_trade_journal().log_edge_exit(position, signal, pnl)
+            logger.log_info(
+                f"EDGE EXIT EXECUTED: {signal.market_slug[:40]} @ {signal.current_price:.1%} "
+                f"edge={signal.edge:+.1%} P&L: ${pnl:+.2f}"
+            )
+            self.notify(
+                f"EDGE EXIT: {signal.market_slug[:30]} @ {signal.current_price:.1%} "
+                f"P&L: ${pnl:+.2f}",
+                markup=False,
+            )
+            self._refresh_positions_panel()
+            self._refresh_portfolio_panel()
+            positions = self._get_all_positions()
+            self.update_status_bar(positions, self._current_prices)
+        else:
+            logger.log_warning(f"EDGE EXIT FAILED: {signal.market_slug[:40]} — market_sell returned None")
+            self.notify(f"EDGE EXIT FAILED: {signal.market_slug[:30]}", markup=False)
 
     def action_quit(self) -> None:
         """Quit the application (with confirmation)."""

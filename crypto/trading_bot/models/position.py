@@ -58,6 +58,9 @@ class Position:
     # Token ID (from Polymarket CLOB)
     token_id: Optional[str] = None
 
+    # Market direction: "above" (reach) or "below" (dip)
+    direction: str = ""
+
     def __post_init__(self):
         """Convert status string to enum if needed."""
         if isinstance(self.status, str):

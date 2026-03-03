@@ -251,6 +251,309 @@ def run_backtest(
     return result
 
 
+def _compute_fair_our_side(
+    market: Market,
+    spot: float,
+    iv: float,
+    days_to_expiry: float,
+    drift: float,
+) -> tuple[float, str]:
+    """Compute fair price for our side (YES for reach, NO for dip).
+
+    Returns: (fair_price, side)
+    """
+    T = days_to_expiry / 365.25
+    if T <= 0 or iv <= 0:
+        return 0.0, ""
+
+    if market.direction == "above":
+        touch = touch_prob_above(spot, market.strike, T, iv, drift)
+        return touch, "YES"  # fair YES = touch_prob
+    else:
+        touch = touch_prob_below(spot, market.strike, T, iv, drift)
+        return 1.0 - touch, "NO"  # fair NO = 1 - touch_prob
+
+
+def run_backtest_sell_limit(
+    markets: list[Market],
+    pm_prices: dict[str, dict[str, float]],
+    dvol: dict[str, float],
+    spot: dict[str, float],
+    params: BacktestParams,
+    sell_discount: float = 0.0,
+    hold_only: bool = False,
+    show_progress: bool = True,
+) -> BacktestResult:
+    """Backtest with sell limit orders at fair value - discount.
+
+    Strategy:
+    1. BUY at PM price when edge >= min_edge (market order)
+    2. Set sell_target = fair_at_entry * (1 - sell_discount)
+       Fixed at entry time (not recalculated)
+    3. Each day: if PM price for our side >= sell_target → fill, take profit
+    4. If not filled by resolution → get $1 (win) or $0 (loss)
+
+    Args:
+        sell_discount: 0.0 = sell at fair, 0.5 = halfway between entry and fair
+        hold_only: if True, never sell (always hold to resolution)
+    """
+    result = BacktestResult(params=params, markets_analyzed=len(markets))
+
+    all_dates = sorted(set(spot.keys()) & set(dvol.keys()))
+    if all_dates:
+        result.period_start = all_dates[0]
+        result.period_end = all_dates[-1]
+
+    iterator = tqdm(markets, desc="Sell-limit sim", disable=not show_progress)
+
+    for market in iterator:
+        prices = pm_prices.get(market.token_yes, {})
+        if len(prices) < 3:
+            continue
+
+        result.markets_with_data += 1
+        expiry_dt = datetime.strptime(market.expiry_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+
+        market_dates = sorted(prices.keys())
+        if not market_dates:
+            continue
+
+        open_trade: Optional[Trade] = None
+        sell_target: float = 0.0
+
+        for date_str in market_dates:
+            pm_yes = prices[date_str]
+            if pm_yes <= 0.01 or pm_yes >= 0.99:
+                continue
+
+            if date_str not in spot or date_str not in dvol:
+                continue
+
+            spot_price = spot[date_str]
+            iv = dvol[date_str]
+            current_dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            days_to_expiry = (expiry_dt - current_dt).days
+
+            if days_to_expiry <= 0:
+                continue
+
+            # --- EXIT logic: check if sell limit fills ---
+            if open_trade is not None and not hold_only:
+                if open_trade.side == "YES":
+                    pm_our_side = pm_yes
+                else:
+                    pm_our_side = 1.0 - pm_yes
+
+                if pm_our_side >= sell_target:
+                    # FILL! Sell at sell_target price
+                    open_trade.exit_date = date_str
+                    open_trade.exit_price = sell_target
+                    open_trade.exit_value = open_trade.tokens * sell_target
+                    open_trade.pnl = open_trade.exit_value - open_trade.cost
+                    open_trade.exit_reason = "limit_fill"
+                    result.trades.append(open_trade)
+                    open_trade = None
+                else:
+                    # Fallback: if edge gone, sell at market (stop-loss)
+                    edge, _ = _compute_edge(market, spot_price, iv, pm_yes, days_to_expiry, params.drift)
+                    if edge < params.exit_edge:
+                        open_trade.exit_date = date_str
+                        open_trade.exit_price = pm_our_side
+                        open_trade.exit_value = open_trade.tokens * pm_our_side
+                        open_trade.pnl = open_trade.exit_value - open_trade.cost
+                        open_trade.exit_reason = "edge_exit"
+                        result.trades.append(open_trade)
+                        open_trade = None
+
+            # --- ENTRY logic ---
+            if open_trade is None:
+                edge, side = _compute_edge(market, spot_price, iv, pm_yes, days_to_expiry, params.drift)
+                if edge >= params.min_edge:
+                    if side == "YES":
+                        buy_price = pm_yes
+                    else:
+                        buy_price = 1.0 - pm_yes
+
+                    if buy_price <= 0.01 or buy_price >= 0.99:
+                        continue
+
+                    cost = params.trade_size * (1 + params.fee)
+                    tokens = params.trade_size / buy_price
+
+                    # Compute fair value at entry
+                    fair_our_side, _ = _compute_fair_our_side(
+                        market, spot_price, iv, days_to_expiry, params.drift
+                    )
+                    # sell_target fixed at entry
+                    sell_target = fair_our_side * (1.0 - sell_discount)
+                    # Ensure sell_target > buy_price (otherwise no profit)
+                    sell_target = max(sell_target, buy_price + 0.005)
+
+                    open_trade = Trade(
+                        market_name=market.name,
+                        side=side,
+                        entry_date=date_str,
+                        entry_price=buy_price,
+                        tokens=tokens,
+                        cost=cost,
+                    )
+
+        # --- End of market data: close open position ---
+        if open_trade is not None:
+            if market.resolved:
+                won = (open_trade.side == market.resolved)
+                exit_price = 1.0 if won else 0.0
+                open_trade.exit_date = market_dates[-1]
+                open_trade.exit_price = exit_price
+                open_trade.exit_value = open_trade.tokens * exit_price
+                open_trade.pnl = open_trade.exit_value - open_trade.cost
+                open_trade.exit_reason = "resolution"
+            else:
+                last_date = market_dates[-1]
+                last_pm_yes = prices[last_date]
+                if open_trade.side == "YES":
+                    exit_price = last_pm_yes
+                else:
+                    exit_price = 1.0 - last_pm_yes
+                open_trade.exit_date = last_date
+                open_trade.exit_price = exit_price
+                open_trade.exit_value = open_trade.tokens * exit_price
+                open_trade.pnl = open_trade.exit_value - open_trade.cost
+                open_trade.exit_reason = "end_of_data"
+
+            result.trades.append(open_trade)
+
+    return result
+
+
+def print_sell_limit_results(
+    grid_results: list[tuple[float, BacktestResult]],
+    params: BacktestParams,
+):
+    """Print sell limit grid search results."""
+    print()
+    print("=" * 95)
+    print("  SELL LIMIT STRATEGY — Grid Search")
+    print("=" * 95)
+    print(f"  min_edge={params.min_edge:.0%}, drift={params.drift:+.0%}, "
+          f"fee={params.fee:.0%}, trade=${params.trade_size:.0f}")
+    print()
+    print(f"  {'Sell Disc':>10} {'Trades':>7} {'Fills':>6} {'Fill%':>6} "
+          f"{'Resol':>6} {'Avg Hold':>9} {'Win%':>6} {'Total P&L':>10} "
+          f"{'Avg P&L':>9} {'$/day':>7}")
+    print(f"  {'─' * 88}")
+
+    best_efficiency = 0.0
+    best_disc = None
+
+    for discount, result in grid_results:
+        closed = [t for t in result.trades if t.pnl is not None]
+        if not closed:
+            continue
+
+        n_trades = len(closed)
+        n_fills = sum(1 for t in closed if t.exit_reason == "limit_fill")
+        n_edge = sum(1 for t in closed if t.exit_reason == "edge_exit")
+        n_resol = sum(1 for t in closed if t.exit_reason == "resolution")
+        fill_pct = (n_fills + n_edge) / n_trades if n_trades else 0
+        winners = sum(1 for t in closed if t.pnl > 0)
+        win_rate = winners / n_trades if n_trades else 0
+        total_pnl = sum(t.pnl for t in closed)
+        avg_pnl = total_pnl / n_trades if n_trades else 0
+
+        # Average hold days
+        hold_days_list = []
+        for t in closed:
+            if t.entry_date and t.exit_date:
+                try:
+                    entry_dt = datetime.strptime(t.entry_date, "%Y-%m-%d")
+                    exit_dt = datetime.strptime(t.exit_date, "%Y-%m-%d")
+                    hold_days_list.append((exit_dt - entry_dt).days)
+                except ValueError:
+                    pass
+        avg_hold = sum(hold_days_list) / len(hold_days_list) if hold_days_list else 0
+
+        # Simpler metric: avg P&L / avg hold days
+        pnl_per_day = avg_pnl / max(avg_hold, 1) if avg_hold > 0 else 0
+
+        if pnl_per_day > best_efficiency and discount != "edge_exit":
+            best_efficiency = pnl_per_day
+            best_disc = discount
+
+        if discount == "edge_exit":
+            disc_label = "edge_exit"
+        elif discount is None:
+            disc_label = "hold"
+        else:
+            disc_label = f"{discount:.0%}"
+        marker = ""
+        if discount == best_disc and discount != "edge_exit":
+            marker = " <<<"
+        if discount == "edge_exit":
+            marker = " (baseline)"
+        print(f"  {disc_label:>10} {n_trades:>7} {n_fills + n_edge:>6} {fill_pct:>5.0%} "
+              f"{n_resol:>6} {avg_hold:>7.0f}d {win_rate:>5.0%} "
+              f"${total_pnl:>+9.2f} ${avg_pnl:>+8.2f} ${pnl_per_day:>+6.2f}{marker}")
+
+    print()
+    if best_disc is not None:
+        disc_label = "hold" if best_disc is None else f"{best_disc:.0%}"
+        print(f"  Best capital efficiency: sell_discount = {disc_label} "
+              f"(${best_efficiency:+.2f}/trade/day)")
+
+    # --- Breakdown by direction (dip vs reach) ---
+    for direction, dir_label in [("dip", "DIP (NO)"), ("reach", "REACH (YES)")]:
+        print()
+        print(f"  ── {dir_label} ──")
+        print(f"  {'Sell Disc':>10} {'Trades':>7} {'Fills':>6} {'Fill%':>6} "
+              f"{'Avg Hold':>9} {'Win%':>6} {'Total P&L':>10} "
+              f"{'Avg P&L':>9} {'$/day':>7}")
+        print(f"  {'─' * 80}")
+
+        for discount, result in grid_results:
+            closed = [t for t in result.trades
+                      if t.pnl is not None and direction in t.market_name]
+            if not closed:
+                continue
+
+            n_trades = len(closed)
+            n_fills = sum(1 for t in closed if t.exit_reason == "limit_fill")
+            n_edge = sum(1 for t in closed if t.exit_reason == "edge_exit")
+            n_resol = sum(1 for t in closed if t.exit_reason == "resolution")
+            fill_pct = (n_fills + n_edge) / n_trades if n_trades else 0
+            winners = sum(1 for t in closed if t.pnl > 0)
+            win_rate = winners / n_trades if n_trades else 0
+            total_pnl = sum(t.pnl for t in closed)
+            avg_pnl = total_pnl / n_trades if n_trades else 0
+
+            hold_days_list = []
+            for t in closed:
+                if t.entry_date and t.exit_date:
+                    try:
+                        entry_dt = datetime.strptime(t.entry_date, "%Y-%m-%d")
+                        exit_dt = datetime.strptime(t.exit_date, "%Y-%m-%d")
+                        hold_days_list.append((exit_dt - entry_dt).days)
+                    except ValueError:
+                        pass
+            avg_hold = sum(hold_days_list) / len(hold_days_list) if hold_days_list else 0
+            pnl_per_day = avg_pnl / max(avg_hold, 1) if avg_hold > 0 else 0
+
+            if discount == "edge_exit":
+                disc_label = "edge_exit"
+                marker = " (baseline)"
+            elif discount is None:
+                disc_label = "hold"
+                marker = ""
+            else:
+                disc_label = f"{discount:.0%}"
+                marker = ""
+            print(f"  {disc_label:>10} {n_trades:>7} {n_fills + n_edge:>6} {fill_pct:>5.0%} "
+                  f"{avg_hold:>7.0f}d {win_rate:>5.0%} "
+                  f"${total_pnl:>+9.2f} ${avg_pnl:>+8.2f} ${pnl_per_day:>+6.2f}{marker}")
+
+    print()
+
+
 def run_backtest_allin(
     markets: list[Market],
     pm_prices: dict[str, dict[str, float]],
@@ -1325,6 +1628,7 @@ def main():
     parser.add_argument("--allin", action="store_true", help="All-in mode: full bankroll per trade")
     parser.add_argument("--portfolio", action="store_true", help="Portfolio mode: up to 5 positions, Kelly sizing, reinvestment")
     parser.add_argument("--daily", action="store_true", help="Daily rebalance mode: 10am review, with and without rotation")
+    parser.add_argument("--sell-limit", action="store_true", help="Sell limit strategy: grid search over sell discount from fair value")
     parser.add_argument("--bankroll", type=float, default=1000.0, help="Starting bankroll (default: 1000)")
     args = parser.parse_args()
 
@@ -1335,7 +1639,74 @@ def main():
         currency_filter=args.currency,
     )
 
-    if args.allin:
+    if args.sell_limit:
+        # Sell limit strategy: grid search over sell discounts
+        sell_discounts = [0.0, 0.10, 0.20, 0.30, 0.40, 0.50, 0.75]
+        min_edges = [0.03, 0.05, 0.08, 0.10]
+
+        for min_edge in min_edges:
+            params = BacktestParams(
+                min_edge=min_edge,
+                drift=args.drift,
+                trade_size=args.trade_size,
+                fee=args.fee,
+            )
+
+            grid_results = []
+
+            # Run for each sell_discount
+            btc_markets = [m for m in markets if m.currency == "BTC"]
+            eth_markets = [m for m in markets if m.currency == "ETH"]
+
+            for disc in sell_discounts:
+                r_btc = run_backtest_sell_limit(
+                    btc_markets, pm_prices, dvol_btc, spot_btc,
+                    params, sell_discount=disc, show_progress=False,
+                )
+                r_eth = run_backtest_sell_limit(
+                    eth_markets, pm_prices, dvol_eth, spot_eth,
+                    params, sell_discount=disc, show_progress=False,
+                )
+                merged = BacktestResult(params=params)
+                merged.trades = r_btc.trades + r_eth.trades
+                merged.markets_analyzed = r_btc.markets_analyzed + r_eth.markets_analyzed
+                merged.markets_with_data = r_btc.markets_with_data + r_eth.markets_with_data
+                grid_results.append((disc, merged))
+
+            # Hold-only baseline (never sell, always resolution)
+            r_btc = run_backtest_sell_limit(
+                btc_markets, pm_prices, dvol_btc, spot_btc,
+                params, hold_only=True, show_progress=False,
+            )
+            r_eth = run_backtest_sell_limit(
+                eth_markets, pm_prices, dvol_eth, spot_eth,
+                params, hold_only=True, show_progress=False,
+            )
+            merged = BacktestResult(params=params)
+            merged.trades = r_btc.trades + r_eth.trades
+            merged.markets_analyzed = r_btc.markets_analyzed + r_eth.markets_analyzed
+            merged.markets_with_data = r_btc.markets_with_data + r_eth.markets_with_data
+            grid_results.append((None, merged))
+
+            # Edge-exit baseline (original strategy: sell at market when edge < 0)
+            params_edge = BacktestParams(
+                min_edge=min_edge,
+                exit_edge=0.0,
+                drift=args.drift,
+                trade_size=args.trade_size,
+                fee=args.fee,
+            )
+            r_btc_e = run_backtest(btc_markets, pm_prices, dvol_btc, spot_btc, params_edge, show_progress=False)
+            r_eth_e = run_backtest(eth_markets, pm_prices, dvol_eth, spot_eth, params_edge, show_progress=False)
+            merged_e = BacktestResult(params=params_edge)
+            merged_e.trades = r_btc_e.trades + r_eth_e.trades
+            merged_e.markets_analyzed = r_btc_e.markets_analyzed + r_eth_e.markets_analyzed
+            merged_e.markets_with_data = r_btc_e.markets_with_data + r_eth_e.markets_with_data
+            grid_results.append(("edge_exit", merged_e))
+
+            print_sell_limit_results(grid_results, params)
+
+    elif args.allin:
         params = BacktestParams(
             min_edge=args.min_edge,
             exit_edge=args.exit_edge,

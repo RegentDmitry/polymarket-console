@@ -131,3 +131,6 @@ dmypy.json
 
 # Raw scan data (per-day snapshots)
 data/raw/
+
+# Trade journal (lives on server, not in repo)
+crypto/trading_bot/data/trades.jsonl

@@ -276,6 +276,7 @@ class CryptoScanner(BaseScanner):
                         annual_return=annual_return,
                         liquidity=liquidity,
                         kelly=sig_kelly,
+                        direction=m.direction,
                     )
                     signals.append(signal)
                     logger.log_signal(signal)
@@ -299,7 +300,14 @@ class CryptoScanner(BaseScanner):
     ) -> List[Signal]:
         """Scan open positions for exit opportunities.
 
-        Logic: SELL when bid_price >= fair_price
+        Exit logic by direction (from backtest 2026-03-03):
+        - REACH (above/YES): sell limit at fair×0.9 handles profit-taking
+          (via _manage_sell_orders). Here we only generate edge_exit signals.
+        - DIP (below/NO): edge_exit is the PRIMARY exit mechanism.
+          No sell limit orders — rely solely on edge dropping below 0.
+
+        For both: edge_exit when fair_price < market_price (edge < 0).
+        Also: bid >= fair triggers immediate sell (legacy, rare).
         """
         signals = []
         logger = get_logger()
@@ -318,41 +326,72 @@ class CryptoScanner(BaseScanner):
             if not token_id:
                 continue
 
-            # Get bid price from current_prices (set by scan_for_entries)
-            bid_price = current_prices.get(position.market_slug, 0)
+            # Get market price for our side from current_prices (set by scan_for_entries)
+            market_price = current_prices.get(position.market_slug, 0)
 
-            self._bid_prices[position.market_slug] = bid_price
+            self._bid_prices[position.market_slug] = market_price
 
-            if bid_price <= 0:
+            if market_price <= 0:
                 continue
+
+            edge = fair_price - market_price
 
             logger.log_info(
                 f"EXIT CHECK: {position.market_slug[:40]} - "
-                f"bid {bid_price:.1%} vs fair {fair_price:.1%}"
+                f"mkt {market_price:.1%} vs fair {fair_price:.1%} edge={edge:+.1%}"
             )
 
-            if bid_price >= fair_price:
-                current_value = position.current_value(bid_price)
+            # Edge exit: fair value dropped below market price → edge gone
+            if edge < 0:
+                current_value = position.current_value(market_price)
+                pnl = position.unrealized_pnl(market_price)
                 signal = Signal(
                     type=SignalType.SELL,
                     market_id=position.market_id,
                     market_slug=position.market_slug,
                     market_name=position.market_name,
                     outcome=position.outcome,
-                    current_price=bid_price,
+                    current_price=market_price,
                     fair_price=fair_price,
-                    target_price=bid_price,
+                    target_price=market_price,
+                    edge=edge,
                     position_id=position.id,
-                    reason=f"Bid {bid_price:.1%} >= Fair {fair_price:.1%}",
+                    reason=f"edge_exit: edge={edge:+.1%}",
                     suggested_size=current_value,
                     token_id=token_id,
+                    direction=position.direction,
                 )
                 signals.append(signal)
 
-                pnl = position.unrealized_pnl(bid_price)
+                logger.log_info(
+                    f"EDGE EXIT: {position.market_slug} - "
+                    f"edge={edge:+.1%} P&L: ${pnl:+.2f}"
+                )
+
+            # Bid above fair: immediate profit-take (rare, legacy)
+            elif market_price >= fair_price:
+                current_value = position.current_value(market_price)
+                signal = Signal(
+                    type=SignalType.SELL,
+                    market_id=position.market_id,
+                    market_slug=position.market_slug,
+                    market_name=position.market_name,
+                    outcome=position.outcome,
+                    current_price=market_price,
+                    fair_price=fair_price,
+                    target_price=market_price,
+                    position_id=position.id,
+                    reason=f"Bid {market_price:.1%} >= Fair {fair_price:.1%}",
+                    suggested_size=current_value,
+                    token_id=token_id,
+                    direction=position.direction,
+                )
+                signals.append(signal)
+
+                pnl = position.unrealized_pnl(market_price)
                 logger.log_info(
                     f"EXIT SIGNAL: {position.market_slug} - "
-                    f"bid {bid_price:.1%} >= fair {fair_price:.1%}, P&L: ${pnl:+.2f}"
+                    f"bid {market_price:.1%} >= fair {fair_price:.1%}, P&L: ${pnl:+.2f}"
                 )
 
         return signals

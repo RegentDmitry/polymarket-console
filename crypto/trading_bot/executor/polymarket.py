@@ -5,6 +5,7 @@ Adapted from earthquakes/trading_bot/executor/polymarket.py.
 Key difference: loads crypto/.env for separate wallet.
 """
 
+import math
 import sys
 from pathlib import Path
 from typing import Optional, Tuple
@@ -17,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "earthquakes
 from ..models.position import Position
 from ..models.signal import Signal, SignalType
 from ..models.market import Market
+from ..market_data.polymarket import PolymarketData
 from ..logger import get_logger
 
 # Import Polymarket client
@@ -219,6 +221,7 @@ class PolymarketExecutor:
                     fair_price_at_entry=signal.fair_price,
                     edge_at_entry=signal.edge,
                     entry_order_id=order_id,
+                    direction=signal.direction,
                 )
 
                 return OrderResult(
@@ -493,6 +496,43 @@ class PolymarketExecutor:
                     raise
         except Exception as e:
             logger.log_warning(f"SELL LIMIT failed: {e}")
+            return None
+
+    def market_sell(self, token_id: str, size: float) -> Optional[str]:
+        """Sell at best bid (aggressive limit = market sell).
+
+        Used for edge_exit: need immediate fill, not a passive limit order.
+        Gets best bid from orderbook, places sell at that price.
+        Returns order_id or None.
+        """
+        if not self.client:
+            return None
+        logger = get_logger()
+        try:
+            size = math.floor(size * 100) / 100
+            if size < 5:
+                logger.log_warning(f"MARKET SELL skip: size {size:.2f} < 5")
+                return None
+
+            # Get best bid from orderbook
+            ob = PolymarketData.get_orderbook(token_id)
+            bids = ob.get("bids", [])
+            if not bids:
+                logger.log_warning(f"MARKET SELL: no bids in orderbook")
+                return None
+
+            best_bid = max(float(b["price"]) for b in bids)
+            if best_bid <= 0:
+                logger.log_warning(f"MARKET SELL: best bid is 0")
+                return None
+
+            logger.log_info(f"MARKET SELL: best_bid={best_bid:.1%} size={size:.2f}")
+
+            # Place aggressive sell at best bid price
+            return self.place_sell_limit(token_id, best_bid, size)
+
+        except Exception as e:
+            logger.log_warning(f"MARKET SELL failed: {e}")
             return None
 
     def get_open_order_ids(self) -> set[str]:

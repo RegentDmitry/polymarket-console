@@ -53,6 +53,7 @@ class Signal:
     token_id: str = ""            # Polymarket token ID
     model_used: str = ""          # Model used for prediction
     annual_return: float = 0.0    # Annualized return (APY)
+    direction: str = ""           # "above" (reach) or "below" (dip)
 
     # Timestamp
     timestamp: str = ""
