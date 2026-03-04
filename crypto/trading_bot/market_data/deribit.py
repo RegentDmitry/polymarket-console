@@ -33,6 +33,9 @@ def deribit_get(path: str) -> dict:
 # (days_to_expiry, annualized_drift, futures_price, instrument_name)
 FuturesEntry = Tuple[int, float, float, str]
 
+# (days_to_expiry, iv_decimal)
+IVEntry = Tuple[int, float]
+
 
 class DeribitData:
     """Fetches and caches Deribit data (spot, IV, futures curve)."""
@@ -43,6 +46,8 @@ class DeribitData:
         self._eth_spot: float = 0.0
         self._btc_iv: float = 0.0
         self._eth_iv: float = 0.0
+        self._btc_iv_curve: List[IVEntry] = []
+        self._eth_iv_curve: List[IVEntry] = []
         self._btc_curve: List[FuturesEntry] = []
         self._eth_curve: List[FuturesEntry] = []
         self._last_update: Optional[datetime] = None
@@ -123,6 +128,24 @@ class DeribitData:
         best = min(curve, key=lambda x: abs(x[0] - target_days))
         return best[1]
 
+    def iv_for_days(self, currency: str, target_days: int) -> float:
+        """Get IV from the expiry closest to target_days.
+
+        Uses per-maturity IV curve fetched from ATM options at each expiry.
+        Falls back to the headline IV (7d+ nearest) if no curve available.
+        """
+        currency = currency.upper()
+        with self._lock:
+            iv_curve = list(self._btc_iv_curve if currency == "BTC" else self._eth_iv_curve)
+
+        if not iv_curve:
+            return self.get_iv(currency)
+
+        # Find closest expiry to target_days (but at least 7 days)
+        target = max(target_days, 7)
+        best = min(iv_curve, key=lambda x: abs(x[0] - target))
+        return best[1]
+
     # --- Data fetching ---
 
     def _fetch_spot(self, currency: str) -> float:
@@ -133,76 +156,75 @@ class DeribitData:
         except Exception:
             return 0.0
 
-    def _fetch_iv(self, currency: str) -> float:
-        """Fetch ATM IV from options with at least 7 days to expiry.
+    def _fetch_iv(self, currency: str) -> Tuple[float, List[IVEntry]]:
+        """Fetch ATM IV curve from Deribit options.
 
-        Short-dated (<7d) options have extremely noisy IV that swings
-        20+ points intraday due to gamma exposure and low liquidity.
-        Using 7-14 day expiry gives stable, representative IV.
+        Returns (headline_iv, iv_curve) where:
+        - headline_iv: IV from nearest 7d+ expiry (for display)
+        - iv_curve: [(days, iv), ...] for all expiries 7d+ (for per-maturity matching)
+
+        Short-dated (<7d) options are excluded — their IV swings 20+ pts/day.
         """
         try:
             spot = self._fetch_spot(currency) if currency == "BTC" else self._eth_spot
             if spot <= 0:
                 spot = self._btc_spot if currency == "BTC" else self._eth_spot
             if spot <= 0:
-                return 0.0
+                return 0.0, []
 
-            # Get all option instruments
             instruments = deribit_get(
                 f"get_instruments?currency={currency}&kind=option&expired=false"
             )
 
-            # Find nearest expiry that is at least 7 days out
             now_ts = datetime.now(timezone.utc).timestamp() * 1000
-            min_days = 7
-            min_exp_ts = now_ts + min_days * 86400 * 1000
+            min_exp_ts = now_ts + 7 * 86400 * 1000  # at least 7 days out
 
-            best_expiry = None
-            best_exp_ts = float('inf')
+            # Group instruments by expiry (only 7d+)
+            expiry_groups: dict = {}
             for inst in instruments:
                 exp = inst["expiration_timestamp"]
-                if exp >= min_exp_ts and exp < best_exp_ts:
-                    best_exp_ts = exp
-                    best_expiry = exp
+                if exp >= min_exp_ts:
+                    expiry_groups.setdefault(exp, []).append(inst)
 
-            if best_expiry is None:
-                # Fallback: use absolute nearest if nothing 7d+ exists
+            # Fallback: if no 7d+ expiry, use absolute nearest
+            if not expiry_groups:
                 for inst in instruments:
                     exp = inst["expiration_timestamp"]
-                    if exp > now_ts and exp < best_exp_ts:
-                        best_exp_ts = exp
-                        best_expiry = exp
+                    if exp > now_ts:
+                        expiry_groups.setdefault(exp, []).append(inst)
 
-            if best_expiry is None:
-                return 0.0
+            if not expiry_groups:
+                return 0.0, []
 
-            # Get ATM call at selected expiry
-            best_iv = 0.0
-            best_dist = float('inf')
-            for inst in instruments:
-                if inst["expiration_timestamp"] != best_expiry:
-                    continue
-                if inst["option_type"] != "call":
-                    continue
-                strike = inst["strike"]
-                dist = abs(strike - spot)
-                if dist < best_dist:
-                    best_dist = dist
-                    # Fetch ticker for this option to get mark_iv
-                    try:
-                        ticker = deribit_get(
-                            f"ticker?instrument_name={inst['instrument_name']}"
-                        )
-                        iv = ticker.get("mark_iv", 0)
-                        if iv > 0:
-                            best_iv = iv / 100  # Convert from percentage
-                            best_dist = dist
-                    except Exception:
-                        pass
+            # For each expiry, find ATM call IV
+            iv_curve: List[IVEntry] = []
+            for exp_ts in sorted(expiry_groups.keys()):
+                days = max(1, int((exp_ts - now_ts) / 86400000))
+                best_iv = 0.0
+                best_dist = float('inf')
+                for inst in expiry_groups[exp_ts]:
+                    if inst["option_type"] != "call":
+                        continue
+                    dist = abs(inst["strike"] - spot)
+                    if dist < best_dist:
+                        try:
+                            ticker = deribit_get(
+                                f"ticker?instrument_name={inst['instrument_name']}"
+                            )
+                            iv = ticker.get("mark_iv", 0)
+                            if iv > 0:
+                                best_iv = iv / 100
+                                best_dist = dist
+                        except Exception:
+                            pass
+                if best_iv > 0:
+                    iv_curve.append((days, best_iv))
 
-            return best_iv
+            headline_iv = iv_curve[0][1] if iv_curve else 0.0
+            return headline_iv, iv_curve
+
         except Exception:
-            return 0.0
+            return 0.0, []
 
     def _fetch_futures_curve(self, currency: str) -> Tuple[float, List[FuturesEntry]]:
         """Fetch full futures curve: list of (days, drift, price, name)."""
@@ -264,8 +286,8 @@ class DeribitData:
                 self._btc_spot = btc_spot
                 self._eth_spot = eth_spot
 
-            btc_iv = self._fetch_iv("BTC")
-            eth_iv = self._fetch_iv("ETH")
+            btc_iv, btc_iv_curve = self._fetch_iv("BTC")
+            eth_iv, eth_iv_curve = self._fetch_iv("ETH")
 
             with self._lock:
                 self._btc_curve = btc_curve
@@ -274,6 +296,8 @@ class DeribitData:
                     self._btc_iv = btc_iv
                 if eth_iv > 0:
                     self._eth_iv = eth_iv
+                self._btc_iv_curve = btc_iv_curve
+                self._eth_iv_curve = eth_iv_curve
                 self._last_update = datetime.now(timezone.utc)
 
             return True

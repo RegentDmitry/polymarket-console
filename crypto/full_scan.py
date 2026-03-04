@@ -34,10 +34,14 @@ def deribit_get(path):
     return json.loads(resp.read())["result"]
 
 
-def _fetch_atm_iv(currency: str, spot: float) -> float:
-    """Fetch ATM IV from Deribit options with at least 7 days to expiry.
+def _fetch_iv_curve(currency: str, spot: float):
+    """Fetch ATM IV curve from Deribit options (all expiries 7d+).
 
-    Short-dated (<7d) options have extremely noisy IV (swings 20+ pts/day).
+    Returns (headline_iv, iv_curve) where:
+    - headline_iv: IV from nearest 7d+ expiry (for display)
+    - iv_curve: [(days, iv), ...] for per-maturity matching
+
+    Short-dated (<7d) options excluded — IV swings 20+ pts/day.
     """
     try:
         instruments = deribit_get(
@@ -46,48 +50,60 @@ def _fetch_atm_iv(currency: str, spot: float) -> float:
         now_ts = datetime.now(timezone.utc).timestamp() * 1000
         min_exp_ts = now_ts + 7 * 86400 * 1000  # at least 7 days out
 
-        # Find nearest expiry >= 7 days
-        nearest_expiry = None
-        best_exp = float('inf')
+        # Group instruments by expiry (only 7d+)
+        expiry_groups = {}
         for inst in instruments:
             exp = inst["expiration_timestamp"]
-            if exp >= min_exp_ts and exp < best_exp:
-                best_exp = exp
-                nearest_expiry = exp
+            if exp >= min_exp_ts:
+                expiry_groups.setdefault(exp, []).append(inst)
 
-        # Fallback: absolute nearest if nothing 7d+ exists
-        if nearest_expiry is None:
-            best_exp = float('inf')
+        # Fallback: if no 7d+ expiry, use absolute nearest
+        if not expiry_groups:
             for inst in instruments:
                 exp = inst["expiration_timestamp"]
-                if exp > now_ts and exp < best_exp:
-                    best_exp = exp
-                    nearest_expiry = exp
+                if exp > now_ts:
+                    expiry_groups.setdefault(exp, []).append(inst)
 
-        if nearest_expiry is None:
-            return 0.50  # fallback
-        # Find ATM call at nearest expiry
-        best_iv = 0.0
-        best_dist = float('inf')
-        for inst in instruments:
-            if inst["expiration_timestamp"] != nearest_expiry:
-                continue
-            if inst["option_type"] != "call":
-                continue
-            strike = inst["strike"]
-            dist = abs(strike - spot)
-            if dist < best_dist:
-                try:
-                    ticker = deribit_get(f"ticker?instrument_name={inst['instrument_name']}")
-                    iv = ticker.get("mark_iv", 0)
-                    if iv > 0:
-                        best_iv = iv / 100
-                        best_dist = dist
-                except Exception:
-                    pass
-        return best_iv if best_iv > 0 else 0.50
+        if not expiry_groups:
+            return 0.50, []
+
+        # For each expiry, find ATM call IV
+        iv_curve = []
+        for exp_ts in sorted(expiry_groups.keys()):
+            days = max(1, int((exp_ts - now_ts) / 86400000))
+            best_iv = 0.0
+            best_dist = float('inf')
+            for inst in expiry_groups[exp_ts]:
+                if inst["option_type"] != "call":
+                    continue
+                dist = abs(inst["strike"] - spot)
+                if dist < best_dist:
+                    try:
+                        ticker = deribit_get(
+                            f"ticker?instrument_name={inst['instrument_name']}"
+                        )
+                        iv = ticker.get("mark_iv", 0)
+                        if iv > 0:
+                            best_iv = iv / 100
+                            best_dist = dist
+                    except Exception:
+                        pass
+            if best_iv > 0:
+                iv_curve.append((days, best_iv))
+
+        headline_iv = iv_curve[0][1] if iv_curve else 0.50
+        return headline_iv, iv_curve
     except Exception:
-        return 0.50  # fallback
+        return 0.50, []
+
+
+def iv_for_days(iv_curve, target_days, headline_iv=0.50):
+    """Get IV from the expiry closest to target_days."""
+    if not iv_curve:
+        return headline_iv
+    target = max(target_days, 7)
+    best = min(iv_curve, key=lambda x: abs(x[0] - target))
+    return best[1]
 
 
 def fetch_futures_curve(currency="BTC"):
@@ -262,13 +278,19 @@ def main():
     spot_btc_fut, btc_curve = fetch_futures_curve("BTC")
     spot_eth_fut, eth_curve = fetch_futures_curve("ETH")
 
-    # Fetch ATM IV from Deribit nearest-expiry options
-    IV_BTC = _fetch_atm_iv("BTC", S_BTC)
-    IV_ETH = _fetch_atm_iv("ETH", S_ETH)
+    # Fetch ATM IV curves from Deribit (per-maturity)
+    IV_BTC, btc_iv_curve = _fetch_iv_curve("BTC", S_BTC)
+    IV_ETH, eth_iv_curve = _fetch_iv_curve("ETH", S_ETH)
     T_annual = 306 / 365
 
-    print(f"BTC Deribit: ${S_BTC:,.0f} | IV: {IV_BTC*100:.1f}% | df={STUDENT_DF_BTC}")
-    print(f"ETH Deribit: ${S_ETH:,.0f} | IV: {IV_ETH*100:.1f}% | df={STUDENT_DF_ETH}")
+    print(f"BTC Deribit: ${S_BTC:,.0f} | IV: {IV_BTC*100:.1f}% (headline) | df={STUDENT_DF_BTC}")
+    print(f"ETH Deribit: ${S_ETH:,.0f} | IV: {IV_ETH*100:.1f}% (headline) | df={STUDENT_DF_ETH}")
+    if btc_iv_curve:
+        iv_str = ", ".join(f"{d}d:{iv*100:.1f}%" for d, iv in btc_iv_curve)
+        print(f"  BTC IV curve: {iv_str}")
+    if eth_iv_curve:
+        iv_str = ", ".join(f"{d}d:{iv*100:.1f}%" for d, iv in eth_iv_curve)
+        print(f"  ETH IV curve: {iv_str}")
     print()
 
     # Print both futures curves
@@ -282,18 +304,18 @@ def main():
     if args.futures_only:
         return
 
-    # Full scan
+    # Full scan — IV matched per market maturity
     slugs = [
-        ("what-price-will-bitcoin-hit-before-2027", "BTC", S_BTC, IV_BTC, T_annual, STUDENT_DF_BTC, btc_curve),
-        ("what-price-will-bitcoin-hit-in-march-2026", "BTC", S_BTC, IV_BTC, 37 / 365, STUDENT_DF_BTC, btc_curve),
-        ("what-price-will-ethereum-hit-before-2027", "ETH", S_ETH, IV_ETH, T_annual, STUDENT_DF_ETH, eth_curve),
-        ("what-price-will-ethereum-hit-in-march-2026", "ETH", S_ETH, IV_ETH, 37 / 365, STUDENT_DF_ETH, eth_curve),
-        ("what-price-will-bitcoin-hit-in-february-2026", "BTC", S_BTC, IV_BTC, 6 / 365, STUDENT_DF_BTC, btc_curve),
-        ("what-price-will-ethereum-hit-in-february-2026", "ETH", S_ETH, IV_ETH, 6 / 365, STUDENT_DF_ETH, eth_curve),
+        ("what-price-will-bitcoin-hit-before-2027", "BTC", S_BTC, T_annual, STUDENT_DF_BTC, btc_curve, btc_iv_curve, IV_BTC),
+        ("what-price-will-bitcoin-hit-in-march-2026", "BTC", S_BTC, 37 / 365, STUDENT_DF_BTC, btc_curve, btc_iv_curve, IV_BTC),
+        ("what-price-will-ethereum-hit-before-2027", "ETH", S_ETH, T_annual, STUDENT_DF_ETH, eth_curve, eth_iv_curve, IV_ETH),
+        ("what-price-will-ethereum-hit-in-march-2026", "ETH", S_ETH, 37 / 365, STUDENT_DF_ETH, eth_curve, eth_iv_curve, IV_ETH),
+        ("what-price-will-bitcoin-hit-in-february-2026", "BTC", S_BTC, 6 / 365, STUDENT_DF_BTC, btc_curve, btc_iv_curve, IV_BTC),
+        ("what-price-will-ethereum-hit-in-february-2026", "ETH", S_ETH, 6 / 365, STUDENT_DF_ETH, eth_curve, eth_iv_curve, IV_ETH),
     ]
 
     results = []
-    for slug, currency, spot, iv, T, df, curve in slugs:
+    for slug, currency, spot, T, df, curve, cur_iv_curve, headline_iv in slugs:
         try:
             url = f"https://gamma-api.polymarket.com/events?slug={slug}"
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -323,6 +345,8 @@ def main():
                 pm = yes_p if is_up else (1 - yes_p)
 
                 days_to_exp = int(T * 365)
+                # Per-maturity IV and drift
+                iv = iv_for_days(cur_iv_curve, days_to_exp, headline_iv)
                 drift_matched = drift_for_days(curve, days_to_exp)
                 edge_mc0 = mc_edge(spot, strike, iv, T, pm, is_up, mu=0.0, df=df)
                 edge_mcf = mc_edge(spot, strike, iv, T, pm, is_up, mu=drift_matched, df=df)
@@ -342,6 +366,7 @@ def main():
                     "edge_mcf": edge_mcf,
                     "edge_hyb": edge_hyb,
                     "drift_used": drift_matched,
+                    "iv_used": iv,
                 })
         except Exception as e:
             print(f"  [{slug}]: {e}")
@@ -350,18 +375,19 @@ def main():
 
     print(f"Найдено {len(results)} активных рынков")
     print(f"MC Student-t: BTC df={STUDENT_DF_BTC}, ETH df={STUDENT_DF_ETH}, {MC_PATHS:,} paths")
-    print(f"Hybrid = Student-t(dip) + GBM(reach) + drift")
+    print(f"Hybrid = Student-t(dip) + GBM(reach) + per-maturity IV & drift")
     print()
     hdr = (
         f"{'Рынок':<25} {'Пер':<6} {'St':<4} {'PM':<6}"
-        f" {'MC d=0':>8} {'MC fut':>8} {'Hybrid':>8} {'d_fut':>6}   {'Вердикт':<22}"
+        f" {'MC d=0':>8} {'MC fut':>8} {'Hybrid':>8} {'IV':>5} {'d_fut':>6}   {'Вердикт':<22}"
     )
     print(hdr)
-    print("=" * 106)
+    print("=" * 115)
     for r in results:
         pm_str = f"{r['pm']*100:.0f}c"
         mc0, mcf, hyb = r["edge_mc0"], r["edge_mcf"], r["edge_hyb"]
         d_str = f"{r['drift_used']*100:+.1f}%"
+        iv_str = f"{r['iv_used']*100:.0f}%"
         if hyb > 0.05:
             verdict = "*** HYBRID EDGE ***"
         elif hyb > 0.03:
@@ -374,7 +400,7 @@ def main():
             verdict = "—"
         print(
             f"{r['market']:<25} {r['period']:<6} {r['side']:<4} {pm_str:<6}"
-            f" {mc0*100:>+6.1f}%  {mcf*100:>+6.1f}%  {hyb*100:>+6.1f}%  {d_str:>6}   {verdict}"
+            f" {mc0*100:>+6.1f}%  {mcf*100:>+6.1f}%  {hyb*100:>+6.1f}%  {iv_str:>5} {d_str:>6}   {verdict}"
         )
 
     # Save raw data
@@ -389,6 +415,8 @@ def main():
         "eth_spot": S_ETH,
         "iv_btc": IV_BTC,
         "iv_eth": IV_ETH,
+        "btc_iv_curve": btc_iv_curve,
+        "eth_iv_curve": eth_iv_curve,
         "df_btc": STUDENT_DF_BTC,
         "df_eth": STUDENT_DF_ETH,
         "mc_paths": MC_PATHS,

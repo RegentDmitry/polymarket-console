@@ -135,7 +135,7 @@ class CryptoScanner(BaseScanner):
             # Run batch MC for each group
             for (currency, days), markets_in_group in groups.items():
                 spot = btc_spot if currency == "BTC" else eth_spot
-                iv = btc_iv if currency == "BTC" else eth_iv
+                iv = self.deribit.iv_for_days(currency, days)
                 df = get_df(currency)
                 drift = self.deribit.drift_for_days(currency, days)
 
