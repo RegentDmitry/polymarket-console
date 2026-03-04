@@ -134,10 +134,11 @@ class DeribitData:
             return 0.0
 
     def _fetch_iv(self, currency: str) -> float:
-        """Fetch ATM IV from nearest-expiry options.
+        """Fetch ATM IV from options with at least 7 days to expiry.
 
-        Strategy: find the nearest expiry, get the option closest to ATM,
-        and use its mark_iv.
+        Short-dated (<7d) options have extremely noisy IV that swings
+        20+ points intraday due to gamma exposure and low liquidity.
+        Using 7-14 day expiry gives stable, representative IV.
         """
         try:
             spot = self._fetch_spot(currency) if currency == "BTC" else self._eth_spot
@@ -151,24 +152,35 @@ class DeribitData:
                 f"get_instruments?currency={currency}&kind=option&expired=false"
             )
 
-            # Find nearest expiry
+            # Find nearest expiry that is at least 7 days out
             now_ts = datetime.now(timezone.utc).timestamp() * 1000
-            min_exp = float('inf')
-            nearest_expiry = None
+            min_days = 7
+            min_exp_ts = now_ts + min_days * 86400 * 1000
+
+            best_expiry = None
+            best_exp_ts = float('inf')
             for inst in instruments:
                 exp = inst["expiration_timestamp"]
-                if exp > now_ts and exp < min_exp:
-                    min_exp = exp
-                    nearest_expiry = exp
+                if exp >= min_exp_ts and exp < best_exp_ts:
+                    best_exp_ts = exp
+                    best_expiry = exp
 
-            if nearest_expiry is None:
+            if best_expiry is None:
+                # Fallback: use absolute nearest if nothing 7d+ exists
+                for inst in instruments:
+                    exp = inst["expiration_timestamp"]
+                    if exp > now_ts and exp < best_exp_ts:
+                        best_exp_ts = exp
+                        best_expiry = exp
+
+            if best_expiry is None:
                 return 0.0
 
-            # Get ATM call at nearest expiry
+            # Get ATM call at selected expiry
             best_iv = 0.0
             best_dist = float('inf')
             for inst in instruments:
-                if inst["expiration_timestamp"] != nearest_expiry:
+                if inst["expiration_timestamp"] != best_expiry:
                     continue
                 if inst["option_type"] != "call":
                     continue

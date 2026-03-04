@@ -34,6 +34,62 @@ def deribit_get(path):
     return json.loads(resp.read())["result"]
 
 
+def _fetch_atm_iv(currency: str, spot: float) -> float:
+    """Fetch ATM IV from Deribit options with at least 7 days to expiry.
+
+    Short-dated (<7d) options have extremely noisy IV (swings 20+ pts/day).
+    """
+    try:
+        instruments = deribit_get(
+            f"get_instruments?currency={currency}&kind=option&expired=false"
+        )
+        now_ts = datetime.now(timezone.utc).timestamp() * 1000
+        min_exp_ts = now_ts + 7 * 86400 * 1000  # at least 7 days out
+
+        # Find nearest expiry >= 7 days
+        nearest_expiry = None
+        best_exp = float('inf')
+        for inst in instruments:
+            exp = inst["expiration_timestamp"]
+            if exp >= min_exp_ts and exp < best_exp:
+                best_exp = exp
+                nearest_expiry = exp
+
+        # Fallback: absolute nearest if nothing 7d+ exists
+        if nearest_expiry is None:
+            best_exp = float('inf')
+            for inst in instruments:
+                exp = inst["expiration_timestamp"]
+                if exp > now_ts and exp < best_exp:
+                    best_exp = exp
+                    nearest_expiry = exp
+
+        if nearest_expiry is None:
+            return 0.50  # fallback
+        # Find ATM call at nearest expiry
+        best_iv = 0.0
+        best_dist = float('inf')
+        for inst in instruments:
+            if inst["expiration_timestamp"] != nearest_expiry:
+                continue
+            if inst["option_type"] != "call":
+                continue
+            strike = inst["strike"]
+            dist = abs(strike - spot)
+            if dist < best_dist:
+                try:
+                    ticker = deribit_get(f"ticker?instrument_name={inst['instrument_name']}")
+                    iv = ticker.get("mark_iv", 0)
+                    if iv > 0:
+                        best_iv = iv / 100
+                        best_dist = dist
+                except Exception:
+                    pass
+        return best_iv if best_iv > 0 else 0.50
+    except Exception:
+        return 0.50  # fallback
+
+
 def fetch_futures_curve(currency="BTC"):
     """Get full futures curve: list of (days_to_expiry, implied_annual_drift, price, name)."""
     try:
@@ -206,8 +262,9 @@ def main():
     spot_btc_fut, btc_curve = fetch_futures_curve("BTC")
     spot_eth_fut, eth_curve = fetch_futures_curve("ETH")
 
-    IV_BTC = 0.522
-    IV_ETH = 0.70
+    # Fetch ATM IV from Deribit nearest-expiry options
+    IV_BTC = _fetch_atm_iv("BTC", S_BTC)
+    IV_ETH = _fetch_atm_iv("ETH", S_ETH)
     T_annual = 306 / 365
 
     print(f"BTC Deribit: ${S_BTC:,.0f} | IV: {IV_BTC*100:.1f}% | df={STUDENT_DF_BTC}")
