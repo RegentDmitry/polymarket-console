@@ -1225,8 +1225,9 @@ class TradingBotApp(App):
             await loop4.run_in_executor(None, self._redeem_resolved_positions, positions)
             positions = self._get_all_positions()
 
-        # Auto-correct balance discrepancies
-        if self.executor.initialized and positions:
+        # Auto-correct balance discrepancies (skip if buys happened this cycle —
+        # orders may not have settled yet, causing false mismatches)
+        if self.executor.initialized and positions and not self._had_buys_this_cycle:
             await self._check_balance_discrepancies()
 
         # Update portfolio risk panel (every N scans or after trades)

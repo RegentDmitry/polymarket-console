@@ -78,7 +78,9 @@ class PolymarketExecutor:
             balance_info = self.client.get_balance()
             balance_raw = float(balance_info.get("balance", 0))
             return balance_raw / 1e6  # USDC has 6 decimals
-        except Exception:
+        except Exception as e:
+            from .logger import get_logger
+            get_logger().log_warning(f"get_balance API error: {e}")
             # Fallback: on-chain USDC.e balance
             return self.get_usdc_balance_onchain()
 

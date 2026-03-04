@@ -69,7 +69,12 @@ if [ ! -f ".env" ]; then
 fi
 
 # Check if venv exists, create if not
-VENV_DIR="$SCRIPT_DIR/../.venv"
+# Prefer local .venv (has all dependencies), fall back to shared
+if [ -d "$SCRIPT_DIR/.venv" ]; then
+    VENV_DIR="$SCRIPT_DIR/.venv"
+else
+    VENV_DIR="$SCRIPT_DIR/../.venv"
+fi
 if [ ! -d "$VENV_DIR" ]; then
     echo -e "${YELLOW}Virtual environment not found. Creating...${NC}"
     python3 -m venv "$VENV_DIR"
