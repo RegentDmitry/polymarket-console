@@ -416,14 +416,19 @@ class LiveDataPanel(Static):
         self.eth_spot = 0.0
         self.btc_iv = 0.0
         self.eth_iv = 0.0
+        self.btc_iv_days = 0
+        self.eth_iv_days = 0
         self._updated_at: float = 0.0  # time.monotonic() of last update
 
     def update_data(self, btc_spot: float, eth_spot: float,
-                    btc_iv: float, eth_iv: float, age: int = 0) -> None:
+                    btc_iv: float, eth_iv: float, age: int = 0,
+                    btc_iv_days: int = 0, eth_iv_days: int = 0) -> None:
         self.btc_spot = btc_spot
         self.eth_spot = eth_spot
         self.btc_iv = btc_iv
         self.eth_iv = eth_iv
+        self.btc_iv_days = btc_iv_days
+        self.eth_iv_days = eth_iv_days
         self._updated_at = time.monotonic()
         self.refresh()
 
@@ -432,16 +437,22 @@ class LiveDataPanel(Static):
         if self._updated_at > 0:
             self.refresh()
 
+    def _iv_label(self, iv: float, days: int) -> str:
+        if iv <= 0:
+            return "IV: --"
+        suffix = f" ({days}d)" if days > 0 else ""
+        return f"IV: {iv:>5.1%}{suffix}"
+
     def render(self) -> Panel:
         lines = []
 
         if self.btc_spot > 0:
-            lines.append(f"BTC  ${self.btc_spot:>10,.0f}   IV: {self.btc_iv:>5.1%}")
+            lines.append(f"BTC  ${self.btc_spot:>10,.0f}   {self._iv_label(self.btc_iv, self.btc_iv_days)}")
         else:
             lines.append("BTC  --           IV: --")
 
         if self.eth_spot > 0:
-            lines.append(f"ETH  ${self.eth_spot:>10,.0f}   IV: {self.eth_iv:>5.1%}")
+            lines.append(f"ETH  ${self.eth_spot:>10,.0f}   {self._iv_label(self.eth_iv, self.eth_iv_days)}")
         else:
             lines.append("ETH  --           IV: --")
 
@@ -823,6 +834,7 @@ class TradingBotApp(App):
                             self._update_live_data_panel,
                             btc_spot, eth_spot,
                             snap.get("btc_iv", 0), snap.get("eth_iv", 0),
+                            snap.get("btc_iv_days", 0), snap.get("eth_iv_days", 0),
                         )
                         self.call_from_thread(
                             self._update_futures_panel,
@@ -856,12 +868,14 @@ class TradingBotApp(App):
             t = threading.Thread(target=fn, name=f"data-{name}", daemon=True)
             t.start()
 
-    def _update_live_data_panel(self, btc_spot, eth_spot, btc_iv, eth_iv):
+    def _update_live_data_panel(self, btc_spot, eth_spot, btc_iv, eth_iv,
+                               btc_iv_days=0, eth_iv_days=0):
         """Update live data panel (called from thread via call_from_thread)."""
         try:
             panel = self.query_one(LiveDataPanel)
             age = int(self.scanner.binance.age_seconds) if self.scanner else 0
-            panel.update_data(btc_spot, eth_spot, btc_iv, eth_iv, age)
+            panel.update_data(btc_spot, eth_spot, btc_iv, eth_iv, age,
+                              btc_iv_days, eth_iv_days)
         except Exception:
             pass
 
@@ -1185,6 +1199,7 @@ class TradingBotApp(App):
             self._update_live_data_panel(
                 btc_spot, eth_spot,
                 dsnap.get("btc_iv", 0), dsnap.get("eth_iv", 0),
+                dsnap.get("btc_iv_days", 0), dsnap.get("eth_iv_days", 0),
             )
             deribit_age = self.scanner.deribit.age_seconds
             age = int(deribit_age) if deribit_age < 1e9 else 0

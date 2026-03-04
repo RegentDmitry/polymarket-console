@@ -96,6 +96,13 @@ class DeribitData:
                 return float('inf')
             return (datetime.now(timezone.utc) - self._last_update).total_seconds()
 
+    def iv_headline_days(self, currency: str) -> int:
+        """Days to expiry of the headline IV (nearest 7d+ expiry)."""
+        currency = currency.upper()
+        with self._lock:
+            curve = self._btc_iv_curve if currency == "BTC" else self._eth_iv_curve
+            return curve[0][0] if curve else 0
+
     def get_spot(self, currency: str) -> float:
         currency = currency.upper()
         if currency == "BTC":
@@ -312,6 +319,8 @@ class DeribitData:
                 "eth_spot": self._eth_spot,
                 "btc_iv": self._btc_iv,
                 "eth_iv": self._eth_iv,
+                "btc_iv_days": self._btc_iv_curve[0][0] if self._btc_iv_curve else 0,
+                "eth_iv_days": self._eth_iv_curve[0][0] if self._eth_iv_curve else 0,
                 "btc_curve": list(self._btc_curve),
                 "eth_curve": list(self._eth_curve),
                 "last_update": self._last_update,
