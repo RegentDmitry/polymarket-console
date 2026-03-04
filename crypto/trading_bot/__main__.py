@@ -34,6 +34,7 @@ print(f"""
 │  Interval:  {format_interval(config.scan_interval):<47} │
 │  Min Edge:  {f"{config.min_edge:.0%}":<47} │
 │  Min APY:   {f"{config.min_apy:.0%}":<47} │
+│  Max Days:  {f"{config.max_days:.0f}d" if config.max_days < float('inf') else "unlimited":<47} │
 │  Alloc:     {alloc_str:<47} │
 └─────────────────────────────────────────────────────────────┘
 """)

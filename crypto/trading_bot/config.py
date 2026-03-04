@@ -22,6 +22,7 @@ class BotConfig:
     # Strategy parameters
     min_edge: float = 0.05  # 5%
     min_apy: float = 0.30   # 30% annualized
+    max_days: float = float('inf')  # Max days to resolution (inf = no limit)
 
     # Monte Carlo parameters
     mc_paths: int = 150000     # Number of MC simulation paths
@@ -120,6 +121,13 @@ Examples:
     )
 
     parser.add_argument(
+        "--max-days",
+        type=float,
+        default=float('inf'),
+        help="Max days to market resolution. Default: unlimited"
+    )
+
+    parser.add_argument(
         "--mc-paths",
         type=int,
         default=150000,
@@ -161,6 +169,7 @@ Examples:
         scan_interval=parse_interval(args.interval),
         min_edge=args.min_edge,
         min_apy=args.min_apy,
+        max_days=args.max_days,
         mc_paths=args.mc_paths,
         data_dir=args.data_dir,
         active_dir=args.data_dir / "active",

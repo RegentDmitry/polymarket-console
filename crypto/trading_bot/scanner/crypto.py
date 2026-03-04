@@ -252,7 +252,10 @@ class CryptoScanner(BaseScanner):
                             meets_edge = edge >= self.config.min_edge
                             meets_apy = annual_return >= self.config.min_apy
 
-                    if meets_edge and meets_apy and liquidity >= 1.0:
+                    # Check max_days filter (don't buy long-dated markets)
+                    meets_days = m.days_remaining <= self.config.max_days
+
+                    if meets_edge and meets_apy and meets_days and liquidity >= 1.0:
                         signal_type = SignalType.BUY
                     else:
                         signal_type = SignalType.SKIP

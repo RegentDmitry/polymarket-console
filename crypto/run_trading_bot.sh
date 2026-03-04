@@ -7,6 +7,7 @@
 # --- Signal Filters ---
 MIN_EDGE="0.04"              # 4% minimum edge
 MIN_APY="0.30"               # 30% minimum APY
+MAX_DAYS="45"                # Only buy markets resolving within 45 days
 
 # --- Scan Settings ---
 SCAN_INTERVAL="1m"           # Scan every 1 minute
@@ -50,6 +51,7 @@ echo ""
 echo "Configuration:"
 echo "  Min Edge:      $MIN_EDGE"
 echo "  Min APY:       $MIN_APY"
+echo "  Max Days:      $MAX_DAYS"
 echo "  Scan Interval: $SCAN_INTERVAL"
 echo "  Alloc:         $TARGET_ALLOC"
 echo "  Mode:          ${MODE:-(dry-run)}"
@@ -103,6 +105,7 @@ while true; do
     "$PYTHON" -m trading_bot \
         --min-edge "$MIN_EDGE" \
         --min-apy "$MIN_APY" \
+        --max-days "$MAX_DAYS" \
         --interval "$SCAN_INTERVAL" \
         --alloc "$TARGET_ALLOC" \
         $MODE \
