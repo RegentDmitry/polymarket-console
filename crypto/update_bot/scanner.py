@@ -150,11 +150,26 @@ class CryptoScanner:
             print(f"Error searching crypto markets: {e}")
             return []
 
+    def _is_double_barrier(self, question: str) -> bool:
+        """Detect 'what hits first' double-barrier markets.
+
+        These markets have two price barriers (e.g. '$60k or $80k first')
+        and require different pricing models. Skip them.
+        """
+        q = question.lower()
+        # "hit $60k or $80k first", "reach $X or $Y first"
+        if re.search(r'\$[\d,.]+k?\s+or\s+\$[\d,.]+k?\s+first', q):
+            return True
+        if "first" in q and q.count("$") >= 2:
+            return True
+        return False
+
     def extract_market_info(self, event: dict) -> List[CryptoMarketInfo]:
         """Extract CryptoMarketInfo from event.
 
         Handles both single-market events and multi-binary events
         (where one event has multiple strike/expiry markets).
+        Skips double-barrier 'what hits first' markets.
         """
         results = []
         markets = event.get("markets", [])
@@ -166,6 +181,10 @@ class CryptoScanner:
             slug = market.get("slug", "")
             question = market.get("question", "")
             description = market.get("description", "")
+
+            # Skip double-barrier "what hits first" markets
+            if self._is_double_barrier(question):
+                continue
             end_date = market.get("endDateIso")
             condition_id = market.get("conditionId", "")
 

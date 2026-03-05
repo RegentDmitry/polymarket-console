@@ -333,6 +333,11 @@ def main():
                 except Exception:
                     continue
 
+                # Skip double-barrier "what hits first" markets
+                q_lower = q.lower()
+                if "first" in q_lower and q_lower.count("$") >= 2:
+                    continue
+
                 dollar_match = re.search(r"\$([0-9,]+)", q)
                 if dollar_match:
                     strike = int(dollar_match.group(1).replace(",", ""))

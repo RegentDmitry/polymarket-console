@@ -131,6 +131,11 @@ class PolymarketData:
                 yes_token = token_ids.get("Yes", "")
                 no_token = token_ids.get("No", "")
 
+                # Skip markets with non-standard token_ids (e.g. double-barrier
+                # "what hits first" markets with "$60k"/"$80k" instead of "Yes"/"No")
+                if not yes_token or not no_token:
+                    continue
+
                 market = CryptoMarket(
                     slug=slug,
                     question=info.get("question", slug),
