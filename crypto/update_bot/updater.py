@@ -9,7 +9,7 @@ import json
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Callable
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .scanner import CryptoScanner, CryptoMarketInfo
 
@@ -127,6 +127,27 @@ class CryptoMarketsUpdater:
                     precise_end = self._parse_end_date_from_question(info.question)
                     if precise_end:
                         end_date = precise_end
+
+                    # Skip daily markets (< 2 days to expiry)
+                    try:
+                        if "T" in end_date:
+                            end_dt = datetime.fromisoformat(
+                                end_date.replace("Z", "+00:00")
+                            )
+                        else:
+                            end_dt = datetime.strptime(
+                                end_date, "%Y-%m-%d"
+                            ).replace(
+                                hour=23, minute=59, second=59,
+                                tzinfo=timezone.utc,
+                            )
+                        days_left = (
+                            end_dt - datetime.now(timezone.utc)
+                        ).total_seconds() / 86400
+                        if days_left < 2:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
 
                     entry = {
                         "currency": info.currency,

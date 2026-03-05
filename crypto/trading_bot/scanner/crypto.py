@@ -115,13 +115,15 @@ class CryptoScanner(BaseScanner):
                 f"ETH: ${eth_spot:,.0f} IV={eth_iv:.1%}"
             )
 
-            # Filter out expired, priceless, and over-limit markets
+            # Filter out expired, priceless, too-short, and over-limit markets
             # Always include held positions (for exit monitoring)
+            min_days = 2  # skip daily markets — too volatile, high spread
             max_days = self.config.max_days
             _held = held_slugs or set()
             active_markets = [
                 m for m in crypto_markets
                 if m.days_remaining > 0 and m.yes_price > 0
+                and (m.days_remaining >= min_days or m.slug in _held)
                 and (m.days_remaining <= max_days or m.slug in _held)
             ]
 
