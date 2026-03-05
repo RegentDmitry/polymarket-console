@@ -178,6 +178,12 @@ class CryptoMarketsUpdater:
                     except (ValueError, TypeError):
                         pass
 
+                    # Check if market is closed via API
+                    if self._is_market_closed(slug):
+                        if output_callback:
+                            output_callback(f"  Closed: {slug[:50]}")
+                        continue
+
                     # Keep the market (might have been added manually)
                     new_config[slug] = data
                     if output_callback:
@@ -225,6 +231,25 @@ class CryptoMarketsUpdater:
                     if line.strip():
                         output_callback(f"  {line}")
             return (False, error_msg, {})
+
+    def _is_market_closed(self, slug: str) -> bool:
+        """Check if a market is closed via Gamma API."""
+        try:
+            import httpx
+            resp = httpx.get(
+                f"https://gamma-api.polymarket.com/events?slug={slug}",
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not data:
+                return True  # not found = treat as closed
+            for m in data[0].get("markets", []):
+                if m.get("closed", False):
+                    return True
+            return False
+        except Exception:
+            return False  # on error, keep the market
 
     def _parse_end_date_from_question(self, question: str) -> Optional[str]:
         """Try to extract end date from question text.

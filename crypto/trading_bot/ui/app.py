@@ -1062,7 +1062,10 @@ class TradingBotApp(App):
                     pass
 
             def do_scan_with_progress():
-                entry_signals = self.scanner.scan_for_entries(progress_callback=update_status)
+                held_slugs = {p.market_slug for p in positions} if positions else set()
+                entry_signals = self.scanner.scan_for_entries(
+                    progress_callback=update_status, held_slugs=held_slugs,
+                )
                 current_prices = self.scanner.get_current_prices()
                 exit_signals = self.scanner.scan_for_exits(positions, current_prices)
                 rotation_proposals = self.scanner.scan_for_rotations(
