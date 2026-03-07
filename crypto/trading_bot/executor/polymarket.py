@@ -851,7 +851,7 @@ class PolymarketExecutor:
             else:
                 # Fallback: use API fields directly
                 slug = api_pos.get("slug", api_pos.get("conditionId", ""))
-                outcome = api_pos.get("outcome", "Yes")
+                outcome = api_pos.get("outcome", "Yes").upper()
                 condition_id = api_pos.get("conditionId", "")
                 title = api_pos.get("title", slug)
                 end_date = api_pos.get("endDate")

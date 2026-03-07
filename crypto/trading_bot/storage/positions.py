@@ -6,6 +6,7 @@ When a position is closed, it's moved to the history directory.
 """
 
 import json
+from collections import defaultdict
 from pathlib import Path
 from typing import List, Optional
 
@@ -185,6 +186,46 @@ class PositionStorage:
 
         self.save(existing)
         return existing
+
+    def consolidate_duplicates(self) -> int:
+        """Merge duplicate positions for the same market+outcome.
+
+        Returns number of duplicates merged.
+        """
+        positions = self.load_all_active()
+        groups: dict[tuple[str, str], list[Position]] = defaultdict(list)
+        for p in positions:
+            groups[(p.market_slug, p.outcome)].append(p)
+
+        merged_count = 0
+        for key, group in groups.items():
+            if len(group) <= 1:
+                continue
+
+            # Keep the one with the most tokens as primary
+            group.sort(key=lambda p: p.tokens, reverse=True)
+            primary = group[0]
+
+            for dup in group[1:]:
+                primary.tokens += dup.tokens
+                primary.entry_size += dup.entry_size
+                # Preserve fields from the duplicate if primary is missing them
+                if not primary.direction and dup.direction:
+                    primary.direction = dup.direction
+                if not primary.entry_order_id and dup.entry_order_id:
+                    primary.entry_order_id = dup.entry_order_id
+                if not primary.token_id and dup.token_id:
+                    primary.token_id = dup.token_id
+                self.delete(dup.id)
+                merged_count += 1
+
+            primary.entry_price = (
+                primary.entry_size / primary.tokens
+                if primary.tokens > 0 else primary.entry_price
+            )
+            self.save(primary)
+
+        return merged_count
 
     def count_active(self) -> int:
         """Count active positions."""

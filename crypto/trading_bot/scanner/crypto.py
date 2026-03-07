@@ -24,6 +24,20 @@ from ..pricing.portfolio import kelly_fraction
 from ..logger import get_logger
 
 
+# Polymarket crypto taker fee (activated 2026-03-06 for new markets)
+# fee = C * p * feeRate * (p * (1-p))^exponent
+# Effective fee rate on cost = feeRate * (p * (1-p))^exponent
+CRYPTO_FEE_RATE = 0.25
+CRYPTO_FEE_EXPONENT = 2
+
+
+def taker_fee_pct(price: float) -> float:
+    """Effective taker fee as fraction of cost, for crypto markets."""
+    if price <= 0 or price >= 1:
+        return 0.0
+    return CRYPTO_FEE_RATE * (price * (1 - price)) ** CRYPTO_FEE_EXPONENT
+
+
 class CryptoScanner(BaseScanner):
     """
     Scanner for BTC/ETH prediction markets on Polymarket.
@@ -214,19 +228,21 @@ class CryptoScanner(BaseScanner):
                         # Touch-above: YES price = pm_price, fair = touch_prob
                         side = "YES"
                         market_price = m.yes_price
-                        edge = fair_price - market_price
                         token_id = m.yes_token_id
                     else:
                         # Touch-below: buy NO (= doesn't touch)
                         side = "NO"
                         market_price = 1 - m.yes_price  # NO price
-                        edge = fair_price - market_price
                         token_id = m.no_token_id
 
-                    # Calculate APY
+                    # Subtract taker fee from edge
+                    fee = taker_fee_pct(market_price)
+                    edge = fair_price - market_price - fee
+
+                    # Calculate APY (net of fee)
                     T = days / 365 if days > 0 else 1 / 365
                     if market_price > 0 and market_price < 1:
-                        roi = (fair_price - market_price) / market_price
+                        roi = (fair_price - market_price - fee) / market_price
                         annual_return = roi / T if T > 0 else 0
                     else:
                         roi = 0
@@ -258,11 +274,12 @@ class CryptoScanner(BaseScanner):
                             self.polymarket.get_usable_liquidity(token_id, fair_price)
 
                         if best_ask > 0 and usable_liq >= 1.0:
-                            # Recalculate edge/APY using real ask price
+                            # Recalculate edge/APY using real ask price (net of fee)
                             market_price = weighted_price
-                            edge = fair_price - market_price
+                            fee = taker_fee_pct(market_price)
+                            edge = fair_price - market_price - fee
                             if market_price > 0 and market_price < 1:
-                                roi = (fair_price - market_price) / market_price
+                                roi = (fair_price - market_price - fee) / market_price
                                 annual_return = roi / T if T > 0 else 0
                             else:
                                 roi = 0
@@ -423,6 +440,7 @@ class CryptoScanner(BaseScanner):
 
             self._bid_prices[position.market_slug] = best_bid
 
+            # No fee subtraction on sell — we sell via limit orders (maker, 0% fee)
             edge_vs_mid = fair_price - market_price
             edge_vs_bid = fair_price - best_bid
 

@@ -62,9 +62,11 @@ class Position:
     direction: str = ""
 
     def __post_init__(self):
-        """Convert status string to enum if needed."""
+        """Convert status string to enum if needed, normalize outcome."""
         if isinstance(self.status, str):
             self.status = PositionStatus(self.status)
+        if self.outcome:
+            self.outcome = self.outcome.upper()
 
     @property
     def age_days(self) -> int:

@@ -796,6 +796,12 @@ class TradingBotApp(App):
             if synced:
                 self.notify(f"Synced {len(synced)} positions from Polymarket")
 
+            # Merge duplicate positions (same market+outcome, different case)
+            merged = self.position_storage.consolidate_duplicates()
+            if merged:
+                logger.log_info(f"Consolidated {merged} duplicate positions")
+                self.notify(f"Consolidated {merged} duplicate positions")
+
             self._init_sell_orders()
             self.call_later(self._check_balance_discrepancies)
 
