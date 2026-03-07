@@ -324,7 +324,7 @@ class PositionsPanel(VerticalScroll):
                 bid_str = f"{bid:>{BW}.1%}" if bid > 0 else f"{'--':>{BW}}"
 
                 if has_scan:
-                    edge = fair - current if current > 0 else 0
+                    edge = fair - bid if bid > 0 else (fair - current if current > 0 else 0)
                     if edge > 0:
                         edge_str = f"[green]{edge:>{GW}.1%}[/green]"
                     elif edge < -0.001:
