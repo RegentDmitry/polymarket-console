@@ -418,17 +418,27 @@ class LiveDataPanel(Static):
         self.eth_iv = 0.0
         self.btc_iv_days = 0
         self.eth_iv_days = 0
+        self.btc_high = 0.0
+        self.btc_low = 0.0
+        self.eth_high = 0.0
+        self.eth_low = 0.0
         self._updated_at: float = 0.0  # time.monotonic() of last update
 
     def update_data(self, btc_spot: float, eth_spot: float,
                     btc_iv: float, eth_iv: float, age: int = 0,
-                    btc_iv_days: int = 0, eth_iv_days: int = 0) -> None:
+                    btc_iv_days: int = 0, eth_iv_days: int = 0,
+                    btc_high: float = 0, btc_low: float = 0,
+                    eth_high: float = 0, eth_low: float = 0) -> None:
         self.btc_spot = btc_spot
         self.eth_spot = eth_spot
         self.btc_iv = btc_iv
         self.eth_iv = eth_iv
         self.btc_iv_days = btc_iv_days
         self.eth_iv_days = eth_iv_days
+        self.btc_high = btc_high
+        self.btc_low = btc_low
+        self.eth_high = eth_high
+        self.eth_low = eth_low
         self._updated_at = time.monotonic()
         self.refresh()
 
@@ -443,16 +453,23 @@ class LiveDataPanel(Static):
         suffix = f" ({days}d)" if days > 0 else ""
         return f"IV: {iv:>5.1%}{suffix}"
 
+    def _hl_label(self, high: float, low: float) -> str:
+        if high <= 0:
+            return ""
+        return f"  [green]↑{high:>,.0f}[/] [red]↓{low:>,.0f}[/]"
+
     def render(self) -> Panel:
         lines = []
 
         if self.btc_spot > 0:
-            lines.append(f"BTC  ${self.btc_spot:>10,.0f}   {self._iv_label(self.btc_iv, self.btc_iv_days)}")
+            hl = self._hl_label(self.btc_high, self.btc_low)
+            lines.append(f"BTC  ${self.btc_spot:>10,.0f}{hl}   {self._iv_label(self.btc_iv, self.btc_iv_days)}")
         else:
             lines.append("BTC  --           IV: --")
 
         if self.eth_spot > 0:
-            lines.append(f"ETH  ${self.eth_spot:>10,.0f}   {self._iv_label(self.eth_iv, self.eth_iv_days)}")
+            hl = self._hl_label(self.eth_high, self.eth_low)
+            lines.append(f"ETH  ${self.eth_spot:>10,.0f}{hl}   {self._iv_label(self.eth_iv, self.eth_iv_days)}")
         else:
             lines.append("ETH  --           IV: --")
 
@@ -835,6 +852,8 @@ class TradingBotApp(App):
                             btc_spot, eth_spot,
                             snap.get("btc_iv", 0), snap.get("eth_iv", 0),
                             snap.get("btc_iv_days", 0), snap.get("eth_iv_days", 0),
+                            binance_snap.get("btc_high_3m", 0), binance_snap.get("btc_low_3m", 0),
+                            binance_snap.get("eth_high_3m", 0), binance_snap.get("eth_low_3m", 0),
                         )
                         self.call_from_thread(
                             self._update_futures_panel,
@@ -869,13 +888,15 @@ class TradingBotApp(App):
             t.start()
 
     def _update_live_data_panel(self, btc_spot, eth_spot, btc_iv, eth_iv,
-                               btc_iv_days=0, eth_iv_days=0):
+                               btc_iv_days=0, eth_iv_days=0,
+                               btc_high=0, btc_low=0, eth_high=0, eth_low=0):
         """Update live data panel (called from thread via call_from_thread)."""
         try:
             panel = self.query_one(LiveDataPanel)
             age = int(self.scanner.binance.age_seconds) if self.scanner else 0
             panel.update_data(btc_spot, eth_spot, btc_iv, eth_iv, age,
-                              btc_iv_days, eth_iv_days)
+                              btc_iv_days, eth_iv_days,
+                              btc_high, btc_low, eth_high, eth_low)
         except Exception:
             pass
 
@@ -1203,6 +1224,8 @@ class TradingBotApp(App):
                 btc_spot, eth_spot,
                 dsnap.get("btc_iv", 0), dsnap.get("eth_iv", 0),
                 dsnap.get("btc_iv_days", 0), dsnap.get("eth_iv_days", 0),
+                bsnap.get("btc_high_3m", 0), bsnap.get("btc_low_3m", 0),
+                bsnap.get("eth_high_3m", 0), bsnap.get("eth_low_3m", 0),
             )
             deribit_age = self.scanner.deribit.age_seconds
             age = int(deribit_age) if deribit_age < 1e9 else 0
@@ -1751,11 +1774,19 @@ class TradingBotApp(App):
         Edge_exit signals are always auto-executed (no confirmation needed).
         They cancel existing sell limits and do market sell at best bid.
         """
-        # Separate edge_exit signals — these auto-execute regardless of mode
-        edge_exit_signals = [s for s in exit_signals if "edge_exit" in s.reason]
-        other_exit_signals = [s for s in exit_signals if "edge_exit" not in s.reason]
+        # Separate auto-execute signals (breach + edge_exit)
+        breach_signals = [s for s in exit_signals if "breach_emergency" in (s.reason or "")]
+        edge_exit_signals = [s for s in exit_signals if "edge_exit" in (s.reason or "")]
+        other_exit_signals = [
+            s for s in exit_signals
+            if "edge_exit" not in (s.reason or "") and "breach_emergency" not in (s.reason or "")
+        ]
 
-        # Process edge_exit immediately (auto-execute, no confirmation)
+        # Process breach emergencies FIRST (highest priority)
+        for signal in breach_signals:
+            await self._execute_edge_exit(signal)
+
+        # Process edge_exit (auto-execute, no confirmation)
         for signal in edge_exit_signals:
             await self._execute_edge_exit(signal)
 
@@ -2041,9 +2072,9 @@ class TradingBotApp(App):
                 logger.log_trade_failed("SELL", signal.market_slug, result.error or "Unknown error")
 
     async def _execute_edge_exit(self, signal: Signal) -> None:
-        """Execute edge_exit: cancel sell limit, then market sell at best bid.
+        """Execute edge_exit or breach_emergency: cancel sell limit, then market sell.
 
-        Edge_exit is a stop-loss — auto-executes without confirmation.
+        Auto-executes without confirmation (stop-loss / emergency).
         """
         logger = get_logger()
 
@@ -2060,12 +2091,13 @@ class TradingBotApp(App):
                     self._dry_run_positions = [
                         p for p in self._dry_run_positions if p.id != signal.position_id
                     ]
+                    exit_type = "BREACH EXIT" if "breach_emergency" in (signal.reason or "") else "EDGE EXIT"
                     self.notify(
-                        f"[DRY] EDGE EXIT: {signal.market_slug[:30]} @ {signal.current_price:.1%} "
+                        f"[DRY] {exit_type}: {signal.market_slug[:30]} @ {signal.current_price:.1%} "
                         f"(edge={signal.edge:+.1%}, P&L: ${pnl:+.2f})",
                         markup=False,
                     )
-                    logger.log_info(f"[DRY] EDGE EXIT: {signal.market_slug} P&L: ${pnl:+.2f}")
+                    logger.log_info(f"[DRY] {exit_type}: {signal.market_slug} P&L: ${pnl:+.2f}")
             self._refresh_positions_panel()
             return
 
@@ -2137,9 +2169,14 @@ class TradingBotApp(App):
                     signal.position_id, signal.current_price, order_id
                 )
                 self.sell_order_store.remove(signal.position_id)
-                get_trade_journal().log_edge_exit(position, signal, pnl)
+                is_breach = "breach_emergency" in (signal.reason or "")
+                if is_breach:
+                    get_trade_journal().log_breach_exit(position, signal, pnl)
+                else:
+                    get_trade_journal().log_edge_exit(position, signal, pnl)
+                exit_type = "BREACH EXIT" if is_breach else "EDGE EXIT"
                 logger.log_info(
-                    f"EDGE EXIT EXECUTED: {signal.market_slug[:40]} @ {signal.current_price:.1%} "
+                    f"{exit_type} EXECUTED: {signal.market_slug[:40]} @ {signal.current_price:.1%} "
                     f"edge={signal.edge:+.1%} P&L: ${pnl:+.2f}"
                 )
                 self.notify(
@@ -2154,7 +2191,10 @@ class TradingBotApp(App):
                 )
                 if partial:
                     pnl = (partial.exit_size or 0) - partial.entry_size
-                    get_trade_journal().log_edge_exit(partial, signal, pnl)
+                    if is_breach:
+                        get_trade_journal().log_breach_exit(partial, signal, pnl)
+                    else:
+                        get_trade_journal().log_edge_exit(partial, signal, pnl)
                     logger.log_info(
                         f"EDGE EXIT PARTIAL: {signal.market_slug[:40]} "
                         f"sold={actual_matched:.1f}/{sell_size:.1f} P&L: ${pnl:+.2f}"

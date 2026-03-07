@@ -89,6 +89,12 @@ class CryptoScanner(BaseScanner):
             btc_spot = deribit_snap["btc_spot"] or binance_snap.get("btc_price", 0)
             eth_spot = deribit_snap["eth_spot"] or binance_snap.get("eth_price", 0)
 
+            # High/Low from last 3 closed 1m candles (for breach detection)
+            btc_high_3m = binance_snap.get("btc_high_3m", btc_spot)
+            btc_low_3m = binance_snap.get("btc_low_3m", btc_spot)
+            eth_high_3m = binance_snap.get("eth_high_3m", eth_spot)
+            eth_low_3m = binance_snap.get("eth_low_3m", eth_spot)
+
             btc_iv = deribit_snap["btc_iv"]
             eth_iv = deribit_snap["eth_iv"]
 
@@ -142,6 +148,8 @@ class CryptoScanner(BaseScanner):
             # Run batch MC for each group
             for (currency, days), markets_in_group in groups.items():
                 spot = btc_spot if currency == "BTC" else eth_spot
+                spot_high = btc_high_3m if currency == "BTC" else eth_high_3m
+                spot_low = btc_low_3m if currency == "BTC" else eth_low_3m
                 iv = self.deribit.iv_for_days(currency, days)
                 df = get_df(currency)
                 drift = self.deribit.drift_for_days(currency, days)
@@ -183,9 +191,15 @@ class CryptoScanner(BaseScanner):
                 for m in markets_in_group:
                     if m.is_up:
                         touch_prob = above_probs.get(m.strike, 0)
+                        # If 1m candle High already reached strike → already touched
+                        if spot_high >= m.strike:
+                            touch_prob = 1.0
                         fair_price = touch_prob  # YES = touches
                     else:
                         touch_prob = below_probs.get(m.strike, 0)
+                        # If 1m candle Low already breached strike → already touched
+                        if spot_low <= m.strike and spot_low > 0:
+                            touch_prob = 1.0
                         fair_price = 1 - touch_prob  # YES = doesn't touch
 
                     # Cache
@@ -325,9 +339,70 @@ class CryptoScanner(BaseScanner):
         if not positions:
             return signals
 
+        # Breach check: Binance 1m candle high/low (closed candles only)
+        binance_snap = self.binance.get_snapshot()
+        btc_high = binance_snap.get("btc_high_3m", 0)
+        btc_low = binance_snap.get("btc_low_3m", 0)
+        eth_high = binance_snap.get("eth_high_3m", 0)
+        eth_low = binance_snap.get("eth_low_3m", 0)
+
+        market_by_slug = {m.slug: m for m in self._crypto_markets}
+
         logger.log_info(f"Checking exits for {len(positions)} positions...")
+        logger.log_info(
+            f"Candle check: BTC ↑{btc_high:,.0f} ↓{btc_low:,.0f} | "
+            f"ETH ↑{eth_high:,.0f} ↓{eth_low:,.0f}"
+        )
 
         for position in positions:
+            # --- Breach detection: barrier already touched on closed 1m candle ---
+            cm = market_by_slug.get(position.market_slug)
+            if cm:
+                high = btc_high if cm.currency == "BTC" else eth_high
+                low = btc_low if cm.currency == "BTC" else eth_low
+                breached = False
+                breach_winning = False
+
+                if cm.direction == "below" and low > 0 and low <= cm.strike:
+                    breached = True
+                    breach_winning = position.outcome.upper() == "YES"
+                elif cm.direction == "above" and high > 0 and high >= cm.strike:
+                    breached = True
+                    breach_winning = position.outcome.upper() == "YES"
+
+                if breached:
+                    if not breach_winning:
+                        # Position is worthless — emergency sell
+                        token_id = self._token_ids.get(position.market_slug) or position.token_id or ""
+                        logger.log_info(
+                            f"BREACH (LOSING): {position.market_slug} "
+                            f"strike={cm.strike:,.0f} dir={cm.direction} "
+                            f"outcome={position.outcome} — EMERGENCY SELL"
+                        )
+                        signal = Signal(
+                            type=SignalType.SELL,
+                            market_id=position.market_id,
+                            market_slug=position.market_slug,
+                            market_name=position.market_name,
+                            outcome=position.outcome,
+                            current_price=0.01,
+                            fair_price=0.0,
+                            target_price=0.01,
+                            edge=-1.0,
+                            position_id=position.id,
+                            reason="breach_emergency: barrier touched on closed 1m candle",
+                            suggested_size=position.current_value(0.01),
+                            token_id=token_id,
+                            direction=position.direction,
+                        )
+                        signals.append(signal)
+                    else:
+                        logger.log_info(
+                            f"BREACH (WINNING): {position.market_slug} "
+                            f"strike={cm.strike:,.0f} — awaiting resolution"
+                        )
+                    continue  # Skip normal exit logic for breached positions
+
             fair_price = self._fair_prices.get(position.market_slug)
             if fair_price is None:
                 continue

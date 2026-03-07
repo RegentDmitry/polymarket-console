@@ -285,6 +285,21 @@ class TradeJournal:
             "hold_days": position.age_days,
         })
 
+    def log_breach_exit(self, position: Position, signal: Signal, pnl: float):
+        """Record a breach emergency sell (barrier touched on closed 1m candle)."""
+        self._write({
+            "action": "BREACH_EXIT",
+            "slug": position.market_slug,
+            "outcome": position.outcome,
+            "direction": position.direction,
+            "entry_price": round(position.entry_price, 4),
+            "exit_price": round(signal.current_price, 4),
+            "pnl": round(pnl, 2),
+            "tokens": round(position.tokens, 4),
+            "hold_days": position.age_days,
+            "reason": signal.reason,
+        })
+
     def log_resolution(self, position: Position, won: bool, pnl: float):
         """Record a market resolution."""
         self._write({
