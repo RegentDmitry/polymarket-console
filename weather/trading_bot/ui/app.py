@@ -448,12 +448,12 @@ class TradingBotApp(App):
         height: 1fr;
     }
     #left-panel {
-        width: 55%;
+        width: 60%;
         height: 100%;
         overflow-y: auto;
     }
     #right-panel {
-        width: 45%;
+        width: 40%;
         height: 100%;
     }
     #positions-scroll {
@@ -465,6 +465,9 @@ class TradingBotApp(App):
         height: auto;
     }
     #portfolio-panel {
+        height: auto;
+    }
+    TradeLogPanel {
         height: auto;
     }
     #forecast-scroll {
@@ -519,12 +522,12 @@ class TradingBotApp(App):
             with Vertical(id="left-panel"):
                 yield ScannerPanel(id="scanner-panel")
                 yield TradeLogPanel(id="log-panel")
+                with VerticalScroll(id="forecast-scroll"):
+                    yield ForecastPanel(id="forecast-panel")
             with Vertical(id="right-panel"):
                 with VerticalScroll(id="positions-scroll"):
                     yield PositionsPanel(id="positions-panel")
                 yield RiskPanel(id="portfolio-panel")
-                with VerticalScroll(id="forecast-scroll"):
-                    yield ForecastPanel(id="forecast-panel")
         yield Footer()
 
     async def on_mount(self) -> None:
