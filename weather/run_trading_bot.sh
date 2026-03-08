@@ -23,6 +23,11 @@ SCAN_INTERVAL="5m"           # Price scan every 5 min
 # --live --auto    : fully automatic trading
 MODE="--live --auto"
 
+# --- Forecast Logging (optional) ---
+# PostgreSQL connection string for forecast history logging
+# Leave empty to disable
+DB_URL=""
+
 # =============================================================================
 # STARTUP (don't modify below)
 # =============================================================================
@@ -76,6 +81,11 @@ while true; do
     echo -e "${GREEN}Launching...${NC}"
     echo ""
 
+    DB_FLAG=""
+    if [ -n "$DB_URL" ]; then
+        DB_FLAG="--db-url $DB_URL"
+    fi
+
     $PYTHON -m trading_bot \
         --min-edge "$MIN_EDGE" \
         --min-hours "$MIN_HOURS" \
@@ -83,6 +93,7 @@ while true; do
         --max-event "$MAX_PER_EVENT" \
         --max-city "$MAX_PER_CITY" \
         --interval "$SCAN_INTERVAL" \
+        $DB_FLAG \
         $MODE
 
     exit_code=$?
