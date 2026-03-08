@@ -869,8 +869,10 @@ class TradingBotApp(App):
                 )
             except Exception:
                 pass
-        except Exception:
+        except Exception as e:
             try:
+                log = self.query_one("#log-panel", TradeLogPanel)
+                self.call_from_thread(log.add_line, f"[red]MC error: {e}[/red]")
                 self.call_from_thread(
                     self.query_one("#portfolio-panel", RiskPanel).set_mc_computing,
                     False,

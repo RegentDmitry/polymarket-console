@@ -46,7 +46,7 @@ class HistoryStorage:
                     pos = Position.from_json(f.read())
                     positions.append(pos)
             except Exception as e:
-                print(f"Warning: Failed to load {path}: {e}")
+                pass  # skip corrupted history files
         positions.sort(key=lambda p: p.exit_time or "", reverse=True)
         return positions
 

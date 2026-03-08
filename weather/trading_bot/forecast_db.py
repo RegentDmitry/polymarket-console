@@ -84,7 +84,8 @@ class ForecastDB:
                 self.conn.autocommit = True
                 return True
             # Test connection
-            self.conn.cursor().execute("SELECT 1")
+            with self.conn.cursor() as cur:
+                cur.execute("SELECT 1")
             return True
         except Exception:
             try:
@@ -205,7 +206,7 @@ class ForecastDB:
                     AS hours_before
             FROM forecasts f
             JOIN actuals a ON f.city = a.city AND f.target_date = a.target_date
-            WHERE f.fetched_at > NOW() - INTERVAL '%s days'
+            WHERE f.fetched_at > NOW() - %s * INTERVAL '1 day'
         """
         params = [days_back]
 

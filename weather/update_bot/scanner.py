@@ -36,8 +36,6 @@ CITIES = [
 ]
 
 _ctx = ssl.create_default_context()
-_ctx.check_hostname = False
-_ctx.verify_mode = ssl.CERT_NONE
 
 
 def _fetch_json(url, timeout=15):

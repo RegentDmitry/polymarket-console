@@ -15,8 +15,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 _ctx = ssl.create_default_context()
-_ctx.check_hostname = False
-_ctx.verify_mode = ssl.CERT_NONE
 
 GAMMA_API = "https://gamma-api.polymarket.com"
 

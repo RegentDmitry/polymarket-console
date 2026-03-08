@@ -237,7 +237,7 @@ def positions_to_specs(
         forecast = day_data.get("forecast", 0)
         sigma = day_data.get("sigma", 0)
 
-        if forecast == 0 or sigma == 0:
+        if not day_data or sigma == 0:
             continue  # skip if no forecast data
 
         specs.append(WeatherPositionSpec(

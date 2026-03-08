@@ -127,7 +127,8 @@ class Position:
     @classmethod
     def from_dict(cls, data: dict) -> "Position":
         """Create from dictionary."""
-        return cls(**data)
+        valid = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+        return cls(**valid)
 
     def to_json(self) -> str:
         """Serialize to JSON string."""
