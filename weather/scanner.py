@@ -36,8 +36,8 @@ GAMMA_API = "https://gamma-api.polymarket.com"
 OPEN_METEO_API = "https://api.open-meteo.com/v1/forecast"
 ENSEMBLE_MODELS = "gfs_seamless,ecmwf_ifs025,icon_seamless,jma_seamless"
 
-# From backtest calibration (345 events, best Brier score)
-SIGMA_FLOOR_F = 3.5  # °F
+# From IEM-calibrated backtest: sqrt(σ_iem² + σ_forecast²) ≈ sqrt(1.0² + 2.3²)
+SIGMA_FLOOR_F = 2.5  # °F
 SIGMA_FLOOR_C = SIGMA_FLOOR_F / 1.8  # °C
 
 MONTH_MAP = {

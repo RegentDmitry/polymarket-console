@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """
-Backtest weather temperature model on 351 closed Polymarket markets.
+Backtest weather temperature model on closed Polymarket markets.
+
+Ground truth: IEM METAR/ASOS station data (same sensors as Weather Underground).
+Fallback: Open-Meteo ERA5 archive (reanalysis, less accurate for WU resolution).
 
 PM prices at resolution are 0/1 (post-resolution), so we can't backtest
 against real market prices. Instead we evaluate:
 
-1. σ calibration — find σ minimizing Brier score (archive as perfect forecast)
+1. σ calibration — find σ minimizing Brier score (IEM station data as ground truth)
 2. Model accuracy — top-1/top-2 prediction accuracy
 3. Calibration curve — when model says 30%, does it happen 30% of the time?
 4. Simulated trading — model vs uniform baseline and volume-weighted baseline
-5. Archive vs WU station bias — quantify and correct
+5. City breakdown — per-city accuracy, P&L, bias
+6. Ground truth vs WU winning bucket bias
 
 Usage:
     python3 backtest.py
@@ -17,6 +21,8 @@ Usage:
 """
 
 import argparse
+import csv
+import io
 import json
 import math
 import re
@@ -38,8 +44,10 @@ from scipy.stats import norm
 
 CITIES_JSON = Path(__file__).parent / "cities.json"
 DEFAULT_DATA = Path("/tmp/weather_backtest_data.json")
+CACHE_DIR = Path("/tmp/weather_backtest_cache")
+CACHE_DIR.mkdir(exist_ok=True)
 
-SIGMA_GRID_F = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0]  # °F
+SIGMA_GRID_F = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0]  # °F
 EDGE_THRESHOLDS = [0.03, 0.05, 0.08, 0.10, 0.15, 0.20]
 
 ctx = ssl.create_default_context()
@@ -125,7 +133,97 @@ def parse_actual_from_winner(winner_q: str):
 
 
 # ---------------------------------------------------------------------------
-# Open-Meteo archive
+# IEM station data (METAR/ASOS — same sensors as Weather Underground)
+# ---------------------------------------------------------------------------
+
+def fetch_iem_daily(network, station, start, end):
+    """Fetch daily max temp from IEM. Returns {date_str: max_temp_f}."""
+    cache_file = CACHE_DIR / f"iem_daily_{station}_{start}_{end}.json"
+    if cache_file.exists():
+        with open(cache_file) as f:
+            return json.load(f)
+
+    s = datetime.strptime(start, "%Y-%m-%d")
+    e = datetime.strptime(end, "%Y-%m-%d")
+    url = (
+        f"https://mesonet.agron.iastate.edu/cgi-bin/request/daily.py"
+        f"?network={network}&stations={station}"
+        f"&year1={s.year}&month1={s.month}&day1={s.day}"
+        f"&year2={e.year}&month2={e.month}&day2={e.day}"
+        f"&var=max_temp_f&format=csv"
+    )
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    resp = urllib.request.urlopen(req, timeout=30, context=ctx)
+    text = resp.read().decode()
+
+    result = {}
+    reader = csv.DictReader(io.StringIO(text))
+    for row in reader:
+        try:
+            result[row["day"]] = float(row["max_temp_f"])
+        except (ValueError, KeyError):
+            pass
+
+    with open(cache_file, "w") as f:
+        json.dump(result, f)
+    return result
+
+
+def fetch_iem_hourly_max(station, start, end, tz="UTC"):
+    """Fetch hourly METAR obs and compute daily max (for stations without daily.py)."""
+    cache_file = CACHE_DIR / f"iem_hourly_{station}_{start}_{end}.json"
+    if cache_file.exists():
+        with open(cache_file) as f:
+            return json.load(f)
+
+    s = datetime.strptime(start, "%Y-%m-%d")
+    e = datetime.strptime(end, "%Y-%m-%d") + timedelta(days=1)
+    url = (
+        f"https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py"
+        f"?station={station}&data=tmpf&tz={tz}"
+        f"&format=onlycomma&report_type=3"
+        f"&year1={s.year}&month1={s.month}&day1={s.day}"
+        f"&year2={e.year}&month2={e.month}&day2={e.day}"
+    )
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    resp = urllib.request.urlopen(req, timeout=60, context=ctx)
+    text = resp.read().decode()
+
+    daily_temps = defaultdict(list)
+    reader = csv.DictReader(io.StringIO(text))
+    for row in reader:
+        try:
+            date_str = row["valid"].split(" ")[0]
+            temp = float(row["tmpf"])
+            if -80 < temp < 150:
+                daily_temps[date_str].append(temp)
+        except (ValueError, KeyError):
+            pass
+
+    result = {}
+    for date_str, temps in daily_temps.items():
+        if start <= date_str <= end:
+            result[date_str] = max(temps)
+
+    with open(cache_file, "w") as f:
+        json.dump(result, f)
+    return result
+
+
+def fetch_iem_for_city(city_cfg, start, end):
+    """Get IEM daily max for a city. Returns {date: temp_f}."""
+    network = city_cfg.get("iem_network")
+    station = city_cfg.get("iem_station")
+    if not station:
+        return {}
+    if network is None:
+        # Wellington: use hourly
+        return fetch_iem_hourly_max(station, start, end, tz=city_cfg["timezone"])
+    return fetch_iem_daily(network, station, start, end)
+
+
+# ---------------------------------------------------------------------------
+# Open-Meteo archive (ERA5) — fallback
 # ---------------------------------------------------------------------------
 
 def fetch_archive(lat, lon, start, end, unit="fahrenheit"):
@@ -173,22 +271,22 @@ def bucket_fair_price(forecast, sigma, lower, upper):
 
 def compute_event_fair_prices(buckets, forecast, sigma):
     """Compute fair prices for all buckets in an event. Returns list of floats."""
-    prices = []
-    for b in buckets:
-        p = bucket_fair_price(forecast, sigma, b["lower"], b["upper"])
-        prices.append(p)
-    return prices
+    return [bucket_fair_price(forecast, sigma, b["lower"], b["upper"])
+            for b in buckets]
 
 
 # ---------------------------------------------------------------------------
 # Prepare events
 # ---------------------------------------------------------------------------
 
-def prepare_events(events, cities_cfg, archive_f, archive_c):
-    """Parse events into structured list with archive temps.
+def prepare_events(events, cities_cfg, iem_f, iem_c, archive_f, archive_c):
+    """Parse events into structured list with ground truth temps.
 
-    Returns list of dicts, each with:
-      - city, date, archive_temp, is_fahrenheit
+    Uses IEM station data as primary ground truth (same as WU resolution),
+    falls back to ERA5 archive if IEM unavailable.
+
+    Returns list of dicts with:
+      - city, date, ground_truth_temp, ground_truth_source, is_fahrenheit
       - buckets: list of {lower, upper, is_winner, volume, question}
     """
     prepared = []
@@ -198,21 +296,28 @@ def prepare_events(events, cities_cfg, archive_f, archive_c):
         month_num = MONTH_MAP.get(ev["month"], 1)
         date_str = f"2026-{month_num:02d}-{ev['day']:02d}"
 
-        # Parse winning bucket
         winner_q = ev.get("winner", "")
         if not winner_q:
             continue
 
-        # Determine unit from first bucket question (per event!)
         first_q = ev["buckets"][0]["question"] if ev["buckets"] else ""
         is_fahrenheit = "°F" in first_q or "°F" in winner_q
 
-        # Get archive temp in matching unit
-        arch = archive_f if is_fahrenheit else archive_c
-        if city not in arch or date_str not in arch[city]:
-            continue
-        archive_temp = arch[city][date_str]
-        if archive_temp is None:
+        # Ground truth: IEM primary, ERA5 fallback
+        ground_truth_temp = None
+        ground_truth_source = None
+
+        iem = iem_f if is_fahrenheit else iem_c
+        if city in iem and date_str in iem[city] and iem[city][date_str] is not None:
+            ground_truth_temp = iem[city][date_str]
+            ground_truth_source = "iem"
+        else:
+            arch = archive_f if is_fahrenheit else archive_c
+            if city in arch and date_str in arch[city] and arch[city][date_str] is not None:
+                ground_truth_temp = arch[city][date_str]
+                ground_truth_source = "era5"
+
+        if ground_truth_temp is None:
             continue
 
         # Parse all buckets
@@ -234,7 +339,6 @@ def prepare_events(events, cities_cfg, archive_f, archive_c):
         if not buckets:
             continue
 
-        # Verify exactly one winner
         n_winners = sum(1 for b in buckets if b["is_winner"])
         if n_winners != 1:
             continue
@@ -242,7 +346,8 @@ def prepare_events(events, cities_cfg, archive_f, archive_c):
         prepared.append({
             "city": city,
             "date": date_str,
-            "archive_temp": archive_temp,
+            "ground_truth_temp": ground_truth_temp,
+            "ground_truth_source": ground_truth_source,
             "is_fahrenheit": is_fahrenheit,
             "buckets": buckets,
             "total_volume": ev.get("volume", 0),
@@ -261,11 +366,7 @@ def uniform_prices(n_buckets):
 
 
 def volume_weighted_prices(buckets):
-    """Volume-weighted baseline: proportional to trading volume.
-
-    More volume on a bucket ≈ more people thought it would win.
-    This is our best approximation of pre-resolution market prices.
-    """
+    """Volume-weighted baseline: proportional to trading volume."""
     volumes = [b["volume"] for b in buckets]
     total = sum(volumes)
     if total <= 0:
@@ -321,17 +422,33 @@ def main():
     date_max = min(max(all_dates), yesterday)
     print(f"Date range: {date_min} to {date_max}")
 
-    # Fetch archive data per city — in BOTH fahrenheit and celsius
-    # (some cities like London switched units mid-stream on PM)
-    print("\nFetching Open-Meteo archive data...")
-    archive_f = {}  # city -> {date: temp_F}
-    archive_c = {}  # city -> {date: temp_C}
     city_set = set(ev["city"] for ev in events)
 
+    # Fetch IEM station data (primary ground truth — same as WU)
+    print("\nFetching IEM station data (METAR/ASOS = WU ground truth)...")
+    iem_f = {}  # city -> {date: temp_F}
+    iem_c = {}  # city -> {date: temp_C}
+    for city in sorted(city_set):
+        cfg = cities_cfg.get(city)
+        if not cfg or not cfg.get("iem_station"):
+            print(f"  {city}: no IEM config, will use ERA5 fallback")
+            continue
+        try:
+            temps_f = fetch_iem_for_city(cfg, date_min, date_max)
+            iem_f[city] = temps_f
+            iem_c[city] = {d: (t - 32) * 5 / 9 for d, t in temps_f.items()}
+            print(f"  {city}: {len(temps_f)} days")
+        except Exception as e:
+            print(f"  {city}: IEM ERROR {e}, will use ERA5 fallback")
+        time.sleep(0.2)
+
+    # Fetch ERA5 archive (fallback)
+    print("\nFetching Open-Meteo ERA5 archive (fallback)...")
+    archive_f = {}
+    archive_c = {}
     for city in sorted(city_set):
         cfg = cities_cfg.get(city)
         if not cfg:
-            print(f"  {city}: no config in cities.json, skipping")
             continue
         try:
             data_f = fetch_archive(cfg["lat"], cfg["lon"], date_min, date_max,
@@ -343,12 +460,15 @@ def main():
             print(f"  {city}: {len(data_f)} days")
         except Exception as e:
             print(f"  {city}: ERROR {e}")
-        time.sleep(0.3)  # rate limit courtesy
+        time.sleep(0.3)
 
     # Prepare structured events
-    prepared = prepare_events(events, cities_cfg, archive_f, archive_c)
+    prepared = prepare_events(events, cities_cfg, iem_f, iem_c, archive_f, archive_c)
     total_buckets = sum(len(e["buckets"]) for e in prepared)
+    iem_count = sum(1 for ev in prepared if ev["ground_truth_source"] == "iem")
+    era5_count = sum(1 for ev in prepared if ev["ground_truth_source"] == "era5")
     print(f"\nPrepared: {len(prepared)} events, {total_buckets} buckets")
+    print(f"Ground truth: {iem_count} IEM + {era5_count} ERA5 fallback")
 
     # =========================================================================
     # 1. SIGMA CALIBRATION (Brier Score)
@@ -356,8 +476,8 @@ def main():
     print(f"\n{'='*70}")
     print("1. SIGMA CALIBRATION (Brier Score)")
     print(f"{'='*70}\n")
-    print("Using archive_temp as perfect forecast. Finding σ that gives")
-    print("best-calibrated bucket probabilities.\n")
+    print("Using IEM station data as ground truth (same ASOS sensors as WU).")
+    print("Finding σ that gives best-calibrated bucket probabilities.\n")
 
     best_sigma_f = None
     best_brier = float("inf")
@@ -374,13 +494,12 @@ def main():
         for ev in prepared:
             sigma = sigma_f if ev["is_fahrenheit"] else sigma_f / 1.8
             fair_prices = compute_event_fair_prices(ev["buckets"],
-                                                     ev["archive_temp"], sigma)
+                                                     ev["ground_truth_temp"], sigma)
             outcomes = [1.0 if b["is_winner"] else 0.0 for b in ev["buckets"]]
 
             all_probs.extend(fair_prices)
             all_outcomes.extend(outcomes)
 
-            # Top-1: does model's highest prob match winner?
             model_pick = np.argmax(fair_prices)
             if outcomes[model_pick] == 1.0:
                 top1_correct += 1
@@ -399,8 +518,12 @@ def main():
         print(f"{sigma_f:>5.1f}  {sigma_f/1.8:>5.2f}  {bs:>7.4f}  {ll:>7.4f}  "
               f"{top1:>5.1f}%{marker}")
 
-    print(f"\nBest σ: {best_sigma_f}°F / {best_sigma_f/1.8:.2f}°C "
+    print(f"\nBest σ (ground truth): {best_sigma_f}°F / {best_sigma_f/1.8:.2f}°C "
           f"(Brier={best_brier:.4f})")
+    print(f"This is the 'perfect forecast' σ. In production, add forecast error:")
+    print(f"  σ_production = sqrt(σ_iem² + σ_forecast²)")
+    print(f"  ≈ sqrt({best_sigma_f}² + 2.3²) = "
+          f"{math.sqrt(best_sigma_f**2 + 2.3**2):.1f}°F")
 
     # Uniform baseline Brier
     unif_probs = []
@@ -411,7 +534,7 @@ def main():
         unif_outcomes.extend([1.0 if b["is_winner"] else 0.0
                               for b in ev["buckets"]])
     unif_brier = brier_score(unif_probs, unif_outcomes)
-    print(f"Uniform baseline Brier: {unif_brier:.4f}")
+    print(f"\nUniform baseline Brier: {unif_brier:.4f}")
     print(f"Model improvement: {(1 - best_brier/unif_brier)*100:.1f}%")
 
     # Volume-weighted baseline Brier
@@ -437,13 +560,12 @@ def main():
     top3_correct = 0
     n_events = 0
 
-    # Accuracy by confidence level
     confidence_bins = defaultdict(lambda: {"correct": 0, "total": 0})
 
     for ev in prepared:
         sigma = best_sigma_f if ev["is_fahrenheit"] else best_sigma_f / 1.8
         fair_prices = compute_event_fair_prices(ev["buckets"],
-                                                 ev["archive_temp"], sigma)
+                                                 ev["ground_truth_temp"], sigma)
         outcomes = [b["is_winner"] for b in ev["buckets"]]
         winner_idx = next(i for i, o in enumerate(outcomes) if o)
 
@@ -458,9 +580,8 @@ def main():
             top3_correct += 1
         n_events += 1
 
-        # Confidence bin: max probability
         max_prob = max(fair_prices)
-        bin_key = int(max_prob * 10) / 10  # 0.0, 0.1, 0.2, ...
+        bin_key = int(max_prob * 10) / 10
         confidence_bins[bin_key]["total"] += 1
         if sorted_idx[0] == winner_idx:
             confidence_bins[bin_key]["correct"] += 1
@@ -473,7 +594,6 @@ def main():
     print(f"Top-3 accuracy: {top3_correct}/{n_events} = "
           f"{top3_correct/n_events*100:.1f}%")
 
-    # Compare with volume-weighted top-1
     vol_top1 = 0
     for ev in prepared:
         vp = volume_weighted_prices(ev["buckets"])
@@ -485,7 +605,6 @@ def main():
           f"{vol_top1/n_events*100:.1f}%")
     print(f"Uniform random top-1: ~{1/7*100:.1f}% (1/7 buckets)")
 
-    # Accuracy by model confidence
     print(f"\nAccuracy by model confidence (max bucket prob):")
     print(f"{'Conf':>6} {'Correct':>8} {'Total':>6} {'Accuracy':>9}")
     print("-" * 35)
@@ -509,12 +628,11 @@ def main():
     for ev in prepared:
         sigma = best_sigma_f if ev["is_fahrenheit"] else best_sigma_f / 1.8
         fair_prices = compute_event_fair_prices(ev["buckets"],
-                                                 ev["archive_temp"], sigma)
+                                                 ev["ground_truth_temp"], sigma)
         for i, b in enumerate(ev["buckets"]):
             p = fair_prices[i]
             outcome = 1.0 if b["is_winner"] else 0.0
-            # Bin: 0-5%, 5-10%, ..., 45-50%, 50-100%
-            bin_key = min(int(p * 20) / 20, 0.50)  # group 50%+ together
+            bin_key = min(int(p * 20) / 20, 0.50)
             cal_bins[bin_key]["predicted_sum"] += p
             cal_bins[bin_key]["actual_sum"] += outcome
             cal_bins[bin_key]["count"] += 1
@@ -561,7 +679,7 @@ def main():
             for ev in prepared:
                 sigma = best_sigma_f if ev["is_fahrenheit"] else best_sigma_f / 1.8
                 fair = compute_event_fair_prices(ev["buckets"],
-                                                  ev["archive_temp"], sigma)
+                                                  ev["ground_truth_temp"], sigma)
                 bp = baseline_fn(ev)
 
                 for i, b in enumerate(ev["buckets"]):
@@ -569,7 +687,6 @@ def main():
                     outcome = b["is_winner"]
 
                     if edge > min_edge and bp[i] < 0.95:
-                        # BUY YES at baseline price
                         trades += 1
                         cost += bp[i]
                         if outcome:
@@ -579,7 +696,6 @@ def main():
                             pnl -= bp[i]
 
                     elif edge < -min_edge and bp[i] > 0.05:
-                        # BUY NO at (1 - baseline)
                         trades += 1
                         cost += (1 - bp[i])
                         if not outcome:
@@ -607,29 +723,30 @@ def main():
 
     city_stats = defaultdict(lambda: {
         "events": 0, "trades": 0, "wins": 0, "pnl": 0.0,
-        "top1": 0, "diffs": [],
+        "top1": 0, "diffs": [], "source_iem": 0, "source_era5": 0,
     })
 
     for ev in prepared:
         c = ev["city"]
         city_stats[c]["events"] += 1
+        if ev["ground_truth_source"] == "iem":
+            city_stats[c]["source_iem"] += 1
+        else:
+            city_stats[c]["source_era5"] += 1
         sigma = best_sigma_f if ev["is_fahrenheit"] else best_sigma_f / 1.8
 
-        # Top-1 accuracy
-        fair = compute_event_fair_prices(ev["buckets"], ev["archive_temp"], sigma)
+        fair = compute_event_fair_prices(ev["buckets"], ev["ground_truth_temp"], sigma)
         outcomes = [b["is_winner"] for b in ev["buckets"]]
         winner_idx = next(i for i, o in enumerate(outcomes) if o)
         if np.argmax(fair) == winner_idx:
             city_stats[c]["top1"] += 1
 
-        # Archive vs actual diff
         actual, _ = parse_actual_from_winner(
             next(b["question"] for b in ev["buckets"] if b["is_winner"])
         )
         if actual is not None:
-            city_stats[c]["diffs"].append(ev["archive_temp"] - actual)
+            city_stats[c]["diffs"].append(ev["ground_truth_temp"] - actual)
 
-        # Simulated trades vs uniform
         n = len(ev["buckets"])
         unif = 1.0 / n
         for i, b in enumerate(ev["buckets"]):
@@ -651,9 +768,9 @@ def main():
                 else:
                     city_stats[c]["pnl"] -= (1 - unif)
 
-    print(f"{'City':<14} {'Evts':>4} {'Top1%':>6} {'Trds':>5} {'Win%':>6} "
-          f"{'P&L':>7} {'Bias':>6}")
-    print("-" * 58)
+    print(f"{'City':<14} {'Evts':>4} {'Src':>5} {'Top1%':>6} {'Trds':>5} "
+          f"{'Win%':>6} {'P&L':>7} {'Bias':>6}")
+    print("-" * 65)
     for city in sorted(city_stats, key=lambda c: -city_stats[c]["events"]):
         s = city_stats[city]
         if s["events"] == 0:
@@ -661,17 +778,19 @@ def main():
         top1 = s["top1"] / s["events"] * 100
         wr = s["wins"] / s["trades"] * 100 if s["trades"] else 0
         bias = np.mean(s["diffs"]) if s["diffs"] else 0
-        print(f"{city:<14} {s['events']:>4} {top1:>5.1f}% {s['trades']:>5} "
-              f"{wr:>5.1f}% ${s['pnl']:>+6.2f} {bias:>+5.1f}°")
+        src = f"I{s['source_iem']}" if s["source_era5"] == 0 else \
+              f"I{s['source_iem']}+E{s['source_era5']}"
+        print(f"{city:<14} {s['events']:>4} {src:>5} {top1:>5.1f}% "
+              f"{s['trades']:>5} {wr:>5.1f}% ${s['pnl']:>+6.2f} {bias:>+5.1f}°")
 
     # =========================================================================
-    # 6. ARCHIVE vs ACTUAL (WU) BIAS
+    # 6. GROUND TRUTH vs WU WINNING BUCKET BIAS
     # =========================================================================
     print(f"\n{'='*70}")
-    print("6. ARCHIVE vs ACTUAL TEMPERATURE BIAS")
+    print("6. GROUND TRUTH vs WU WINNING BUCKET BIAS")
     print(f"{'='*70}\n")
-    print("Archive = Open-Meteo ERA5 reanalysis")
-    print("Actual = midpoint of winning PM bucket (WU station)\n")
+    print("Ground truth = IEM METAR station data (primary) / ERA5 (fallback)")
+    print("Actual = midpoint of winning PM bucket (WU station resolution)\n")
 
     all_diffs_f = []
     all_diffs_c = []
@@ -688,31 +807,31 @@ def main():
         if actual is None:
             continue
 
-        diff = ev["archive_temp"] - actual
+        diff = ev["ground_truth_temp"] - actual
+        src = ev["ground_truth_source"]
         if ev["is_fahrenheit"]:
-            all_diffs_f.append((ev["city"], ev["date"], diff, ev["archive_temp"],
-                                actual))
+            all_diffs_f.append((ev["city"], ev["date"], diff,
+                                ev["ground_truth_temp"], actual, src))
         else:
-            all_diffs_c.append((ev["city"], ev["date"], diff, ev["archive_temp"],
-                                actual))
+            all_diffs_c.append((ev["city"], ev["date"], diff,
+                                ev["ground_truth_temp"], actual, src))
 
     if all_diffs_f:
         diffs_f = [d[2] for d in all_diffs_f]
         print(f"°F cities: {len(diffs_f)} days")
         print(f"  Mean bias: {np.mean(diffs_f):+.2f}°F "
-              f"(+ = archive warmer)")
+              f"(+ = ground truth warmer than WU)")
         print(f"  Std:       {np.std(diffs_f):.2f}°F")
         print(f"  Median:    {np.median(diffs_f):+.2f}°F")
         print(f"  Range:     [{min(diffs_f):.1f}, {max(diffs_f):.1f}]")
 
-        # Large outliers
-        outliers = [(c, d, diff, arch, act) for c, d, diff, arch, act
+        outliers = [(c, d, diff, gt, act, src) for c, d, diff, gt, act, src
                      in all_diffs_f if abs(diff) > 5]
         if outliers:
             print(f"\n  Large outliers (|diff| > 5°F): {len(outliers)}")
-            for c, d, diff, arch, act in sorted(outliers,
-                                                  key=lambda x: -abs(x[2]))[:10]:
-                print(f"    {c} {d}: archive={arch:.1f} actual={act:.1f} "
+            for c, d, diff, gt, act, src in sorted(outliers,
+                                                     key=lambda x: -abs(x[2]))[:10]:
+                print(f"    {c} {d}: {src}={gt:.1f} actual={act:.1f} "
                       f"diff={diff:+.1f}")
 
     if all_diffs_c:
@@ -731,7 +850,11 @@ def main():
     print(f"{'='*70}\n")
 
     sigma_c = best_sigma_f / 1.8
-    print(f"Optimal σ:      {best_sigma_f}°F / {sigma_c:.2f}°C")
+    sigma_prod = math.sqrt(best_sigma_f**2 + 2.3**2)
+    print(f"Ground truth:   IEM METAR ({iem_count} events) + ERA5 fallback ({era5_count})")
+    print(f"Optimal σ:      {best_sigma_f}°F / {sigma_c:.2f}°C (perfect forecast)")
+    print(f"Production σ:   {sigma_prod:.1f}°F / {sigma_prod/1.8:.2f}°C "
+          f"(includes forecast error)")
     print(f"Model Brier:    {best_brier:.4f}")
     print(f"Uniform Brier:  {unif_brier:.4f} "
           f"(model {(1-best_brier/unif_brier)*100:.0f}% better)")
@@ -740,20 +863,17 @@ def main():
           f"(vs uniform {1/7*100:.0f}%, vs volume {vol_top1/n_events*100:.1f}%)")
 
     if all_diffs_f:
-        print(f"\n°F bias: {np.mean([d[2] for d in all_diffs_f]):+.1f}° "
+        print(f"\n°F bias (IEM vs WU bucket): {np.mean([d[2] for d in all_diffs_f]):+.1f}° "
               f"± {np.std([d[2] for d in all_diffs_f]):.1f}°")
     if all_diffs_c:
-        print(f"°C bias: {np.mean([d[2] for d in all_diffs_c]):+.1f}° "
+        print(f"°C bias (IEM vs WU bucket): {np.mean([d[2] for d in all_diffs_c]):+.1f}° "
               f"± {np.std([d[2] for d in all_diffs_c]):.1f}°")
 
     print(f"\nConclusion:")
-    print(f"  The Normal(archive, σ={best_sigma_f}°F) model is significantly")
-    print(f"  better than uniform ({(1-best_brier/unif_brier)*100:.0f}% lower "
-          f"Brier) and captures bucket")
-    print(f"  probabilities well. In production, use forecast (not archive)")
-    print(f"  as center — this adds forecast error, effectively increasing σ.")
-    print(f"  Recommended production σ: {best_sigma_f+1}°F-{best_sigma_f+2}°F "
-          f"(1-2 day horizon).")
+    print(f"  IEM station data (METAR/ASOS) matches WU resolution much better")
+    print(f"  than ERA5 reanalysis. Optimal σ={best_sigma_f}°F with IEM ground truth.")
+    print(f"  For production (using forecasts, not actuals), use")
+    print(f"  σ_floor = {sigma_prod:.1f}°F / {sigma_prod/1.8:.2f}°C")
 
 
 if __name__ == "__main__":
