@@ -26,7 +26,7 @@ MODE="--live --auto"
 # --- Forecast Logging (optional) ---
 # PostgreSQL connection string for forecast history logging
 # Leave empty to disable
-DB_URL=""
+DB_URL="postgresql://postgres:dT5osW7V@localhost:5432/temperature_forecasts"
 
 # =============================================================================
 # STARTUP (don't modify below)

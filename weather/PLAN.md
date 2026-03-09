@@ -207,18 +207,45 @@ Sharpe ratio высокий: ставки декоррелированы по г
 
 ```
 weather/
-├── PLAN.md              ← этот файл (стратегия + документация)
-├── scanner.py           ← live scanner (Open-Meteo + Gamma API → edge)
-├── backtest.py          ← бэктест на 345 закрытых рынках
-├── cities.json          ← 16 городов: координаты, станция, единицы
-└── research/
-    ├── api_notes.md         ← документация по API
-    ├── edge_analysis_2026-03-05.md  ← proof of concept
-    └── backtest_results_2026-03-05.txt  ← полный вывод бэктеста
+├── PLAN.md                    ← этот файл (стратегия + документация)
+├── scanner.py                 ← standalone scanner (CLI)
+├── backtest.py                ← бэктест на 351 закрытом рынке
+├── backtest_sources.py        ← IEM vs ERA5 сравнение
+├── cities.json                ← 16 городов: координаты, станция, единицы
+├── weather_markets.json       ← активные рынки (генерируется update_bot)
+├── run_trading_bot.sh         ← запуск бота с DB_URL
+├── trading_bot/               ← торговый бот (TUI + автоторговля)
+│   ├── __main__.py            ← entry point, CLI args
+│   ├── config.py              ← WeatherBotConfig dataclass
+│   ├── forecast_db.py         ← PostgreSQL: таблицы forecasts + actuals
+│   ├── logger.py              ← file logger
+│   ├── pricing/               ← bucket_fair_price, Kelly sizing, MC
+│   ├── scanner/weather.py     ← scan → forecast + fair price + signals
+│   ├── executor/polymarket.py ← buy/sell через py-clob-client
+│   ├── market_data/
+│   │   ├── forecast.py        ← Open-Meteo ensemble → cache + DB log
+│   │   └── polymarket.py      ← Gamma API → market prices
+│   ├── models/                ← Position, Signal, Market dataclasses
+│   ├── storage/               ← JSON file storage (active + history)
+│   └── ui/app.py              ← Textual TUI (Scanner, Log, Forecasts, Positions, Risk)
+└── update_bot/                ← обновляет weather_markets.json
 ```
+
+## Что уже сделано
+
+1. ✅ **Manual trading** → проверено, edge подтверждён
+2. ✅ **Торговый бот** (TUI, auto buy/sell, MC risk, balance tracking)
+3. ✅ **Forecast logger** в PostgreSQL (таблица `forecasts`, ~2000+ записей)
+4. ✅ **Fair P&L** в позициях (model-based P&L vs market P&L)
+5. ✅ **Code review + fixes** (SSL, datetime, dedup, MC sigma floor)
 
 ## Следующие шаги
 
-1. **Manual trading**: несколько дней вручную по рекомендациям сканера
-2. **Автоматизация**: бот с автопокупкой (reuse executor из crypto)
-3. **Forecast logger bot**: бот для сохранения всех прогнозов в БД (для анализа forecast vs IEM actual по городам, модель accuracy over time)
+1. **Actuals collector** — автоматический сбор фактических температур из IEM METAR
+   в таблицу `actuals` (city, target_date, actual_high, source, station).
+   Нужно для калибровки σ и оценки точности модели в реальном времени.
+
+2. **σ калибровка** — когда накопится ~100 дней данных (forecasts + actuals),
+   автоматически считать оптимальный σ_floor per city.
+
+3. **Bias correction** — per-city forecast bias (model систематически выше/ниже IEM).

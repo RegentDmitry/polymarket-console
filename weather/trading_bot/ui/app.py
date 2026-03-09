@@ -474,13 +474,15 @@ class TradingBotApp(App):
     ]
 
     def __init__(self, config: WeatherBotConfig, position_storage: PositionStorage,
-                 history_storage: HistoryStorage, scanner=None, executor=None):
+                 history_storage: HistoryStorage, scanner=None, executor=None,
+                 actuals_collector=None):
         super().__init__()
         self.config = config
         self.position_storage = position_storage
         self.history_storage = history_storage
         self.scanner = scanner
         self.executor = executor
+        self.actuals_collector = actuals_collector
 
         self._cached_balance: float = 0.0
         self._cached_signals: List[Signal] = []
@@ -530,7 +532,7 @@ class TradingBotApp(App):
     def _tick(self) -> None:
         self.query_one("#status-bar", StatusBar).tick()
 
-    def _auto_scan(self) -> None:
+    async def _auto_scan(self) -> None:
         if not self._scan_running:
             self.run_worker(self._run_scan(), exit_on_error=False)
 
@@ -596,6 +598,15 @@ class TradingBotApp(App):
                     self._pending_signals = actionable
                     self._pending_idx = 0
                     self._show_confirmation()
+
+            # Collect actual temperatures from IEM (throttled, ~every 6h)
+            if self.actuals_collector:
+                try:
+                    n = await asyncio.to_thread(self.actuals_collector.collect_if_needed)
+                    if n > 0:
+                        log.add_line(f"Collected {n} actuals from IEM")
+                except Exception as e:
+                    log.add_line(f"Actuals error: {e}")
 
             # Refresh balance from API (authoritative after scan)
             if self.executor and self.executor.initialized:

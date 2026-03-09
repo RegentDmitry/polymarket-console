@@ -84,6 +84,19 @@ def main():
         except Exception as e:
             print(f"FAILED ({e})")
 
+    # Initialize actuals collector (optional, requires forecast_db)
+    actuals_collector = None
+    if forecast_db:
+        try:
+            import json
+            from .actuals_collector import ActualsCollector
+            cities = json.loads(config.cities_json.read_text())
+            actuals_collector = ActualsCollector(cities, forecast_db)
+            print("Actuals collector...", end=" ", flush=True)
+            print("OK")
+        except Exception as e:
+            print(f"Actuals collector FAILED: {e}")
+
     # Initialize scanner
     print("Initializing scanner...", end=" ", flush=True)
     scanner = WeatherScanner(config)
@@ -137,6 +150,7 @@ def main():
         history_storage=history_storage,
         scanner=scanner,
         executor=executor,
+        actuals_collector=actuals_collector,
     )
 
     try:
