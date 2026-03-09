@@ -45,21 +45,18 @@ class StatusBar(Static):
         self._positions: int = 0
         self._invested: float = 0.0
         self._pnl: float = 0.0
-        self._forecast_age: Optional[float] = None
-        self._forecast_smart: bool = True
+        self._model_run_ts: float = 0.0
 
     def update_status(self, balance: float, mode: str, scan_interval: int,
                       positions: int = 0, invested: float = 0.0, pnl: float = 0.0,
-                      forecast_age: Optional[float] = None,
-                      forecast_smart: bool = True) -> None:
+                      model_run_ts: float = 0.0) -> None:
         self._balance = balance
         self._mode = mode
         self._scan_interval = scan_interval
         self._positions = positions
         self._invested = invested
         self._pnl = pnl
-        self._forecast_age = forecast_age
-        self._forecast_smart = forecast_smart
+        self._model_run_ts = model_run_ts
         self.refresh()
 
     def mark_scan(self):
@@ -75,14 +72,17 @@ class StatusBar(Static):
 
         pnl_str = f"${self._pnl:+.2f}"
 
-        fc_str = "N/A"
-        if self._forecast_age is not None:
-            if self._forecast_age < 60:
-                fc_str = f"{self._forecast_age:.0f}m"
-            else:
-                fc_str = f"{self._forecast_age / 60:.1f}h"
-            fc_mode = "smart" if self._forecast_smart else "TTL"
-            fc_str = f"{fc_str} ({fc_mode})"
+        if self._model_run_ts:
+            elapsed = int(time.time() - self._model_run_ts)
+            h, rem = divmod(max(0, elapsed), 3600)
+            m, s = divmod(rem, 60)
+            fc_str = f"{h}:{m:02d}:{s:02d}"
+            buy_ok = elapsed <= 600  # 10-minute buy window
+        else:
+            fc_str = "N/A"
+            buy_ok = False
+
+        buy_indicator = "[green]BUY[/green]" if buy_ok else "[dim]WAIT[/dim]"
 
         return (
             f"  [{self._mode}]  "
@@ -91,7 +91,8 @@ class StatusBar(Static):
             f"P&L: {pnl_str}  "
             f"Positions: {self._positions}  "
             f"Next scan: {next_in}s  "
-            f"Forecast: {fc_str}"
+            f"Fc: {fc_str}  "
+            f"{buy_indicator}"
         )
 
 
@@ -184,10 +185,11 @@ class PositionsPanel(Static):
         table.add_column("Date", width=6)
         table.add_column("Bucket", width=13)
         table.add_column("Entry", width=5, justify="right")
-        table.add_column("Now", width=5, justify="right")
+        table.add_column("Fair", width=5, justify="right")
+        table.add_column("Edge", width=5, justify="right")
         table.add_column("Cost", width=6, justify="right")
         table.add_column("Mkt", width=7, justify="right")
-        table.add_column("Fair", width=7, justify="right")
+        table.add_column("FrPnL", width=7, justify="right")
 
         total_mkt_pnl = 0.0
         total_fair_pnl = 0.0
@@ -202,9 +204,15 @@ class PositionsPanel(Static):
                 fair_pnl = p.tokens * fair - p.entry_size
                 total_fair_pnl += fair_pnl
                 fair_color = "green" if fair_pnl >= 0 else "red"
-                fair_str = f"[{fair_color}]{fair_pnl:+.2f}[/{fair_color}]"
+                fair_pnl_str = f"[{fair_color}]{fair_pnl:+.2f}[/{fair_color}]"
+                fair_str = f"{fair:.0%}"
+                edge = fair - current
+                edge_color = "green" if edge > 0 else "red"
+                edge_str = f"[{edge_color}]{edge:+.0%}[/{edge_color}]"
             else:
+                fair_pnl_str = "[dim]—[/dim]"
                 fair_str = "[dim]—[/dim]"
+                edge_str = "[dim]—[/dim]"
 
             city = p.city.replace("-", " ").title()[:12] if p.city else "?"
             date_short = p.date[5:] if p.date else ""
@@ -218,10 +226,11 @@ class PositionsPanel(Static):
                 date_short,
                 bucket_side,
                 f"{p.entry_price:.0%}",
-                f"{current:.0%}",
+                fair_str,
+                edge_str,
                 f"${p.entry_size:.1f}",
                 f"[{mkt_color}]{mkt_pnl:+.2f}[/{mkt_color}]",
-                fair_str,
+                fair_pnl_str,
             )
 
         mkt_color = "green" if total_mkt_pnl >= 0 else "red"
@@ -536,6 +545,19 @@ class TradingBotApp(App):
         if not self._scan_running:
             self.run_worker(self._run_scan(), exit_on_error=False)
 
+    def _in_buy_window(self) -> bool:
+        """True if within 10 minutes of the last forecast model run."""
+        if not self.scanner:
+            return False
+        avail_times = [
+            info.avail_time
+            for info in self.scanner.forecast.tracker._models.values()
+            if info.avail_time
+        ]
+        if not avail_times:
+            return False
+        return (time.time() - max(avail_times)) <= 600
+
     async def _run_scan(self) -> None:
         if self._scan_running or not self.scanner:
             return
@@ -587,7 +609,13 @@ class TradingBotApp(App):
             sells = len(exit_signals)
             log.add_line(f"Scan done: {buys} buys, {sells} sells ({scan_time:.0f}s)")
 
-            # Handle signals
+            # Handle signals — only buy within 10min of forecast update
+            in_buy_window = self._in_buy_window()
+            if not in_buy_window and buys > 0:
+                log.add_line("[dim]Outside buy window (>10m since forecast), skipping buys[/dim]")
+                entry_signals = [s for s in entry_signals if s.suggested_size <= 0]
+                buys = 0
+
             if self.config.auto_mode and not self.config.dry_run:
                 await self._auto_execute(entry_signals, exit_signals, positions)
             elif not self.config.dry_run and (buys > 0 or sells > 0):
@@ -791,13 +819,14 @@ class TradingBotApp(App):
         pnl = sum(p.unrealized_pnl(prices.get(p.market_slug, p.entry_price))
                   for p in positions)
 
-        fc_age = None
-        fc_smart = True
+        model_run_ts = 0.0
         if self.scanner:
-            ages = self.scanner.get_forecast_cache_info()
-            valid_ages = [a for a in ages.values() if a is not None]
-            fc_age = max(valid_ages) if valid_ages else None
-            fc_smart = self.scanner.forecast.tracker.is_s3_available
+            avail_times = [
+                info.avail_time
+                for info in self.scanner.forecast.tracker._models.values()
+                if info.avail_time
+            ]
+            model_run_ts = max(avail_times) if avail_times else 0.0
 
         mode = "DRY RUN" if self.config.dry_run else (
             "AUTO" if self.config.auto_mode else "CONFIRM"
@@ -809,8 +838,7 @@ class TradingBotApp(App):
             positions=len(positions),
             invested=invested,
             pnl=pnl,
-            forecast_age=fc_age,
-            forecast_smart=fc_smart,
+            model_run_ts=model_run_ts,
         )
 
         # Risk panel (breakdown only — MC updates separately)
