@@ -160,11 +160,17 @@ class PositionsPanel(Static):
         super().__init__(**kwargs)
         self._positions: List[Position] = []
         self._prices: Dict[str, float] = {}
+        self._fair_prices: Dict[str, float] = {}
+        self._forecasts: Dict[str, dict] = {}
 
     def update_positions(self, positions: List[Position],
-                        prices: Dict[str, float]) -> None:
+                        prices: Dict[str, float],
+                        fair_prices: Optional[Dict[str, float]] = None,
+                        forecasts: Optional[Dict[str, dict]] = None) -> None:
         self._positions = positions
         self._prices = prices
+        self._fair_prices = fair_prices or {}
+        self._forecasts = forecasts or {}
         self.refresh()
 
     def render(self):
@@ -179,34 +185,64 @@ class PositionsPanel(Static):
                      box=None, padding=(0, 1))
         table.add_column("City", width=12)
         table.add_column("Date", width=6)
-        table.add_column("Bucket", width=10)
+        table.add_column("Bucket", width=13)
+        table.add_column("Fc", width=5, justify="right")
         table.add_column("Entry", width=5, justify="right")
         table.add_column("Now", width=5, justify="right")
         table.add_column("Cost", width=6, justify="right")
-        table.add_column("P&L", width=7, justify="right")
+        table.add_column("Mkt", width=7, justify="right")
+        table.add_column("Fair", width=7, justify="right")
 
-        total_pnl = 0.0
+        total_mkt_pnl = 0.0
+        total_fair_pnl = 0.0
         for p in self._positions:
             current = self._prices.get(p.market_slug, p.entry_price)
-            pnl = p.unrealized_pnl(current)
-            total_pnl += pnl
-            pnl_color = "green" if pnl >= 0 else "red"
+            mkt_pnl = p.unrealized_pnl(current)
+            total_mkt_pnl += mkt_pnl
+            mkt_color = "green" if mkt_pnl >= 0 else "red"
+
+            fair = self._fair_prices.get(p.market_slug)
+            if fair is not None:
+                fair_pnl = p.tokens * fair - p.entry_size
+                total_fair_pnl += fair_pnl
+                fair_color = "green" if fair_pnl >= 0 else "red"
+                fair_str = f"[{fair_color}]{fair_pnl:+.2f}[/{fair_color}]"
+            else:
+                fair_str = "[dim]—[/dim]"
 
             city = p.city.replace("-", " ").title()[:12] if p.city else "?"
             date_short = p.date[5:] if p.date else ""
 
+            side = p.outcome or "YES"
+            side_color = "green" if side == "YES" else "red"
+            bucket_side = f"{p.bucket_label} [{side_color}]{side}[/{side_color}]"
+
+            # Forecast temperature
+            fc_str = "[dim]—[/dim]"
+            city_fc = self._forecasts.get(p.city, {})
+            dates = city_fc.get("dates", {})
+            day_data = dates.get(p.date, {})
+            fc_val = day_data.get("forecast")
+            if fc_val is not None:
+                fc_str = f"[cyan]{fc_val:.0f}[/cyan]"
+
             table.add_row(
                 city,
                 date_short,
-                p.bucket_label,
+                bucket_side,
+                fc_str,
                 f"{p.entry_price:.0%}",
                 f"{current:.0%}",
                 f"${p.entry_size:.1f}",
-                f"[{pnl_color}]{pnl:+.2f}[/{pnl_color}]",
+                f"[{mkt_color}]{mkt_pnl:+.2f}[/{mkt_color}]",
+                fair_str,
             )
 
-        pnl_color = "green" if total_pnl >= 0 else "red"
-        title = f"POSITIONS ({len(self._positions)}) [{pnl_color}]P&L: ${total_pnl:+.2f}[/{pnl_color}]"
+        mkt_color = "green" if total_mkt_pnl >= 0 else "red"
+        fair_color = "green" if total_fair_pnl >= 0 else "red"
+        title = (f"POSITIONS ({len(self._positions)}) "
+                 f"[{mkt_color}]Mkt: ${total_mkt_pnl:+.2f}[/{mkt_color}] "
+                 f"[{fair_color}]Fair: ${total_fair_pnl:+.2f}[/{fair_color}]")
         return Panel(table, title=title, border_style="green")
 
 
@@ -795,8 +831,10 @@ class TradingBotApp(App):
         prices = self.scanner.get_current_prices() if self.scanner else {}
 
         # Positions panel
+        fair_prices = self.scanner._fair_prices if self.scanner else {}
+        forecasts = self.scanner.get_cached_forecasts() if self.scanner else {}
         self.query_one("#positions-panel", PositionsPanel).update_positions(
-            positions, prices
+            positions, prices, fair_prices, forecasts
         )
 
         # Status bar
