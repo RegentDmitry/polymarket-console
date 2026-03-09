@@ -3,7 +3,7 @@ Detailed event logger for the weather trading bot.
 """
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -121,7 +121,7 @@ class TradeJournal:
         self.journal_file = data_dir / "trades.jsonl"
 
     def _write(self, record: dict):
-        record["ts"] = datetime.utcnow().isoformat() + "Z"
+        record["ts"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         with open(self.journal_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, default=str) + "\n")
 

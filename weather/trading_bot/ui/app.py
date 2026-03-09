@@ -831,7 +831,7 @@ class TradingBotApp(App):
         prices = self.scanner.get_current_prices() if self.scanner else {}
 
         # Positions panel
-        fair_prices = self.scanner._fair_prices if self.scanner else {}
+        fair_prices = self.scanner.get_fair_prices() if self.scanner else {}
         forecasts = self.scanner.get_cached_forecasts() if self.scanner else {}
         self.query_one("#positions-panel", PositionsPanel).update_positions(
             positions, prices, fair_prices, forecasts

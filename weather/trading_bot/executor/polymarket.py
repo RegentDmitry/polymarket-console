@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Optional, Tuple
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Add earthquakes to path for polymarket_client import
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "earthquakes"))
@@ -43,7 +43,7 @@ class OrderResult:
 
     def __post_init__(self):
         if not self.timestamp:
-            self.timestamp = datetime.utcnow().isoformat() + "Z"
+            self.timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class PolymarketExecutor:
@@ -239,7 +239,7 @@ class PolymarketExecutor:
                     market_name=signal.market_name,
                     outcome=signal.outcome,
                     entry_price=actual_avg_price,
-                    entry_time=datetime.utcnow().isoformat() + "Z",
+                    entry_time=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                     entry_size=actual_entry_size,
                     tokens=available_size,
                     strategy="weather",

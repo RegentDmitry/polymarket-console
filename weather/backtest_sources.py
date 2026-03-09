@@ -316,23 +316,7 @@ def fetch_model_hindcast(lat, lon, start, end, model, tz, unit="fahrenheit"):
 # Model
 # ---------------------------------------------------------------------------
 
-def bucket_fair_price(forecast, sigma, lower, upper):
-    if sigma <= 0:
-        if lower is None and upper is None:
-            return 1.0
-        if lower is None:
-            return 1.0 if forecast < upper else 0.0
-        if upper is None:
-            return 1.0 if forecast >= lower else 0.0
-        return 1.0 if lower <= forecast < upper else 0.0
-
-    if lower is None and upper is None:
-        return 1.0
-    if lower is None:
-        return norm.cdf(upper, forecast, sigma)
-    if upper is None:
-        return 1 - norm.cdf(lower, forecast, sigma)
-    return norm.cdf(upper, forecast, sigma) - norm.cdf(lower, forecast, sigma)
+from trading_bot.pricing import bucket_fair_price
 
 
 def compute_event_fair_prices(buckets, forecast, sigma):

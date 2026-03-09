@@ -4,7 +4,7 @@ History storage - manages trade history and statistics.
 
 import json
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from dataclasses import dataclass
 
@@ -68,7 +68,7 @@ class HistoryStorage:
 
     def record_sell(self, position: Position, order_id: Optional[str] = None) -> None:
         self.add_trade(TradeRecord(
-            timestamp=position.exit_time or datetime.utcnow().isoformat() + "Z",
+            timestamp=position.exit_time or datetime.now(timezone.utc).isoformat() + "Z",
             action="SELL",
             market_slug=position.market_slug,
             price=position.exit_price or 0,
@@ -82,7 +82,7 @@ class HistoryStorage:
         return self._recent_trades[:limit]
 
     def get_realized_pnl_today(self) -> float:
-        today = datetime.utcnow().date()
+        today = datetime.now(timezone.utc).date()
         total = 0.0
         for position in self.load_closed_positions():
             if position.exit_time:

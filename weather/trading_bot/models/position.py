@@ -3,7 +3,7 @@ Position model - represents an open or closed trading position.
 """
 
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 import json
@@ -106,14 +106,14 @@ class Position:
     def close(self, price: float, order_id: Optional[str] = None) -> None:
         """Mark position as closed (sold)."""
         self.exit_price = price
-        self.exit_time = datetime.utcnow().isoformat() + "Z"
+        self.exit_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         self.exit_size = self.tokens * price
         self.exit_order_id = order_id
         self.status = PositionStatus.CLOSED
 
     def resolve(self, won: bool) -> None:
         """Mark position as resolved."""
-        self.exit_time = datetime.utcnow().isoformat() + "Z"
+        self.exit_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         self.exit_price = 1.0 if won else 0.0
         self.exit_size = self.tokens if won else 0.0
         self.status = PositionStatus.RESOLVED_WIN if won else PositionStatus.RESOLVED_LOSS

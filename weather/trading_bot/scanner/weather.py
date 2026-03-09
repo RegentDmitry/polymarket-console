@@ -8,33 +8,11 @@ distribution model, generates BUY/SELL signals with edge computation.
 import time
 from typing import Callable, Dict, List, Optional, Set
 
-from scipy.stats import norm
-
 from ..market_data.forecast import ForecastData
 from ..market_data.polymarket import WeatherMarket, WeatherPolymarketData
 from ..models.signal import Signal, SignalType
+from ..pricing import bucket_fair_price
 from ..logger import get_logger
-
-
-def bucket_fair_price(forecast: float, sigma: float,
-                      lower: Optional[float], upper: Optional[float]) -> float:
-    """P(lower <= X < upper) where X ~ Normal(forecast, sigma)."""
-    if sigma <= 0:
-        if lower is None and upper is None:
-            return 1.0
-        if lower is None:
-            return 1.0 if forecast < upper else 0.0
-        if upper is None:
-            return 1.0 if forecast >= lower else 0.0
-        return 1.0 if lower <= forecast < upper else 0.0
-
-    if lower is None and upper is None:
-        return 1.0
-    if lower is None:
-        return norm.cdf(upper, forecast, sigma)
-    if upper is None:
-        return 1 - norm.cdf(lower, forecast, sigma)
-    return norm.cdf(upper, forecast, sigma) - norm.cdf(lower, forecast, sigma)
 
 
 class WeatherScanner:
@@ -191,6 +169,10 @@ class WeatherScanner:
         """Get current YES prices for all loaded markets."""
         return {m.market_slug: m.yes_price
                 for m in self.polymarket.markets if m.active}
+
+    def get_fair_prices(self) -> Dict[str, float]:
+        """Get cached fair prices from last scan."""
+        return dict(self._fair_prices)
 
     def get_forecast_cache_info(self) -> Dict[str, Optional[float]]:
         """Get cache age in minutes per city. None = not cached."""

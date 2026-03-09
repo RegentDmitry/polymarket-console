@@ -3,7 +3,7 @@ Signal model - represents a trading signal (BUY or SELL).
 """
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
@@ -65,7 +65,7 @@ class Signal:
 
     def __post_init__(self):
         if not self.timestamp:
-            self.timestamp = datetime.utcnow().isoformat() + "Z"
+            self.timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     @property
     def is_actionable(self) -> bool:
