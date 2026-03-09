@@ -14,6 +14,7 @@ import asyncio
 import re
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from textual.app import App, ComposeResult
@@ -558,6 +559,48 @@ class TradingBotApp(App):
         if not self._scan_running:
             self.run_worker(self._run_scan(), exit_on_error=False)
 
+    def _resolve_settled_positions(self, positions: list) -> int:
+        """Check expired positions and move resolved ones to history."""
+        resolved = 0
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        log = self.query_one("#log-panel", LogPanel)
+
+        for pos in positions:
+            if not pos.date or pos.date >= today:
+                continue
+
+            market = self.executor.get_market_info(pos.market_id)
+            if not market or not market.get("closed"):
+                continue
+
+            # Determine winner from tokens array
+            tokens = market.get("tokens", [])
+            our_outcome = pos.outcome.upper()
+            we_won = False
+            for t in tokens:
+                if t.get("outcome", "").upper() == our_outcome and t.get("winner"):
+                    we_won = True
+                    break
+
+            self.position_storage.resolve_position(pos.id, we_won)
+
+            if we_won:
+                pnl = pos.tokens - pos.entry_size
+                self.call_from_thread(
+                    log.add_line,
+                    f"[green]RESOLVED WIN: {pos.city} {pos.date} {pos.bucket_label} "
+                    f"PnL ${pnl:+.2f}[/green]"
+                )
+            else:
+                self.call_from_thread(
+                    log.add_line,
+                    f"[red]RESOLVED LOSS: {pos.city} {pos.date} {pos.bucket_label} "
+                    f"PnL ${-pos.entry_size:.2f}[/red]"
+                )
+            resolved += 1
+
+        return resolved
+
     def _in_buy_window(self) -> bool:
         """True if within 20 minutes of the last forecast model run."""
         if not self.scanner:
@@ -648,6 +691,18 @@ class TradingBotApp(App):
                         log.add_line(f"Collected {n} actuals from IEM")
                 except Exception as e:
                     log.add_line(f"Actuals error: {e}")
+
+            # Auto-resolve settled positions (past market date)
+            if self.executor and self.executor.initialized:
+                try:
+                    n = await asyncio.to_thread(
+                        self._resolve_settled_positions, positions
+                    )
+                    if n > 0:
+                        log.add_line(f"Resolved {n} position(s)")
+                        self._update_ui()
+                except Exception as e:
+                    log.add_line(f"Resolve error: {e}")
 
             # Refresh balance from API (authoritative after scan)
             if self.executor and self.executor.initialized:

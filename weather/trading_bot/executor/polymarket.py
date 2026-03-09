@@ -329,6 +329,15 @@ class PolymarketExecutor:
             pass
         return False, None
 
+    def get_market_info(self, condition_id: str) -> Optional[dict]:
+        """Get full market info from CLOB API."""
+        if not self.client:
+            return None
+        try:
+            return self.client.get_market(condition_id)
+        except Exception:
+            return None
+
     def get_open_orders(self) -> list:
         """Get all open orders."""
         if not self.client:
