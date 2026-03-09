@@ -351,31 +351,26 @@ class ForecastPanel(Static):
         self._held_cities = held_cities or set()
         self.refresh()
 
-    def _render_city(self, city: str, data: dict) -> List[str]:
-        """Render one city block as lines."""
+    def _render_city_line(self, city: str, data: dict) -> str:
+        """Render one city as a single compact line."""
         unit = data.get("unit", "F")
         dates = data.get("dates", {})
         if not dates:
-            return []
+            return ""
 
-        name = city.replace("-", " ").title()[:11]
+        name = city.replace("-", " ").title()[:10]
         marker = "[green]*[/green]" if city in self._held_cities else " "
-        lines = [f"{marker}[bold]{name}[/bold] °{unit}"]
 
+        # Show dates inline: "03-09 66±6  03-10 58±4"
+        parts = []
         for date_str in sorted(dates.keys()):
             day = dates[date_str]
             fc = day.get("forecast", 0)
             sigma = day.get("sigma", 0)
-            models = day.get("models", {})
             d = date_str[5:] if len(date_str) >= 10 else date_str
+            parts.append(f"{d} [cyan]{fc:.0f}[/cyan]±{sigma:.0f}")
 
-            vals = [models.get(mk) for mk in self.MODEL_SHORT]
-            model_str = "/".join(f"{v:.0f}" for v in vals if v is not None)
-
-            lines.append(
-                f" {d} [cyan]{fc:4.0f}[/cyan]±{sigma:.0f} [dim]{model_str}[/dim]"
-            )
-        return lines
+        return f"{marker}{name:<10} °{unit} {' '.join(parts)}"
 
     def render(self):
         from rich.panel import Panel
@@ -388,50 +383,16 @@ class ForecastPanel(Static):
         cities = sorted(self._forecasts.keys(),
                        key=lambda c: (c not in self._held_cities, c))
 
-        # Render each city block
-        blocks = []
+        lines = []
         for city in cities:
-            block = self._render_city(city, self._forecasts[city])
-            if block:
-                blocks.append(block)
+            line = self._render_city_line(city, self._forecasts[city])
+            if line:
+                lines.append(line)
 
-        if not blocks:
+        if not lines:
             return Panel("[dim]No data[/dim]", title="FORECASTS", border_style="blue")
 
-        # Split into 3 columns
-        n = len(blocks)
-        col_size = (n + 2) // 3
-        columns = [
-            blocks[:col_size],
-            blocks[col_size:col_size * 2],
-            blocks[col_size * 2:],
-        ]
-
-        # Flatten each column's blocks with blank line separator
-        col_lines = []
-        for col_blocks in columns:
-            lines = []
-            for b in col_blocks:
-                lines.extend(b)
-                lines.append("")
-            if lines and lines[-1] == "":
-                lines.pop()
-            col_lines.append(lines)
-
-        # Merge columns side by side
-        col_width = 26
-        max_rows = max(len(cl) for cl in col_lines) if col_lines else 0
-        merged = []
-        for i in range(max_rows):
-            parts = []
-            for ci, cl in enumerate(col_lines):
-                line = cl[i] if i < len(cl) else ""
-                plain_len = len(_MARKUP_RE.sub("", line))
-                pad = max(1, col_width - plain_len) if ci < len(col_lines) - 1 else 0
-                parts.append(f"{line}{' ' * pad}")
-            merged.append("".join(parts))
-
-        return Panel("\n".join(merged), title="FORECASTS", border_style="blue")
+        return Panel("\n".join(lines), title="FORECASTS", border_style="blue")
 
 
 class TradeLogPanel(Static):
@@ -486,7 +447,6 @@ class TradingBotApp(App):
     #left-panel {
         width: 60%;
         height: 100%;
-        overflow-y: auto;
     }
     #right-panel {
         width: 40%;
@@ -506,11 +466,8 @@ class TradingBotApp(App):
     TradeLogPanel {
         height: auto;
     }
-    #forecast-scroll {
-        height: 1fr;
-    }
     #forecast-panel {
-        height: auto;
+        height: 1fr;
     }
     ScannerPanel {
         height: auto;
@@ -558,8 +515,7 @@ class TradingBotApp(App):
             with Vertical(id="left-panel"):
                 yield ScannerPanel(id="scanner-panel")
                 yield TradeLogPanel(id="log-panel")
-                with VerticalScroll(id="forecast-scroll"):
-                    yield ForecastPanel(id="forecast-panel")
+                yield ForecastPanel(id="forecast-panel")
             with Vertical(id="right-panel"):
                 with VerticalScroll(id="positions-scroll"):
                     yield PositionsPanel(id="positions-panel")
@@ -582,15 +538,15 @@ class TradingBotApp(App):
         self.set_interval(1, self._tick)
         self.set_interval(self.config.scan_interval, self._auto_scan)
 
-        # Run first scan
-        self.run_worker(self._run_scan())
+        # Run first scan (schedule via set_timer to avoid unawaited coroutine)
+        self.set_timer(0.5, self._auto_scan)
 
     def _tick(self) -> None:
         self.query_one("#status-bar", StatusBar).tick()
 
-    async def _auto_scan(self) -> None:
+    def _auto_scan(self) -> None:
         if not self._scan_running:
-            await self._run_scan()
+            self.run_worker(self._run_scan(), exit_on_error=False)
 
     async def _run_scan(self) -> None:
         if self._scan_running or not self.scanner:
