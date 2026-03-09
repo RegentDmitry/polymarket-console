@@ -108,6 +108,18 @@ class WeatherScanner:
             signals.append(signal)
             logger.log_signal(signal)
 
+        # Compute fair prices for ALL markets including expired (for positions panel)
+        for market in self.polymarket._all_markets_map.values():
+            if market.market_slug in self._fair_prices:
+                continue  # already computed above
+            fc = self.forecast.get_forecast(market.city, market.date, market.unit)
+            if not fc:
+                continue
+            fair = bucket_fair_price(
+                fc.forecast, fc.sigma, market.bucket_lower, market.bucket_upper
+            )
+            self._fair_prices[market.market_slug] = fair
+
         # Sort by edge descending
         signals.sort(key=lambda s: -s.edge)
 

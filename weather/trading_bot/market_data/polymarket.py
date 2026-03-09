@@ -72,6 +72,7 @@ class WeatherPolymarketData:
     def __init__(self, markets_json: Path):
         self._markets_json = markets_json
         self._markets: List[WeatherMarket] = []
+        self._all_markets_map: Dict[str, WeatherMarket] = {}  # includes expired
 
     @property
     def markets(self) -> List[WeatherMarket]:
@@ -90,9 +91,10 @@ class WeatherPolymarketData:
 
         now = datetime.now(timezone.utc)
         markets = []
+        all_map: Dict[str, WeatherMarket] = {}
         for entry in data:
-            # Skip expired
             end_str = entry.get("end_date", "")
+            expired = False
             try:
                 if "T" in end_str:
                     end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
@@ -101,11 +103,11 @@ class WeatherPolymarketData:
                         hour=23, minute=59, second=59, tzinfo=timezone.utc
                     )
                 if end_dt < now:
-                    continue
+                    expired = True
             except (ValueError, TypeError):
                 pass
 
-            markets.append(WeatherMarket(
+            wm = WeatherMarket(
                 event_slug=entry.get("event_slug", ""),
                 market_slug=entry.get("market_slug", ""),
                 question=entry.get("question", ""),
@@ -119,9 +121,13 @@ class WeatherPolymarketData:
                 yes_token_id=entry.get("yes_token_id", ""),
                 no_token_id=entry.get("no_token_id", ""),
                 end_date=end_str,
-            ))
+            )
+            all_map[wm.market_slug] = wm
+            if not expired:
+                markets.append(wm)
 
         self._markets = markets
+        self._all_markets_map = all_map
         return True
 
     def refresh_prices(self) -> int:

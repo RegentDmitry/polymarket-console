@@ -77,7 +77,7 @@ class StatusBar(Static):
             h, rem = divmod(max(0, elapsed), 3600)
             m, s = divmod(rem, 60)
             fc_str = f"{h}:{m:02d}:{s:02d}"
-            buy_ok = elapsed <= 600  # 10-minute buy window
+            buy_ok = elapsed <= 1200  # 20-minute buy window
         else:
             fc_str = "N/A"
             buy_ok = False
@@ -546,7 +546,7 @@ class TradingBotApp(App):
             self.run_worker(self._run_scan(), exit_on_error=False)
 
     def _in_buy_window(self) -> bool:
-        """True if within 10 minutes of the last forecast model run."""
+        """True if within 20 minutes of the last forecast model run."""
         if not self.scanner:
             return False
         avail_times = [
@@ -556,7 +556,7 @@ class TradingBotApp(App):
         ]
         if not avail_times:
             return False
-        return (time.time() - max(avail_times)) <= 600
+        return (time.time() - max(avail_times)) <= 1200
 
     async def _run_scan(self) -> None:
         if self._scan_running or not self.scanner:
@@ -612,7 +612,7 @@ class TradingBotApp(App):
             # Handle signals — only buy within 10min of forecast update
             in_buy_window = self._in_buy_window()
             if not in_buy_window and buys > 0:
-                log.add_line("[dim]Outside buy window (>10m since forecast), skipping buys[/dim]")
+                log.add_line("[dim]Outside buy window (>20m since forecast), skipping buys[/dim]")
                 entry_signals = [s for s in entry_signals if s.suggested_size <= 0]
                 buys = 0
 
