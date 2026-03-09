@@ -1,3 +1,3 @@
 """Earthquake trading bot for Polymarket."""
 
-__version__ = "1.5.31"
+__version__ = "1.5.32"

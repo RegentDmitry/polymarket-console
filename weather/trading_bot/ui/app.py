@@ -161,16 +161,13 @@ class PositionsPanel(Static):
         self._positions: List[Position] = []
         self._prices: Dict[str, float] = {}
         self._fair_prices: Dict[str, float] = {}
-        self._forecasts: Dict[str, dict] = {}
 
     def update_positions(self, positions: List[Position],
                         prices: Dict[str, float],
-                        fair_prices: Optional[Dict[str, float]] = None,
-                        forecasts: Optional[Dict[str, dict]] = None) -> None:
+                        fair_prices: Optional[Dict[str, float]] = None) -> None:
         self._positions = positions
         self._prices = prices
         self._fair_prices = fair_prices or {}
-        self._forecasts = forecasts or {}
         self.refresh()
 
     def render(self):
@@ -186,7 +183,6 @@ class PositionsPanel(Static):
         table.add_column("City", width=12)
         table.add_column("Date", width=6)
         table.add_column("Bucket", width=13)
-        table.add_column("Fc", width=5, justify="right")
         table.add_column("Entry", width=5, justify="right")
         table.add_column("Now", width=5, justify="right")
         table.add_column("Cost", width=6, justify="right")
@@ -217,20 +213,10 @@ class PositionsPanel(Static):
             side_color = "green" if side == "YES" else "red"
             bucket_side = f"{p.bucket_label} [{side_color}]{side}[/{side_color}]"
 
-            # Forecast temperature
-            fc_str = "[dim]—[/dim]"
-            city_fc = self._forecasts.get(p.city, {})
-            dates = city_fc.get("dates", {})
-            day_data = dates.get(p.date, {})
-            fc_val = day_data.get("forecast")
-            if fc_val is not None:
-                fc_str = f"[cyan]{fc_val:.0f}[/cyan]"
-
             table.add_row(
                 city,
                 date_short,
                 bucket_side,
-                fc_str,
                 f"{p.entry_price:.0%}",
                 f"{current:.0%}",
                 f"${p.entry_size:.1f}",
@@ -467,7 +453,7 @@ class TradingBotApp(App):
         height: auto;
     }
     #forecast-panel {
-        height: 1fr;
+        height: auto;
     }
     ScannerPanel {
         height: auto;
@@ -785,9 +771,8 @@ class TradingBotApp(App):
 
         # Positions panel
         fair_prices = self.scanner.get_fair_prices() if self.scanner else {}
-        forecasts = self.scanner.get_cached_forecasts() if self.scanner else {}
         self.query_one("#positions-panel", PositionsPanel).update_positions(
-            positions, prices, fair_prices, forecasts
+            positions, prices, fair_prices
         )
 
         # Status bar
