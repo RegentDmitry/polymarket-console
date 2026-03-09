@@ -5,8 +5,7 @@ Fetches ensemble forecasts, computes fair bucket probabilities via Normal
 distribution model, generates BUY/SELL signals with edge computation.
 """
 
-import time
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional
 
 from ..market_data.forecast import ForecastData
 from ..market_data.polymarket import WeatherMarket, WeatherPolymarketData
@@ -29,7 +28,6 @@ class WeatherScanner:
         self._token_ids: Dict[str, str] = {}       # market_slug -> yes_token_id
 
     def scan_for_entries(self, progress_callback: Optional[Callable] = None,
-                         held_slugs: Optional[Set[str]] = None
                          ) -> List[Signal]:
         """Scan for BUY opportunities (including top-ups of held positions).
 
@@ -48,29 +46,24 @@ class WeatherScanner:
             progress_callback(f"Scanning {len(active_markets)} buckets...")
 
         signals: List[Signal] = []
-        cities_fetched: Set[str] = set()
 
         for market in active_markets:
-            # Skip if too close to expiry
-            if market.hours_remaining < self.config.min_hours_to_expiry:
-                continue
-
-            # Get forecast (auto-cached)
-            if market.city not in cities_fetched:
-                cities_fetched.add(market.city)
-
             fc = self.forecast.get_forecast(market.city, market.date, market.unit)
             if not fc:
                 continue
 
-            # Compute fair price
+            # Compute fair price — always compute for positions panel
             fair = bucket_fair_price(
                 fc.forecast, fc.sigma, market.bucket_lower, market.bucket_upper
             )
 
-            # Cache for exit scanning
+            # Cache for exit scanning and UI display
             self._fair_prices[market.market_slug] = fair
             self._token_ids[market.market_slug] = market.yes_token_id
+
+            # Skip trading signals if too close to expiry
+            if market.hours_remaining < self.config.min_hours_to_expiry:
+                continue
 
             # Quick edge check against best ask (skip obvious non-edges)
             if fair - market.yes_price < self.config.min_edge:

@@ -20,11 +20,11 @@ class BotLogger:
         else:
             log_dir = Path(log_dir)
         log_dir.mkdir(parents=True, exist_ok=True)
-        date_str = datetime.now().strftime("%Y-%m-%d")
+        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         self.log_file = log_dir / f"bot_{date_str}.log"
 
     def _write(self, message: str):
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         line = f"[{timestamp}] {message}\n"
         with open(self.log_file, "a", encoding="utf-8") as f:
             f.write(line)

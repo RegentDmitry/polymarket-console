@@ -603,16 +603,13 @@ class TradingBotApp(App):
         try:
             t0 = time.time()
 
-            # Get held slugs
             positions = self.position_storage.load_all_active()
-            held_slugs = {p.market_slug for p in positions}
 
             # Run scanner in thread to avoid blocking UI
             scanner = self.scanner
             entry_signals = await asyncio.to_thread(
                 scanner.scan_for_entries,
                 progress_callback=lambda msg: self.call_from_thread(log.add_line, msg),
-                held_slugs=held_slugs,
             )
 
             # Get current prices and exit signals

@@ -137,8 +137,6 @@ class PolymarketExecutor:
         if not token_id:
             return OrderResult(success=False, error="No token ID"), None
 
-        logger = get_logger()
-
         try:
             if signal.suggested_size and signal.suggested_size > 0:
                 balance = signal.suggested_size * 0.98  # 2% safety margin

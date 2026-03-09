@@ -232,6 +232,7 @@ def positions_to_specs(
 
         # Get forecast data
         city_fc = forecasts.get(pos.city, {})
+        unit = city_fc.get("unit", "F")
         dates = city_fc.get("dates", {})
         day_data = dates.get(pos.date, {})
         forecast = day_data.get("forecast", 0)
@@ -239,6 +240,10 @@ def positions_to_specs(
 
         if not day_data or sigma == 0:
             continue  # skip if no forecast data
+
+        # Apply same sigma floor as pricing model
+        sigma_floor = 2.5 if unit == "F" else 2.5 / 1.8
+        sigma = max(sigma, sigma_floor)
 
         specs.append(WeatherPositionSpec(
             city=pos.city,
