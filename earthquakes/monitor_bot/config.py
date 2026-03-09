@@ -50,6 +50,14 @@ class MonitorBotConfig:
     MAX_EVENTS_DISPLAY = 20          # Максимум событий в таблице
     LOG_MAX_LINES = 100              # Максимум строк в логе
 
+    # Reports logging database (for source calibration)
+    LOG_REPORTS = True
+    REPORTS_DB_HOST = "62.112.10.73"
+    REPORTS_DB_PORT = 5432
+    REPORTS_DB_NAME = "earthquake_reports"
+    REPORTS_DB_USER = "postgres"
+    REPORTS_DB_PASSWORD = "dT5osW7V"
+
     # Polling intervals (seconds)
     JMA_POLL_INTERVAL = 30
     EMSC_RECONNECT_INTERVAL = 60

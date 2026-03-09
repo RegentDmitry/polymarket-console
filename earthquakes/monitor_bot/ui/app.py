@@ -37,6 +37,7 @@ from monitor.collectors import (
     INGVCollector,
 )
 from monitor_bot.config import config
+from monitor_bot.reports_db import ReportsDB
 
 
 class StatusBar(Static):
@@ -262,6 +263,7 @@ class MonitorBotApp(App):
         super().__init__()
         self.db = Database()
         self.matcher = EventMatcher()
+        self.reports_db = ReportsDB()
 
         self.status_bar: Optional[StatusBar] = None
         self.events_table: Optional[DataTable] = None
@@ -338,6 +340,20 @@ class MonitorBotApp(App):
                 self.log_message("Continuing with JSON-only mode", color="yellow")
         else:
             self.log_message("Database disabled (JSON-only mode)", color="cyan")
+
+        # Connect to reports logging database
+        if config.LOG_REPORTS:
+            try:
+                connected = await self.reports_db.connect()
+                if connected:
+                    self.log_message(
+                        f"Reports logging: {config.REPORTS_DB_HOST}/{config.REPORTS_DB_NAME}",
+                        color="green",
+                    )
+                else:
+                    self.log_message("Reports logging disabled", color="yellow")
+            except Exception as e:
+                self.log_message(f"Reports DB failed: {e}", color="yellow")
 
         self.log_message("")
 
@@ -880,6 +896,10 @@ class MonitorBotApp(App):
                 self.events_cache[event.event_id] = event
                 self._update_event_in_table(event)
 
+                # Log to reports DB
+                await self._log_report_safe(report, event.event_id, is_new_event=False)
+                await self._log_event_safe(event, report.source)
+
                 # Show which sources confirmed this event
                 sources_str = self._format_sources(event)
                 match_msg = (
@@ -895,6 +915,9 @@ class MonitorBotApp(App):
                     self.log_message(edge_msg, color="green bold")
                     logger.info(edge_msg)
                     self.pending_events -= 1
+
+                    # Backfill USGS data into all source_reports for this event
+                    await self._usgs_confirm_safe(event.event_id, report)
 
                     # Save JSON immediately - trading bot needs this!
                     # force=True: NO debouncing, INSTANT save!
@@ -924,6 +947,10 @@ class MonitorBotApp(App):
 
                 self.events_cache[event.event_id] = event
                 self._rebuild_events_table()
+
+                # Log to reports DB
+                await self._log_report_safe(report, event.event_id, is_new_event=True)
+                await self._log_event_safe(event, report.source)
 
                 self.total_events += 1
                 if not event.is_in_usgs:
@@ -960,6 +987,33 @@ class MonitorBotApp(App):
 
         except Exception as e:
             self.log_message(f"Error handling report: {e}", color="red")
+
+    async def _log_report_safe(self, report, event_id: UUID, is_new_event: bool):
+        """Log source report to reports DB (non-blocking, swallows errors)."""
+        if not self.reports_db.is_connected:
+            return
+        try:
+            await self.reports_db.log_report(report, event_id, is_new_event)
+        except Exception as e:
+            logger.error(f"Reports DB log_report error: {e}")
+
+    async def _log_event_safe(self, event, first_source: str):
+        """Log/update event in reports DB (non-blocking, swallows errors)."""
+        if not self.reports_db.is_connected:
+            return
+        try:
+            await self.reports_db.log_event(event, first_source)
+        except Exception as e:
+            logger.error(f"Reports DB log_event error: {e}")
+
+    async def _usgs_confirm_safe(self, event_id: UUID, usgs_report):
+        """Backfill USGS confirmation into reports DB (non-blocking)."""
+        if not self.reports_db.is_connected:
+            return
+        try:
+            await self.reports_db.update_usgs_confirmation(event_id, usgs_report)
+        except Exception as e:
+            logger.error(f"Reports DB USGS confirm error: {e}")
 
     def _update_event_in_table(self, event: EarthquakeEvent):
         """Update existing event in table."""
