@@ -555,23 +555,32 @@ class MarketsUpdater:
             for event in discovered_events:
                 event_slug = event.get("slug", "")
                 if event_slug:
-                    discovered_slugs.add(event_slug)
                     discovered_event_map[event_slug] = event
-                # Map individual market slugs to parent event
-                # so saved multi-binary market slugs can be resolved
                 markets = event.get("markets", [])
                 for market in markets:
                     ms = market.get("slug", "")
                     if ms:
                         discovered_event_map[ms] = event
                         discovered_slugs.add(ms)
+                if event_slug:
+                    discovered_slugs.add(event_slug)
 
             all_slugs = before_slugs | discovered_slugs
 
             if output_callback:
-                new_found = discovered_slugs - before_slugs
-                if new_found:
-                    output_callback(f"Found {len(new_found)} new market(s): {', '.join(list(new_found)[:5])}")
+                # Count truly new events: event slug not in config AND
+                # none of its market slugs in config
+                new_event_slugs = []
+                for event in discovered_events:
+                    es = event.get("slug", "")
+                    if not es or es in before_slugs:
+                        continue
+                    market_slugs = [m.get("slug", "") for m in event.get("markets", []) if m.get("slug")]
+                    if any(ms in before_slugs for ms in market_slugs):
+                        continue
+                    new_event_slugs.append(es)
+                if new_event_slugs:
+                    output_callback(f"Found {len(new_event_slugs)} new market(s): {', '.join(new_event_slugs[:5])}")
                 output_callback(f"Total slugs to check: {len(all_slugs)}")
                 output_callback("")
 
