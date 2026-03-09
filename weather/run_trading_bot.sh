@@ -14,7 +14,7 @@ MAX_PER_EVENT="200"          # $200 max per event (city+date)
 MAX_PER_CITY="500"           # $500 max per city
 
 # --- Scan Settings ---
-SCAN_INTERVAL="5m"           # Price scan every 5 min
+SCAN_INTERVAL="2m"           # Price scan every 2 min
 # Forecast refresh: automatic via S3 meta.json (detects new model runs)
 
 # --- Trading Mode ---

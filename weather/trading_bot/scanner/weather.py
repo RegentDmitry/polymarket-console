@@ -171,9 +171,10 @@ class WeatherScanner:
         return signals
 
     def get_current_prices(self) -> Dict[str, float]:
-        """Get current YES prices for all loaded markets."""
-        return {m.market_slug: m.yes_price
-                for m in self.polymarket.markets if m.active}
+        """Get current YES prices for all loaded markets (including expired)."""
+        return {slug: m.yes_price
+                for slug, m in self.polymarket._all_markets_map.items()
+                if m.yes_price > 0}
 
     def get_fair_prices(self) -> Dict[str, float]:
         """Get cached fair prices from last scan."""

@@ -139,8 +139,9 @@ class WeatherPolymarketData:
         if not self._markets:
             return 0
 
-        # Group markets by event_slug
+        # Group markets by event_slug (include expired for position price updates)
         event_slugs = set(m.event_slug for m in self._markets)
+        event_slugs.update(m.event_slug for m in self._all_markets_map.values())
 
         # Fetch prices per event
         slug_prices: Dict[str, Tuple[float, float]] = {}  # condition_id -> (yes, no)
@@ -177,6 +178,11 @@ class WeatherPolymarketData:
                 updated += 1
             elif m.days_remaining <= 0:
                 m.active = False
+
+        # Also update expired markets in _all_markets_map
+        for m in self._all_markets_map.values():
+            if m.condition_id in slug_prices:
+                m.yes_price, m.no_price = slug_prices[m.condition_id]
 
         return updated
 

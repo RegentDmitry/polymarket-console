@@ -46,10 +46,11 @@ class StatusBar(Static):
         self._invested: float = 0.0
         self._pnl: float = 0.0
         self._model_run_ts: float = 0.0
+        self._next_fc_ts: float = 0.0
 
     def update_status(self, balance: float, mode: str, scan_interval: int,
                       positions: int = 0, invested: float = 0.0, pnl: float = 0.0,
-                      model_run_ts: float = 0.0) -> None:
+                      model_run_ts: float = 0.0, next_fc_ts: float = 0.0) -> None:
         self._balance = balance
         self._mode = mode
         self._scan_interval = scan_interval
@@ -57,6 +58,7 @@ class StatusBar(Static):
         self._invested = invested
         self._pnl = pnl
         self._model_run_ts = model_run_ts
+        self._next_fc_ts = next_fc_ts
         self.refresh()
 
     def mark_scan(self):
@@ -82,7 +84,18 @@ class StatusBar(Static):
             fc_str = "N/A"
             buy_ok = False
 
-        buy_indicator = "[green]BUY[/green]" if buy_ok else "[dim]WAIT[/dim]"
+        if buy_ok:
+            buy_indicator = "[green]BUY[/green]"
+        elif self._next_fc_ts:
+            remaining = int(self._next_fc_ts - time.time())
+            if remaining > 0:
+                rh, rrem = divmod(remaining, 3600)
+                rm, rs = divmod(rrem, 60)
+                buy_indicator = f"[dim]WAIT {rh}:{rm:02d}:{rs:02d}[/dim]"
+            else:
+                buy_indicator = "[yellow]WAIT (due)[/yellow]"
+        else:
+            buy_indicator = "[dim]WAIT[/dim]"
 
         return (
             f"  [{self._mode}]  "
@@ -820,6 +833,7 @@ class TradingBotApp(App):
                   for p in positions)
 
         model_run_ts = 0.0
+        next_fc_ts = 0.0
         if self.scanner:
             avail_times = [
                 info.avail_time
@@ -827,6 +841,9 @@ class TradingBotApp(App):
                 if info.avail_time
             ]
             model_run_ts = max(avail_times) if avail_times else 0.0
+            # Next expected model run: min(avail_time + 6h) across all models
+            if avail_times:
+                next_fc_ts = min(t + 6 * 3600 for t in avail_times)
 
         mode = "DRY RUN" if self.config.dry_run else (
             "AUTO" if self.config.auto_mode else "CONFIRM"
@@ -839,6 +856,7 @@ class TradingBotApp(App):
             invested=invested,
             pnl=pnl,
             model_run_ts=model_run_ts,
+            next_fc_ts=next_fc_ts,
         )
 
         # Risk panel (breakdown only — MC updates separately)
