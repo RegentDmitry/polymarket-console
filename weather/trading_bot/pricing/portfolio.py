@@ -15,11 +15,16 @@ _EVENT_CITY_RE = re.compile(r"in-(.+?)-(?:be|on)-")
 _EVENT_DATE_RE = re.compile(r"on-(\w+-\d+)$")
 
 
-def kelly_fraction(edge: float, market_price: float) -> float:
-    """Compute half-Kelly fraction for a binary market.
+def kelly_fraction(edge: float, market_price: float,
+                    divisor: float = 4.0) -> float:
+    """Compute fractional Kelly for a binary market.
+
+    Args:
+        edge: fair_price - market_price
+        market_price: current market price
+        divisor: Kelly divisor (2=half, 4=quarter). Default: 4 (conservative).
 
     Returns fraction of bankroll to wager (0.0–0.25).
-    Uses half-Kelly for safety.
     """
     if market_price <= 0.01 or market_price >= 0.99 or edge <= 0:
         return 0.0
@@ -29,7 +34,7 @@ def kelly_fraction(edge: float, market_price: float) -> float:
 
     # Kelly = (p*b - q) / b where p=fair_prob, q=1-p, b=odds
     kelly = (fair_prob * odds - (1.0 - fair_prob)) / odds
-    kelly *= 0.5  # half-Kelly
+    kelly /= divisor
     return max(0.0, min(kelly, 0.25))
 
 
@@ -75,13 +80,14 @@ def allocate_sizes(
             city_invested[p.city] = city_invested.get(p.city, 0.0) + p.entry_size
 
     # Step 1: Compute kelly for all BUY signals
+    kelly_div = config.kelly_divisor
     buy_signals = []
     for s in signals:
         if s.type != SignalType.BUY:
             s.suggested_size = 0.0
             s.kelly = 0.0
             continue
-        s.kelly = kelly_fraction(s.edge, s.current_price)
+        s.kelly = kelly_fraction(s.edge, s.current_price, divisor=kelly_div)
         if s.kelly > 0:
             buy_signals.append(s)
         else:

@@ -7,11 +7,15 @@ distribution model, generates BUY/SELL signals with edge computation.
 
 from typing import Callable, Dict, List, Optional
 
+from ..calibration import CityCalibration
 from ..market_data.forecast import ForecastData
 from ..market_data.polymarket import WeatherMarket, WeatherPolymarketData
 from ..models.signal import Signal, SignalType
 from ..pricing import bucket_fair_price
 from ..logger import get_logger
+
+# Default calibration path (relative to cities.json)
+_CALIBRATION_FILE = "backtest/data/calibration_results.json"
 
 
 class WeatherScanner:
@@ -21,7 +25,11 @@ class WeatherScanner:
         from ..config import WeatherBotConfig
         self.config: WeatherBotConfig = config
         self.polymarket = WeatherPolymarketData(config.markets_json)
-        self.forecast = ForecastData(config.cities_json)
+
+        # Load per-city calibration
+        cal_path = config.cities_json.parent / _CALIBRATION_FILE
+        calibration = CityCalibration(cal_path)
+        self.forecast = ForecastData(config.cities_json, calibration=calibration)
 
         # Caches from last scan
         self._fair_prices: Dict[str, float] = {}  # market_slug -> fair
@@ -84,6 +92,10 @@ class WeatherScanner:
             edge = fair - fill_price
 
             if edge < self.config.min_edge:
+                continue
+
+            # Edge cap: skip suspiciously high edge (likely model error)
+            if edge > self.config.max_edge_cap:
                 continue
 
             signal = Signal(

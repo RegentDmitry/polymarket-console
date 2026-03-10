@@ -22,12 +22,14 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from ..calibration import CityCalibration
+
 logger = logging.getLogger(__name__)
 
 OPEN_METEO_API = "https://api.open-meteo.com/v1/forecast"
 ENSEMBLE_MODELS = "gfs_seamless,ecmwf_ifs025,icon_seamless,jma_seamless"
 
-# From IEM-calibrated backtest: sqrt(σ_iem² + σ_forecast²) ≈ sqrt(1.0² + 2.3²)
+# Legacy fallback (used only if calibration not loaded)
 SIGMA_FLOOR_F = 2.5   # °F
 SIGMA_FLOOR_C = SIGMA_FLOOR_F / 1.8  # ≈1.39°C
 
@@ -184,7 +186,8 @@ def _ts_to_str(ts: int) -> str:
 class ForecastData:
     """Open-Meteo ensemble forecasts with smart caching."""
 
-    def __init__(self, cities_json: Path):
+    def __init__(self, cities_json: Path,
+                 calibration: Optional[CityCalibration] = None):
         with open(cities_json) as f:
             self.cities = json.load(f)
 
@@ -192,9 +195,14 @@ class ForecastData:
         self._cache: Dict[str, dict] = {}
         self.tracker = ModelUpdateTracker()
         self.db = None  # Optional[ForecastDB] — set externally
+        self.calibration = calibration
 
     def get_forecast(self, city: str, date: str, unit: str) -> Optional[ForecastResult]:
-        """Get forecast for a city+date. Uses cache if no new model run detected."""
+        """Get forecast for a city+date. Uses cache if no new model run detected.
+
+        Applies per-city calibration: bias correction on forecast,
+        calibrated sigma instead of global floor.
+        """
         cache_entry = self._cache.get(city)
         now = time.time()
 
@@ -206,10 +214,11 @@ class ForecastData:
                 # No new model run → cache is still valid
                 day_data = cache_entry["data"].get(date)
                 if day_data:
-                    sigma_floor = SIGMA_FLOOR_F if unit == "F" else SIGMA_FLOOR_C
+                    forecast, sigma = self._apply_calibration(
+                        day_data["forecast"], day_data["sigma"], city, date, unit)
                     return ForecastResult(
-                        forecast=day_data["forecast"],
-                        sigma=max(day_data["sigma"], sigma_floor),
+                        forecast=forecast,
+                        sigma=sigma,
                         sigma_ensemble=day_data["sigma"],
                         models=day_data["models"],
                         cached=True,
@@ -227,15 +236,36 @@ class ForecastData:
         if not day_data:
             return None
 
-        sigma_floor = SIGMA_FLOOR_F if unit == "F" else SIGMA_FLOOR_C
+        forecast, sigma = self._apply_calibration(
+            day_data["forecast"], day_data["sigma"], city, date, unit)
         return ForecastResult(
-            forecast=day_data["forecast"],
-            sigma=max(day_data["sigma"], sigma_floor),
+            forecast=forecast,
+            sigma=sigma,
             sigma_ensemble=day_data["sigma"],
             models=day_data["models"],
             cached=False,
             cache_age_min=0.0,
         )
+
+    def _apply_calibration(self, raw_forecast: float, ensemble_sigma: float,
+                           city: str, date: str, unit: str) -> Tuple[float, float]:
+        """Apply bias correction and calibrated sigma.
+
+        Returns (corrected_forecast, calibrated_sigma).
+        """
+        if self.calibration and self.calibration.loaded:
+            bias = self.calibration.get_bias(city, date)
+            sigma = self.calibration.get_sigma(city, date, unit)
+            # Bias correction: subtract systematic overprediction
+            forecast = raw_forecast - bias
+            # Use calibrated sigma, but at least ensemble spread
+            sigma = max(sigma, ensemble_sigma)
+        else:
+            # Legacy fallback
+            sigma_floor = SIGMA_FLOOR_F if unit == "F" else SIGMA_FLOOR_C
+            forecast = raw_forecast
+            sigma = max(ensemble_sigma, sigma_floor)
+        return forecast, sigma
 
     def refresh_city(self, city: str, unit: str = "F") -> bool:
         """Fetch fresh forecast for a city from Open-Meteo."""

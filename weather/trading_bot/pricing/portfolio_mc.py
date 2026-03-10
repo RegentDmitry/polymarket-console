@@ -216,9 +216,6 @@ def positions_to_specs(
     # Build market lookup: market_slug -> WeatherMarket
     market_map = {m.market_slug: m for m in scanner.polymarket.markets}
 
-    # Get cached forecasts
-    forecasts = scanner.get_cached_forecasts()
-
     specs = []
     for pos in positions:
         market = market_map.get(pos.market_slug)
@@ -230,20 +227,15 @@ def positions_to_specs(
         else:
             lower, upper = _parse_bucket_label(pos.bucket_label)
 
-        # Get forecast data
-        city_fc = forecasts.get(pos.city, {})
-        unit = city_fc.get("unit", "F")
-        dates = city_fc.get("dates", {})
-        day_data = dates.get(pos.date, {})
-        forecast = day_data.get("forecast", 0)
-        sigma = day_data.get("sigma", 0)
-
-        if not day_data or sigma == 0:
+        # Get forecast data (calibrated via scanner.forecast)
+        city_cfg = scanner.forecast.cities.get(pos.city, {})
+        unit = "C" if city_cfg.get("unit") == "celsius" else "F"
+        fc = scanner.forecast.get_forecast(pos.city, pos.date, unit)
+        if not fc or fc.sigma == 0:
             continue  # skip if no forecast data
 
-        # Apply same sigma floor as pricing model
-        sigma_floor = 2.5 if unit == "F" else 2.5 / 1.8
-        sigma = max(sigma, sigma_floor)
+        forecast = fc.forecast
+        sigma = fc.sigma
 
         specs.append(WeatherPositionSpec(
             city=pos.city,

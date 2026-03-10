@@ -22,12 +22,10 @@ class WeatherBotConfig:
     # Forecast refresh: automatic via S3 meta.json (no fixed interval)
 
     # Strategy parameters
-    min_edge: float = 0.05          # 5%
+    min_edge: float = 0.08          # 8% (raised from 5% — reduce false signals)
+    max_edge_cap: float = 0.25      # Skip suspiciously high edge (likely model error)
     min_hours_to_expiry: float = 12  # Don't buy if <12h to resolution
-    # σ_floor = sqrt(σ_iem² + σ_forecast²) ≈ sqrt(1.0² + 2.3²)
-    # σ_iem=1.0°F from IEM backtest, σ_forecast≈2.3°F (ensemble 1-2 day error)
-    sigma_floor_f: float = 2.5      # °F (IEM-calibrated, includes forecast error)
-    sigma_floor_c: float = 1.39     # °C
+    kelly_divisor: float = 4.0      # Quarter-Kelly (was half-Kelly=2)
 
     # Portfolio risk limits (Kelly proportional + hard caps)
     max_per_bucket: float = 50.0    # Max $ per bucket (liquidity ~$20-100)
@@ -91,8 +89,12 @@ Examples:
                         help="Enable live trading (default: dry-run)")
     parser.add_argument("--scan-once", action="store_true",
                         help="Run one scan and exit (no TUI)")
-    parser.add_argument("--min-edge", type=float, default=0.05,
-                        help="Minimum edge to enter. Default: 0.05 (5%%)")
+    parser.add_argument("--min-edge", type=float, default=0.08,
+                        help="Minimum edge to enter. Default: 0.08 (8%%)")
+    parser.add_argument("--max-edge", type=float, default=0.25,
+                        help="Max edge cap (skip if higher). Default: 0.25 (25%%)")
+    parser.add_argument("--kelly-div", type=float, default=4.0,
+                        help="Kelly divisor (4=quarter-Kelly). Default: 4")
     parser.add_argument("--min-hours", type=float, default=12,
                         help="Min hours to expiry. Default: 12")
     parser.add_argument("--max-bucket", type=float, default=50.0,
@@ -118,6 +120,8 @@ Examples:
         scan_once=args.scan_once,
         scan_interval=parse_interval(args.interval),
         min_edge=args.min_edge,
+        max_edge_cap=args.max_edge,
+        kelly_divisor=args.kelly_div,
         min_hours_to_expiry=args.min_hours,
         max_per_bucket=args.max_bucket,
         max_per_event=args.max_event,

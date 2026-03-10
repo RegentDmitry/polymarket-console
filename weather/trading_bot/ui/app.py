@@ -559,11 +559,13 @@ class TradingBotApp(App):
         if not self._scan_running:
             self.run_worker(self._run_scan(), exit_on_error=False)
 
-    def _resolve_settled_positions(self, positions: list) -> int:
-        """Check expired positions and move resolved ones to history."""
-        resolved = 0
+    def _resolve_settled_positions(self, positions: list) -> list:
+        """Check expired positions and move resolved ones to history.
+
+        Returns list of (city, date, bucket_label, won, pnl) tuples.
+        """
+        results = []
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        log = self.query_one("#log-panel", LogPanel)
 
         for pos in positions:
             if not pos.date or pos.date >= today:
@@ -584,22 +586,10 @@ class TradingBotApp(App):
 
             self.position_storage.resolve_position(pos.id, we_won)
 
-            if we_won:
-                pnl = pos.tokens - pos.entry_size
-                self.call_from_thread(
-                    log.add_line,
-                    f"[green]RESOLVED WIN: {pos.city} {pos.date} {pos.bucket_label} "
-                    f"PnL ${pnl:+.2f}[/green]"
-                )
-            else:
-                self.call_from_thread(
-                    log.add_line,
-                    f"[red]RESOLVED LOSS: {pos.city} {pos.date} {pos.bucket_label} "
-                    f"PnL ${-pos.entry_size:.2f}[/red]"
-                )
-            resolved += 1
+            pnl = (pos.tokens - pos.entry_size) if we_won else -pos.entry_size
+            results.append((pos.city, pos.date, pos.bucket_label, we_won, pnl))
 
-        return resolved
+        return results
 
     def _in_buy_window(self) -> bool:
         """True if within 20 minutes of the last forecast model run."""
@@ -693,13 +683,27 @@ class TradingBotApp(App):
                     log.add_line(f"Actuals error: {e}")
 
             # Auto-resolve settled positions (past market date)
-            if self.executor and self.executor.initialized:
+            expired = [p for p in positions if p.date and p.date < datetime.now(timezone.utc).strftime("%Y-%m-%d")]
+            if expired:
+                log.add_line(f"[dim]Checking {len(expired)} expired positions...[/dim]")
+            if self.executor:
                 try:
-                    n = await asyncio.to_thread(
+                    results = await asyncio.to_thread(
                         self._resolve_settled_positions, positions
                     )
-                    if n > 0:
-                        log.add_line(f"Resolved {n} position(s)")
+                    for city, date, bucket, won, pnl in results:
+                        if won:
+                            log.add_line(
+                                f"[green]RESOLVED WIN: {city} {date} {bucket} "
+                                f"PnL ${pnl:+.2f}[/green]"
+                            )
+                        else:
+                            log.add_line(
+                                f"[red]RESOLVED LOSS: {city} {date} {bucket} "
+                                f"PnL ${pnl:+.2f}[/red]"
+                            )
+                    if results:
+                        log.add_line(f"Resolved {len(results)} position(s)")
                         self._update_ui()
                 except Exception as e:
                     log.add_line(f"Resolve error: {e}")

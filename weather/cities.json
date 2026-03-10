@@ -41,11 +41,11 @@
     "lon": -96.80,
     "timezone": "America/Chicago",
     "unit": "fahrenheit",
-    "wu_station": "KDFW",
-    "wu_url": "https://www.wunderground.com/history/daily/us/tx/dallas/KDFW",
+    "wu_station": "KDAL",
+    "wu_url": "https://www.wunderground.com/history/daily/us/tx/dallas/KDAL",
     "bucket_width": 2,
     "iem_network": "TX_ASOS",
-    "iem_station": "DFW"
+    "iem_station": "DAL"
   },
   "atlanta": {
     "name": "Atlanta",
@@ -113,11 +113,11 @@
     "lon": 126.98,
     "timezone": "Asia/Seoul",
     "unit": "celsius",
-    "wu_station": "RKSS",
-    "wu_url": "https://www.wunderground.com/history/daily/kr/seoul/RKSS",
+    "wu_station": "RKSI",
+    "wu_url": "https://www.wunderground.com/history/daily/kr/incheon/RKSI",
     "bucket_width": 1,
     "iem_network": "KR__ASOS",
-    "iem_station": "RKSS"
+    "iem_station": "RKSI"
   },
   "lucknow": {
     "name": "Lucknow",
@@ -178,6 +178,30 @@
     "bucket_width": 1,
     "iem_network": "DE__ASOS",
     "iem_station": "EDDM"
+  },
+  "tokyo": {
+    "name": "Tokyo",
+    "lat": 35.55,
+    "lon": 139.78,
+    "timezone": "Asia/Tokyo",
+    "unit": "celsius",
+    "wu_station": "RJTT",
+    "wu_url": "https://www.wunderground.com/history/daily/jp/tokyo/RJTT",
+    "bucket_width": 1,
+    "iem_network": "JP__ASOS",
+    "iem_station": "RJTT"
+  },
+  "tel-aviv": {
+    "name": "Tel Aviv",
+    "lat": 32.01,
+    "lon": 34.88,
+    "timezone": "Asia/Jerusalem",
+    "unit": "celsius",
+    "wu_station": "LLBG",
+    "wu_url": "https://www.wunderground.com/history/daily/il/tel-aviv/LLBG",
+    "bucket_width": 1,
+    "iem_network": "IL__ASOS",
+    "iem_station": "LLBG"
   },
   "wellington": {
     "name": "Wellington",

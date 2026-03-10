@@ -7,8 +7,11 @@ Adapted from crypto bot executor. Simplified:
 - Loads weather/.env for separate wallet
 """
 
+import json
+import ssl
 import sys
 import time
+import urllib.request
 from pathlib import Path
 from typing import Optional, Tuple
 from dataclasses import dataclass
@@ -319,22 +322,19 @@ class PolymarketExecutor:
 
     def check_market_resolved(self, condition_id: str) -> Tuple[bool, Optional[str]]:
         """Check if a market has resolved. Returns (is_resolved, winning_outcome)."""
-        if not self.client:
-            return False, None
-        try:
-            info = self.client.get_market(condition_id)
-            if info and info.get("closed"):
-                return True, info.get("outcome")
-        except Exception:
-            pass
+        info = self.get_market_info(condition_id)
+        if info and info.get("closed"):
+            return True, info.get("outcome")
         return False, None
 
     def get_market_info(self, condition_id: str) -> Optional[dict]:
-        """Get full market info from CLOB API."""
-        if not self.client:
-            return None
+        """Get full market info from CLOB API via direct HTTP."""
         try:
-            return self.client.get_market(condition_id)
+            url = f"https://clob.polymarket.com/markets/{condition_id}"
+            ctx = ssl.create_default_context()
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            resp = urllib.request.urlopen(req, timeout=10, context=ctx)
+            return json.loads(resp.read())
         except Exception:
             return None
 

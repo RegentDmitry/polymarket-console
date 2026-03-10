@@ -1,0 +1,47 @@
+[
+  {
+    "strategy": "Old (\u03c3=2.5 global)",
+    "n_trades": 0,
+    "n_wins": 0,
+    "win_pct": 0,
+    "total_pnl": 0,
+    "max_drawdown": 0.0,
+    "final_equity": 300.0
+  },
+  {
+    "strategy": "Fix1: per-city \u03c3",
+    "n_trades": 1574,
+    "n_wins": 357,
+    "win_pct": 22.7,
+    "total_pnl": -292.67,
+    "max_drawdown": 0.9979,
+    "final_equity": 7.45
+  },
+  {
+    "strategy": "Fix2: +bias corr",
+    "n_trades": 27240,
+    "n_wins": 7890,
+    "win_pct": 29.0,
+    "total_pnl": 1757903.6,
+    "max_drawdown": 0.4793,
+    "final_equity": 1758203.68
+  },
+  {
+    "strategy": "Fix3: +risk mgmt",
+    "n_trades": 18580,
+    "n_wins": 5548,
+    "win_pct": 29.9,
+    "total_pnl": 1386248.61,
+    "max_drawdown": 0.4613,
+    "final_equity": 1386548.45
+  },
+  {
+    "strategy": "Fix4: conservative",
+    "n_trades": 11399,
+    "n_wins": 3671,
+    "win_pct": 32.2,
+    "total_pnl": 1045643.21,
+    "max_drawdown": 0.7451,
+    "final_equity": 1045942.75
+  }
+]
