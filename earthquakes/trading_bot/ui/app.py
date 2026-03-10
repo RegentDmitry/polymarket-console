@@ -653,12 +653,6 @@ class TradingBotApp(App):
             reserve = self.config.reserve_balance
             has_extra = self.scanner.has_extra_events
 
-            # Apply max-invested cap: limit available balance based on total already invested
-            if self.config.max_invested > 0:
-                already_invested = sum(p.entry_size for p in self.position_storage.load_all_active())
-                cap_remaining = max(0, self.config.max_invested - already_invested)
-                total_balance = min(total_balance, cap_remaining)
-
             # Determine available balances
             if reserve > 0 and has_extra:
                 # Early detection mode: split signals into reserve-worthy and regular
