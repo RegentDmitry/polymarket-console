@@ -22,8 +22,8 @@ class WeatherBotConfig:
     # Forecast refresh: automatic via S3 meta.json (no fixed interval)
 
     # Strategy parameters
-    min_edge: float = 0.08          # 8% (raised from 5% — reduce false signals)
-    max_edge_cap: float = 0.25      # Skip suspiciously high edge (likely model error)
+    min_edge: float = 0.05          # 5%
+    max_edge_cap: float = 0.50      # Skip suspiciously high edge (likely model error)
     min_hours_to_expiry: float = 12  # Don't buy if <12h to resolution
     kelly_divisor: float = 4.0      # Quarter-Kelly (was half-Kelly=2)
 
@@ -89,10 +89,10 @@ Examples:
                         help="Enable live trading (default: dry-run)")
     parser.add_argument("--scan-once", action="store_true",
                         help="Run one scan and exit (no TUI)")
-    parser.add_argument("--min-edge", type=float, default=0.08,
-                        help="Minimum edge to enter. Default: 0.08 (8%%)")
-    parser.add_argument("--max-edge", type=float, default=0.25,
-                        help="Max edge cap (skip if higher). Default: 0.25 (25%%)")
+    parser.add_argument("--min-edge", type=float, default=0.05,
+                        help="Minimum edge to enter. Default: 0.05 (5%%)")
+    parser.add_argument("--max-edge", type=float, default=0.50,
+                        help="Max edge cap (skip if higher). Default: 0.50 (50%%)")
     parser.add_argument("--kelly-div", type=float, default=4.0,
                         help="Kelly divisor (4=quarter-Kelly). Default: 4")
     parser.add_argument("--min-hours", type=float, default=12,

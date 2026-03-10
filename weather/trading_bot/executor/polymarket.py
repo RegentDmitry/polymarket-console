@@ -185,8 +185,10 @@ class PolymarketExecutor:
                     error=f"No liquidity at {target_price:.2%} (min $1)"
                 ), None
 
-            balance_before = self.get_balance()
             self.ensure_buy_approval()
+
+            # Snapshot balance right before order
+            balance_before = self.get_balance()
 
             # Place order with retry
             last_error = None
@@ -219,7 +221,9 @@ class PolymarketExecutor:
             order_id = result.get("orderID") or result.get("order_id")
 
             if order_id:
-                # Measure actual cost — retry with delay for settlement
+                # Use total_cost as primary (calculated from orderbook).
+                # Verify with balance delta if available, but cap it to
+                # avoid over-counting when API returns stale balance.
                 actual_entry_size = total_cost
                 for _wait in range(3):
                     try:
@@ -227,7 +231,10 @@ class PolymarketExecutor:
                         balance_after = self.get_balance()
                         actual_cost = balance_before - balance_after
                         if actual_cost > 0.5:
-                            actual_entry_size = actual_cost
+                            # Use balance delta only if it's reasonable
+                            # (within 2x of expected cost — avoid stale reads)
+                            if actual_cost <= total_cost * 2:
+                                actual_entry_size = actual_cost
                             break
                     except Exception:
                         pass

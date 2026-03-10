@@ -5,7 +5,8 @@
 # =============================================================================
 
 # --- Signal Filters ---
-MIN_EDGE="0.10"              # 10% minimum edge
+MIN_EDGE="0.05"              # 5% minimum edge
+MAX_EDGE="0.50"              # 50% max edge cap
 MIN_HOURS="12"               # Don't buy if <12h to expiry
 
 # --- Limits ---
@@ -88,6 +89,7 @@ while true; do
 
     $PYTHON -m trading_bot \
         --min-edge "$MIN_EDGE" \
+        --max-edge "$MAX_EDGE" \
         --min-hours "$MIN_HOURS" \
         --max-bucket "$MAX_PER_BUCKET" \
         --max-event "$MAX_PER_EVENT" \
