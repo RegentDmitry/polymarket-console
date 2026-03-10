@@ -8,6 +8,7 @@ Adapted from crypto bot executor. Simplified:
 """
 
 import json
+import math
 import ssl
 import sys
 import time
@@ -273,8 +274,77 @@ class PolymarketExecutor:
         except Exception as e:
             return OrderResult(success=False, error=str(e)), None
 
+    def ensure_sell_approval(self):
+        """Ensure CTF token approval for exchange contracts (one-time on-chain tx)."""
+        if not self.client or getattr(self, '_sell_approved', False):
+            return
+        logger = get_logger()
+        try:
+            import os
+            from web3 import Web3
+
+            pk = self.client.pk
+            if not pk:
+                return
+
+            rpc = os.getenv("POLYGON_RPC", "https://polygon-bor-rpc.publicnode.com")
+            w3 = Web3(Web3.HTTPProvider(rpc))
+
+            account = w3.eth.account.from_key(pk)
+            ctf_address = w3.to_checksum_address("0x4D97DCd97eC945f40cF65F87097ACe5EA0476045")
+
+            abi = [
+                {"inputs": [{"name": "operator", "type": "address"}, {"name": "approved", "type": "bool"}],
+                 "name": "setApprovalForAll", "outputs": [], "stateMutability": "nonpayable", "type": "function"},
+                {"inputs": [{"name": "owner", "type": "address"}, {"name": "operator", "type": "address"}],
+                 "name": "isApprovedForAll", "outputs": [{"name": "", "type": "bool"}],
+                 "stateMutability": "view", "type": "function"},
+            ]
+            ctf = w3.eth.contract(address=ctf_address, abi=abi)
+
+            exchanges = [
+                "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+                "0xC5d563A36AE78145C45a50134d48A1215220f80a",
+                "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296",
+            ]
+
+            all_approved = True
+            for ex in exchanges:
+                ex_addr = w3.to_checksum_address(ex)
+                approved = ctf.functions.isApprovedForAll(account.address, ex_addr).call()
+                if not approved:
+                    matic = float(w3.from_wei(w3.eth.get_balance(account.address), "ether"))
+                    if matic < 0.001:
+                        logger.log_warning(f"Cannot approve CTF: no MATIC for gas ({matic:.6f})")
+                        all_approved = False
+                        continue
+                    logger.log_info(f"Approving CTF for exchange {ex[:10]}...")
+                    nonce = w3.eth.get_transaction_count(account.address)
+                    tx = ctf.functions.setApprovalForAll(ex_addr, True).build_transaction({
+                        "from": account.address,
+                        "nonce": nonce,
+                        "gas": 100000,
+                        "gasPrice": w3.eth.gas_price,
+                        "chainId": 137,
+                    })
+                    signed = w3.eth.account.sign_transaction(tx, pk)
+                    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+                    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+                    logger.log_info(f"CTF approval tx: {tx_hash.hex()} status={receipt['status']}")
+                    nonce += 1
+
+            self._sell_approved = all_approved
+            if not all_approved:
+                logger.log_warning("CTF approval incomplete - will retry next time")
+        except Exception as e:
+            logger.log_warning(f"CTF sell approval error: {e}")
+
     def sell(self, signal: Signal, position: Position, market: Market) -> OrderResult:
-        """Execute a SELL order (edge_exit only — rare for weather)."""
+        """Execute a SELL order (edge_exit only — rare for weather).
+
+        Walks the bid side of the orderbook to sell into existing buyers.
+        If best bid is too far from signal price, places a maker order and waits.
+        """
         if not self.client:
             return OrderResult(success=False, error="Client not initialized")
 
@@ -285,22 +355,95 @@ class PolymarketExecutor:
         logger = get_logger()
 
         try:
+            # Step 1: Ensure on-chain CTF approval
+            self.ensure_sell_approval()
+
+            # Step 2: Sync token balance allowance and get real on-chain token balance
+            real_balance_raw = 0
+            try:
+                from polymarket_console.clob_types import BalanceAllowanceParams, AssetType
+                params = BalanceAllowanceParams(
+                    asset_type=AssetType.CONDITIONAL,
+                    token_id=token_id,
+                )
+                self.client.client.update_balance_allowance(params)
+                bal_info = self.client.client.get_balance_allowance(params)
+                real_balance_raw = int(bal_info.get("balance", 0))
+            except Exception as e:
+                logger.log_warning(f"SELL allowance sync: {e}")
+
+            # Use real on-chain balance to avoid "not enough balance" errors
+            if real_balance_raw > 0:
+                size = math.floor(real_balance_raw / 1e4) / 100  # floor to 2 decimals
+            else:
+                size = math.floor(position.tokens * 100) / 100
+
+            if size < 1:
+                return OrderResult(success=False, error=f"Size too small: {size:.2f} tokens")
+
+            # Step 3: Check orderbook bids to find executable price
+            sell_price = round(signal.current_price, 2)
+            if sell_price <= 0:
+                return OrderResult(success=False, error=f"Invalid sell price: {signal.current_price}")
+            if sell_price >= 1:
+                sell_price = 0.99
+
+            try:
+                ob = self.client.get_orderbook(token_id)
+                bids = ob.bids if hasattr(ob, 'bids') else ob.get("bids", [])
+                if bids:
+                    best_bid = float(bids[0].price if hasattr(bids[0], 'price') else bids[0].get("price", 0))
+                    # Sell at best bid to get filled immediately (taker)
+                    # Only if best bid is at least half of entry price (don't dump for nothing)
+                    min_acceptable = position.entry_price * 0.5
+                    if best_bid >= min_acceptable:
+                        sell_price = best_bid
+                        logger.log_info(f"SELL using best bid: {best_bid}")
+                    else:
+                        logger.log_info(f"SELL best bid {best_bid} too low (min {min_acceptable:.2f}), using {sell_price}")
+            except Exception as e:
+                logger.log_warning(f"SELL orderbook check: {e}")
+
             balance_before = self.get_balance()
 
-            result = self.client.create_limit_order(
-                token_id=token_id,
-                side="SELL",
-                price=signal.current_price,
-                size=position.tokens,
-            )
+            # Step 4: Place sell order with retry
+            logger.log_info(f"SELL order: price={sell_price} size={size} (raw={real_balance_raw})")
+            order_id = None
+            for attempt in range(2):
+                try:
+                    result = self.client.create_limit_order(
+                        token_id=token_id,
+                        side="SELL",
+                        price=sell_price,
+                        size=size,
+                    )
+                    order_id = result.get("orderID") or result.get("order_id")
+                    break
+                except Exception as e:
+                    err_detail = str(e)
+                    if hasattr(e, 'error_msg'):
+                        err_detail = f"status={getattr(e, 'status_code', '?')} msg={e.error_msg}"
+                    logger.log_warning(f"SELL attempt {attempt+1} failed: {err_detail}")
+                    if attempt == 0:
+                        time.sleep(2)
+                        try:
+                            from polymarket_console.clob_types import BalanceAllowanceParams, AssetType
+                            params = BalanceAllowanceParams(
+                                asset_type=AssetType.CONDITIONAL,
+                                token_id=token_id,
+                            )
+                            self.client.client.update_balance_allowance(params)
+                        except Exception:
+                            pass
+                        continue
+                    raise
 
-            order_id = result.get("orderID") or result.get("order_id")
             if not order_id:
                 return OrderResult(success=False, error=f"No order ID: {result}")
 
-            # Wait for fill confirmation (balance should increase)
+            # Step 5: Wait for fill confirmation (balance should increase)
             actual_proceeds = 0.0
-            for _ in range(5):
+            for _ in range(8):
                 time.sleep(1)
                 try:
                     balance_after = self.get_balance()
@@ -311,15 +454,15 @@ class PolymarketExecutor:
                     pass
 
             if actual_proceeds < 0.5:
-                # Not filled — cancel order
                 self.cancel_order(order_id)
-                logger.log_warning(f"Sell order {order_id} not filled, cancelled")
+                logger.log_warning(f"Sell order {order_id} not filled after 8s, cancelled")
                 return OrderResult(success=False, error="Sell order not filled, cancelled")
 
+            logger.log_info(f"SELL filled: proceeds=${actual_proceeds:.2f}")
             return OrderResult(
                 success=True,
                 order_id=order_id,
-                filled_price=actual_proceeds / position.tokens if position.tokens > 0 else signal.current_price,
+                filled_price=actual_proceeds / position.tokens if position.tokens > 0 else sell_price,
                 filled_size=actual_proceeds,
                 tokens=position.tokens,
             )
