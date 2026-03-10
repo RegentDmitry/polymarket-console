@@ -26,6 +26,9 @@ class BotConfig:
     min_edge: float = 0.01  # 1% (noise protection)
     min_apy: float = 0.30   # 30% annualized
 
+    # Investment cap
+    max_invested: float = 0.0  # 0 = no limit; >0 = cap total invested $ (positions + cash used)
+
     # Reserve balance for early detection (info advantage)
     reserve_balance: float = 0.0       # $ to keep for early detection situations
     reserve_min_certainty: float = 0.90  # Fair >= 90% = "верняк"
@@ -122,6 +125,13 @@ Examples:
 
     # Reserve balance parameters
     parser.add_argument(
+        "--max-invested",
+        type=float,
+        default=0.0,
+        help="Max total invested $ (0 = no limit). Limits new buys when positions exceed cap."
+    )
+
+    parser.add_argument(
         "--reserve-balance",
         type=float,
         default=0.0,
@@ -158,6 +168,7 @@ Examples:
         max_positions=args.max_positions,
         min_edge=args.min_edge,
         min_apy=args.min_apy,
+        max_invested=args.max_invested,
         reserve_balance=args.reserve_balance,
         reserve_min_certainty=args.reserve_min_certainty,
         reserve_min_roi=args.reserve_min_roi,

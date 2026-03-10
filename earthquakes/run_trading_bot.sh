@@ -8,6 +8,9 @@
 MIN_EDGE="0.01"              # 1% minimum edge
 MIN_APY="0.20"               # 20% minimum APY
 
+# --- Investment Cap ---
+MAX_INVESTED="5000"          # $5000 max total invested (0 = no limit)
+
 # --- Reserve Balance (for early detection) ---
 RESERVE_BALANCE="1000"       # $1000 kept for info advantage situations
 RESERVE_MIN_CERTAINTY="0.90" # 90% fair = "верняк" (certainty threshold)
@@ -49,6 +52,7 @@ echo ""
 echo "Configuration:"
 echo "  Min Edge:      $MIN_EDGE"
 echo "  Min APY:       $MIN_APY"
+echo "  Max Invested:  \$$MAX_INVESTED"
 echo "  Reserve:       \$$RESERVE_BALANCE"
 echo "  Reserve ROI:   $RESERVE_MIN_ROI"
 echo "  Scan Interval: $SCAN_INTERVAL"
@@ -98,6 +102,7 @@ while true; do
     python -m trading_bot \
         --min-edge "$MIN_EDGE" \
         --min-apy "$MIN_APY" \
+        --max-invested "$MAX_INVESTED" \
         --reserve-balance "$RESERVE_BALANCE" \
         --reserve-min-certainty "$RESERVE_MIN_CERTAINTY" \
         --reserve-min-roi "$RESERVE_MIN_ROI" \
