@@ -568,7 +568,7 @@ class TradingBotApp(App):
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         for pos in positions:
-            if not pos.date or pos.date >= today:
+            if not pos.date or pos.date > today:
                 continue
 
             market = self.executor.get_market_info(pos.market_id)
@@ -662,7 +662,9 @@ class TradingBotApp(App):
                 entry_signals = [s for s in entry_signals if s.suggested_size <= 0]
                 buys = 0
 
-            if self.config.auto_mode and not self.config.dry_run:
+            if self.config.observe_only:
+                pass  # Observe mode: no buy/sell
+            elif self.config.auto_mode and not self.config.dry_run:
                 await self._auto_execute(entry_signals, exit_signals, positions)
             elif not self.config.dry_run and (buys > 0 or sells > 0):
                 # Queue for confirmation
@@ -683,7 +685,7 @@ class TradingBotApp(App):
                     log.add_line(f"Actuals error: {e}")
 
             # Auto-resolve settled positions (past market date)
-            expired = [p for p in positions if p.date and p.date < datetime.now(timezone.utc).strftime("%Y-%m-%d")]
+            expired = [p for p in positions if p.date and p.date <= datetime.now(timezone.utc).strftime("%Y-%m-%d")]
             if expired:
                 log.add_line(f"[dim]Checking {len(expired)} expired positions...[/dim]")
             if self.executor:

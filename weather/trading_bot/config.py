@@ -16,6 +16,7 @@ class WeatherBotConfig:
     auto_mode: bool = False
     dry_run: bool = True
     scan_once: bool = False  # Run one scan and exit
+    observe_only: bool = False  # Scan + resolve, but no buy/sell
 
     # Scan settings
     scan_interval: int = 300        # 5 minutes (PM price refresh)
@@ -87,6 +88,8 @@ Examples:
                         help="AUTO mode (trade without confirmation)")
     parser.add_argument("--live", "-l", action="store_true",
                         help="Enable live trading (default: dry-run)")
+    parser.add_argument("--observe", action="store_true",
+                        help="Observe mode: scan + resolve positions, no buy/sell")
     parser.add_argument("--scan-once", action="store_true",
                         help="Run one scan and exit (no TUI)")
     parser.add_argument("--min-edge", type=float, default=0.05,
@@ -116,7 +119,8 @@ Examples:
 
     return WeatherBotConfig(
         auto_mode=args.auto,
-        dry_run=not args.live,
+        dry_run=not args.live and not args.observe,
+        observe_only=args.observe,
         scan_once=args.scan_once,
         scan_interval=parse_interval(args.interval),
         min_edge=args.min_edge,

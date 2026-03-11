@@ -20,7 +20,7 @@ from . import __version__
 config = parse_args()
 
 # Show settings table
-mode = "DRY RUN" if config.dry_run else ("AUTO" if config.auto_mode else "CONFIRM")
+mode = "OBSERVE (no trading)" if config.observe_only else ("DRY RUN" if config.dry_run else ("AUTO" if config.auto_mode else "CONFIRM"))
 alloc_str = f"{config.target_alloc:.0%}" + (" (all)" if config.target_alloc >= 1.0 else "")
 print(f"""
 +-------------------------------------------------------------+
