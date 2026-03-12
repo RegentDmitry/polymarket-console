@@ -35,7 +35,7 @@ def _get_season(date_str: str) -> str:
 
 
 class CityCalibration:
-    """Provides calibrated sigma and bias per city/season."""
+    """Provides calibrated sigma, bias, and ensemble weights per city/season."""
 
     def __init__(self, calibration_path: Optional[Path] = None):
         self._data = {}
@@ -50,6 +50,17 @@ class CityCalibration:
     @property
     def loaded(self) -> bool:
         return bool(self._data)
+
+    def get_weights(self, city: str) -> Optional[dict]:
+        """Get per-city optimal model weights for weighted ensemble.
+
+        Returns dict like {"ecmwf_ifs025": 0.24, "gfs_seamless": 0.70, ...}
+        or None if no weights available (falls back to equal weight).
+        """
+        cal = self._data.get(city)
+        if not cal:
+            return None
+        return cal.get("ensemble_weights")
 
     def get_sigma(self, city: str, date: str, unit: str) -> float:
         """Get calibrated sigma for city+date (seasonal if available).
@@ -71,6 +82,24 @@ class CityCalibration:
             return cal["sigma"]
 
         return _FALLBACK_SIGMA_F if unit == "F" else _FALLBACK_SIGMA_C
+
+    def get_df(self, city: str, date: str) -> Optional[float]:
+        """Get Student-t degrees of freedom for fat-tail pricing.
+
+        Uses seasonal df if available, falls back to annual.
+        Returns None if not available (use Normal distribution).
+        """
+        cal = self._data.get(city)
+        if not cal:
+            return None
+
+        # Try seasonal first
+        season = _get_season(date)
+        seasonal = cal.get("seasonal", {}).get(season)
+        if seasonal and "student_t_df" in seasonal:
+            return seasonal["student_t_df"]
+
+        return cal.get("student_t_df")
 
     def get_bias(self, city: str, date: str) -> float:
         """Get forecast bias for city+date (seasonal if available).

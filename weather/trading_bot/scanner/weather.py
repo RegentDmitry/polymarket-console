@@ -15,7 +15,7 @@ from ..pricing import bucket_fair_price
 from ..logger import get_logger
 
 # Default calibration path (relative to cities.json)
-_CALIBRATION_FILE = "backtest/data/calibration_results.json"
+_CALIBRATION_FILE = "backtest/data/calibration_results_weighted.json"
 
 
 class WeatherScanner:
@@ -62,7 +62,8 @@ class WeatherScanner:
 
             # Compute fair price — always compute for positions panel
             fair = bucket_fair_price(
-                fc.forecast, fc.sigma, market.bucket_lower, market.bucket_upper
+                fc.forecast, fc.sigma, market.bucket_lower, market.bucket_upper,
+                df=fc.df,
             )
 
             # Cache for exit scanning and UI display
@@ -71,6 +72,10 @@ class WeatherScanner:
 
             # Skip trading signals if too close to expiry
             if market.hours_remaining < self.config.min_hours_to_expiry:
+                continue
+
+            # Skip cheap buckets where sigma errors are amplified
+            if market.yes_price < self.config.min_market_price:
                 continue
 
             # Quick edge check against best ask (skip obvious non-edges)
@@ -128,7 +133,8 @@ class WeatherScanner:
             if not fc:
                 continue
             fair = bucket_fair_price(
-                fc.forecast, fc.sigma, market.bucket_lower, market.bucket_upper
+                fc.forecast, fc.sigma, market.bucket_lower, market.bucket_upper,
+                df=fc.df,
             )
             self._fair_prices[market.market_slug] = fair
 

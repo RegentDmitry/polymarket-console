@@ -24,7 +24,8 @@ class WeatherBotConfig:
 
     # Strategy parameters
     min_edge: float = 0.05          # 5%
-    max_edge_cap: float = 0.50      # Skip suspiciously high edge (likely model error)
+    max_edge_cap: float = 0.25      # Skip suspiciously high edge (likely model error)
+    min_market_price: float = 0.08  # Don't buy buckets cheaper than 8% (sigma error amplified)
     min_hours_to_expiry: float = 12  # Don't buy if <12h to resolution
     kelly_divisor: float = 4.0      # Quarter-Kelly (was half-Kelly=2)
 
@@ -94,8 +95,10 @@ Examples:
                         help="Run one scan and exit (no TUI)")
     parser.add_argument("--min-edge", type=float, default=0.05,
                         help="Minimum edge to enter. Default: 0.05 (5%%)")
-    parser.add_argument("--max-edge", type=float, default=0.50,
-                        help="Max edge cap (skip if higher). Default: 0.50 (50%%)")
+    parser.add_argument("--max-edge", type=float, default=0.25,
+                        help="Max edge cap (skip if higher). Default: 0.25 (25%%)")
+    parser.add_argument("--min-price", type=float, default=0.08,
+                        help="Min market price to buy. Default: 0.08 (8%%)")
     parser.add_argument("--kelly-div", type=float, default=4.0,
                         help="Kelly divisor (4=quarter-Kelly). Default: 4")
     parser.add_argument("--min-hours", type=float, default=12,
@@ -125,6 +128,7 @@ Examples:
         scan_interval=parse_interval(args.interval),
         min_edge=args.min_edge,
         max_edge_cap=args.max_edge,
+        min_market_price=args.min_price,
         kelly_divisor=args.kelly_div,
         min_hours_to_expiry=args.min_hours,
         max_per_bucket=args.max_bucket,

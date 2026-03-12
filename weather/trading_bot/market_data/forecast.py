@@ -66,6 +66,7 @@ class ForecastResult:
     sigma: float              # max(std(models), sigma_floor)
     sigma_ensemble: float     # raw std across models
     models: Dict[str, float]  # {model_name: daily_max}
+    df: Optional[float] = None   # Student-t degrees of freedom (None = Normal)
     cached: bool = False
     cache_age_min: float = 0.0
 
@@ -214,13 +215,14 @@ class ForecastData:
                 # No new model run → cache is still valid
                 day_data = cache_entry["data"].get(date)
                 if day_data:
-                    forecast, sigma = self._apply_calibration(
+                    forecast, sigma, df = self._apply_calibration(
                         day_data["forecast"], day_data["sigma"], city, date, unit)
                     return ForecastResult(
                         forecast=forecast,
                         sigma=sigma,
                         sigma_ensemble=day_data["sigma"],
                         models=day_data["models"],
+                        df=df,
                         cached=True,
                         cache_age_min=(now - fetched_at) / 60,
                     )
@@ -236,26 +238,30 @@ class ForecastData:
         if not day_data:
             return None
 
-        forecast, sigma = self._apply_calibration(
+        forecast, sigma, df = self._apply_calibration(
             day_data["forecast"], day_data["sigma"], city, date, unit)
         return ForecastResult(
             forecast=forecast,
             sigma=sigma,
             sigma_ensemble=day_data["sigma"],
             models=day_data["models"],
+            df=df,
             cached=False,
             cache_age_min=0.0,
         )
 
     def _apply_calibration(self, raw_forecast: float, ensemble_sigma: float,
-                           city: str, date: str, unit: str) -> Tuple[float, float]:
+                           city: str, date: str, unit: str
+                           ) -> Tuple[float, float, Optional[float]]:
         """Apply bias correction and calibrated sigma.
 
-        Returns (corrected_forecast, calibrated_sigma).
+        Returns (corrected_forecast, calibrated_sigma, student_t_df).
         """
+        df = None
         if self.calibration and self.calibration.loaded:
             bias = self.calibration.get_bias(city, date)
             sigma = self.calibration.get_sigma(city, date, unit)
+            df = self.calibration.get_df(city, date)
             # Bias correction: subtract systematic overprediction
             forecast = raw_forecast - bias
             # Use calibrated sigma, but at least ensemble spread
@@ -265,7 +271,7 @@ class ForecastData:
             sigma_floor = SIGMA_FLOOR_F if unit == "F" else SIGMA_FLOOR_C
             forecast = raw_forecast
             sigma = max(ensemble_sigma, sigma_floor)
-        return forecast, sigma
+        return forecast, sigma, df
 
     def refresh_city(self, city: str, unit: str = "F") -> bool:
         """Fetch fresh forecast for a city from Open-Meteo."""
@@ -320,9 +326,29 @@ class ForecastData:
             if not maxes:
                 continue
 
+            # Weighted ensemble if calibration provides per-city weights
+            weights = None
+            if self.calibration and self.calibration.loaded:
+                weights = self.calibration.get_weights(city)
+
+            if weights:
+                # Weighted mean using optimal per-city model weights
+                w_sum = 0.0
+                f_sum = 0.0
+                for mn, val in maxes.items():
+                    w = weights.get(mn, 0.0)
+                    f_sum += w * val
+                    w_sum += w
+                if w_sum < 0.5:
+                    logger.warning("Low weight coverage for %s: %.2f (models: %s)",
+                                   city, w_sum, list(maxes.keys()))
+                forecast_val = f_sum / w_sum if w_sum > 0 else float(np.mean(list(maxes.values())))
+            else:
+                forecast_val = float(np.mean(list(maxes.values())))
+
             vals = list(maxes.values())
             result[date_str] = {
-                "forecast": float(np.mean(vals)),
+                "forecast": forecast_val,
                 "sigma": float(np.std(vals)) if len(vals) > 1 else 0.0,
                 "models": maxes,
             }
