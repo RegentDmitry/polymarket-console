@@ -27,10 +27,13 @@ class WeatherBotConfig:
     max_edge_cap: float = 0.25      # Skip suspiciously high edge (likely model error)
     min_market_price: float = 0.08  # Don't buy buckets cheaper than 8% (sigma error amplified)
     min_hours_to_expiry: float = 12  # Don't buy if <12h to resolution
+    skip_cities: list = field(default_factory=lambda: [
+        "buenos-aires", "seoul", "seattle", "atlanta",
+    ])  # Cities with negative backtest ROI — skip for trading
     kelly_divisor: float = 4.0      # Quarter-Kelly (was half-Kelly=2)
 
     # Portfolio risk limits (Kelly proportional + hard caps)
-    max_per_bucket: float = 50.0    # Max $ per bucket (liquidity ~$20-100)
+    max_per_bucket: float = float("inf")  # No per-bucket limit (was $50)
     max_per_event: float = 200.0    # Max $ per event (city+date) — correlated!
     max_per_city: float = 500.0     # Max $ per city (all dates)
     max_position_pct: float = 0.30  # Max 30% of portfolio per position
@@ -103,8 +106,8 @@ Examples:
                         help="Kelly divisor (4=quarter-Kelly). Default: 4")
     parser.add_argument("--min-hours", type=float, default=12,
                         help="Min hours to expiry. Default: 12")
-    parser.add_argument("--max-bucket", type=float, default=50.0,
-                        help="Max $ per bucket. Default: 50")
+    parser.add_argument("--max-bucket", type=float, default=float("inf"),
+                        help="Max $ per bucket. Default: unlimited")
     parser.add_argument("--max-event", type=float, default=200.0,
                         help="Max $ per event (city+date). Default: 200")
     parser.add_argument("--max-city", type=float, default=500.0,
@@ -115,10 +118,15 @@ Examples:
                         help="Data directory. Default: trading_bot/data")
     parser.add_argument("--markets-json", type=Path, default=Path("weather_markets.json"),
                         help="Markets JSON. Default: weather_markets.json")
+    parser.add_argument("--skip-cities", type=str, default=None,
+                        help="Comma-separated cities to skip. Default: buenos-aires,seoul,seattle,atlanta")
     parser.add_argument("--db-url", type=str, default=None,
                         help="PostgreSQL URL for forecast logging. E.g. postgresql://user:pass@host/db")
 
     args = parser.parse_args()
+
+    skip = (args.skip_cities.split(",") if args.skip_cities is not None
+            else ["buenos-aires", "seoul", "seattle", "atlanta"])
 
     return WeatherBotConfig(
         auto_mode=args.auto,
@@ -134,6 +142,7 @@ Examples:
         max_per_bucket=args.max_bucket,
         max_per_event=args.max_event,
         max_per_city=args.max_city,
+        skip_cities=skip,
         target_alloc=args.alloc,
         data_dir=args.data_dir,
         active_dir=args.data_dir / "active",

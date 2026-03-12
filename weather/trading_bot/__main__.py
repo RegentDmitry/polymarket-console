@@ -102,6 +102,7 @@ def main():
     scanner = WeatherScanner(config)
     if forecast_db:
         scanner.forecast.db = forecast_db
+        scanner.set_db(forecast_db)
     print("OK")
 
     # Initialize executor
@@ -121,10 +122,8 @@ def main():
         print("\n--- Single scan mode ---\n")
         from .pricing.portfolio import allocate_sizes
 
-        held_slugs = {p.market_slug for p in positions}
         signals = scanner.scan_for_entries(
             progress_callback=lambda msg: print(f"  {msg}"),
-            held_slugs=held_slugs,
         )
 
         balance = executor.get_balance() if executor.initialized else 0.0

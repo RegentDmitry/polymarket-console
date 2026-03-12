@@ -624,10 +624,6 @@ class TradingBotApp(App):
                 progress_callback=lambda msg: self.call_from_thread(log.add_line, msg),
             )
 
-            # Get current prices and exit signals
-            current_prices = await asyncio.to_thread(scanner.get_current_prices)
-            exit_signals = scanner.scan_for_exits(positions, current_prices)
-
             scan_time = time.time() - t0
 
             # Allocate sizes (Kelly proportional)
@@ -652,8 +648,7 @@ class TradingBotApp(App):
             status_bar.mark_scan()
 
             buys = sum(1 for s in entry_signals if s.suggested_size > 0)
-            sells = len(exit_signals)
-            log.add_line(f"Scan done: {buys} buys, {sells} sells ({scan_time:.0f}s)")
+            log.add_line(f"Scan done: {buys} buys ({scan_time:.0f}s)")
 
             # Handle signals — only buy within 10min of forecast update
             in_buy_window = self._in_buy_window()
@@ -665,11 +660,10 @@ class TradingBotApp(App):
             if self.config.observe_only:
                 pass  # Observe mode: no buy/sell
             elif self.config.auto_mode and not self.config.dry_run:
-                await self._auto_execute(entry_signals, exit_signals, positions)
-            elif not self.config.dry_run and (buys > 0 or sells > 0):
+                await self._auto_execute(entry_signals, positions)
+            elif not self.config.dry_run and buys > 0:
                 # Queue for confirmation
                 actionable = [s for s in entry_signals if s.suggested_size > 0]
-                actionable.extend(exit_signals)
                 if actionable:
                     self._pending_signals = actionable
                     self._pending_idx = 0
@@ -722,14 +716,9 @@ class TradingBotApp(App):
         finally:
             self._scan_running = False
 
-    async def _auto_execute(self, entries: List[Signal], exits: List[Signal],
+    async def _auto_execute(self, entries: List[Signal],
                            positions: List[Position]) -> None:
-        """Execute all signals automatically."""
-        for signal in exits:
-            pos = next((p for p in positions if p.id == signal.position_id), None)
-            if pos:
-                await self._execute_sell(signal, pos)
-
+        """Execute all buy signals automatically (hold to resolution, no sells)."""
         for signal in entries:
             if signal.suggested_size > 0:
                 await self._execute_buy(signal)

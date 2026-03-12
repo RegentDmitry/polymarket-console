@@ -5,8 +5,10 @@ Fetches ensemble forecasts, computes fair bucket probabilities via Normal
 distribution model, generates BUY/SELL signals with edge computation.
 """
 
+import time
 from typing import Callable, Dict, List, Optional
 
+from ..adaptive_sigma import AdaptiveSigma
 from ..calibration import CityCalibration
 from ..market_data.forecast import ForecastData
 from ..market_data.polymarket import WeatherMarket, WeatherPolymarketData
@@ -28,12 +30,21 @@ class WeatherScanner:
 
         # Load per-city calibration
         cal_path = config.cities_json.parent / _CALIBRATION_FILE
-        calibration = CityCalibration(cal_path)
-        self.forecast = ForecastData(config.cities_json, calibration=calibration)
+        self.calibration = CityCalibration(cal_path)
+        self.forecast = ForecastData(config.cities_json, calibration=self.calibration)
+
+        # Adaptive sigma (requires DB — gracefully degrades without it)
+        self.adaptive = AdaptiveSigma(db=None, cities=self.forecast.cities)  # DB set later via set_db()
+        self._adaptive_update_interval = 3600  # recompute every hour
+        self._adaptive_last_update = 0.0
 
         # Caches from last scan
         self._fair_prices: Dict[str, float] = {}  # market_slug -> fair
         self._token_ids: Dict[str, str] = {}       # market_slug -> yes_token_id
+
+    def set_db(self, db) -> None:
+        """Set database for adaptive sigma and forecast logging."""
+        self.adaptive.db = db
 
     def scan_for_entries(self, progress_callback: Optional[Callable] = None,
                          ) -> List[Signal]:
@@ -42,6 +53,15 @@ class WeatherScanner:
         Returns list of BUY signals sorted by edge descending.
         """
         logger = get_logger()
+
+        # Update adaptive sigma periodically
+        now = time.time()
+        if (now - self._adaptive_last_update) >= self._adaptive_update_interval:
+            self._adaptive_last_update = now
+            adjustments = self.adaptive.update(self.calibration)
+            if adjustments:
+                for line in self.adaptive.get_status_lines():
+                    logger.log_info(line)
 
         # Load markets from JSON + refresh PM prices
         self.polymarket.update_from_json()
@@ -60,15 +80,27 @@ class WeatherScanner:
             if not fc:
                 continue
 
+            # Adaptive sigma: inflate if recent errors are high
+            sigma_mult = self.adaptive.get_sigma_multiplier(market.city)
+            effective_sigma = fc.sigma * sigma_mult
+
             # Compute fair price — always compute for positions panel
             fair = bucket_fair_price(
-                fc.forecast, fc.sigma, market.bucket_lower, market.bucket_upper,
+                fc.forecast, effective_sigma, market.bucket_lower, market.bucket_upper,
                 df=fc.df,
             )
 
             # Cache for exit scanning and UI display
             self._fair_prices[market.market_slug] = fair
             self._token_ids[market.market_slug] = market.yes_token_id
+
+            # Skip blacklisted cities (negative backtest ROI)
+            if market.city in self.config.skip_cities:
+                continue
+
+            # Skip cities where adaptive sigma ratio > 2.0 (unreliable model)
+            if self.adaptive.should_skip(market.city):
+                continue
 
             # Skip trading signals if too close to expiry
             if market.hours_remaining < self.config.min_hours_to_expiry:
@@ -115,7 +147,7 @@ class WeatherScanner:
                 days_remaining=market.days_remaining,
                 liquidity=liq_usd,
                 token_id=market.yes_token_id,
-                model_used=f"Normal(σ={fc.sigma:.1f})",
+                model_used=f"Normal(σ={effective_sigma:.1f}{f'×{sigma_mult:.1f}' if sigma_mult > 1.0 else ''})",
                 city=market.city,
                 date=market.date,
                 bucket_label=market.bucket_label,
@@ -132,8 +164,9 @@ class WeatherScanner:
             fc = self.forecast.get_forecast(market.city, market.date, market.unit)
             if not fc:
                 continue
+            sm = self.adaptive.get_sigma_multiplier(market.city)
             fair = bucket_fair_price(
-                fc.forecast, fc.sigma, market.bucket_lower, market.bucket_upper,
+                fc.forecast, fc.sigma * sm, market.bucket_lower, market.bucket_upper,
                 df=fc.df,
             )
             self._fair_prices[market.market_slug] = fair
