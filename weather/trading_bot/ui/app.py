@@ -98,8 +98,13 @@ class StatusBar(Static):
         else:
             buy_indicator = "[dim]WAIT[/dim]"
 
+        if self._mode == "OBSERVE":
+            mode_str = "[bold yellow]OBSERVE (no trading)[/bold yellow]"
+        else:
+            mode_str = self._mode
+
         return (
-            f"  [{self._mode}]  "
+            f"  {mode_str}  "
             f"Balance: ${self._balance:,.2f}  "
             f"Invested: ${self._invested:,.2f}  "
             f"P&L: {pnl_str}  "
@@ -517,7 +522,9 @@ class TradingBotApp(App):
         self._portfolio_update_interval: int = 3  # MC every 3 scans
 
     def compose(self) -> ComposeResult:
-        mode = "DRY RUN" if self.config.dry_run else (
+        mode = (
+            "OBSERVE" if self.config.observe_only else
+            "DRY RUN" if self.config.dry_run else
             "AUTO" if self.config.auto_mode else "CONFIRM"
         )
         yield Static(f" Weather Bot [{mode}]", id="app-header")
@@ -895,7 +902,9 @@ class TradingBotApp(App):
             if avail_times:
                 next_fc_ts = min(t + 6 * 3600 for t in avail_times)
 
-        mode = "DRY RUN" if self.config.dry_run else (
+        mode = (
+            "OBSERVE" if self.config.observe_only else
+            "DRY RUN" if self.config.dry_run else
             "AUTO" if self.config.auto_mode else "CONFIRM"
         )
         self.query_one("#status-bar", StatusBar).update_status(
