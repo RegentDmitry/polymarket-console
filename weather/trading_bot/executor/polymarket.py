@@ -470,6 +470,89 @@ class PolymarketExecutor:
         except Exception as e:
             return OrderResult(success=False, error=str(e))
 
+    def redeem_neg_risk(self, condition_id: str, outcome: str, token_id: str) -> bool:
+        """Redeem resolved NegRisk position via NegRisk adapter on-chain."""
+        if not self.client or not self.client.pk:
+            return False
+        logger = get_logger()
+        try:
+            import os
+            from web3 import Web3
+
+            rpc = os.getenv("POLYGON_RPC", "https://polygon-bor-rpc.publicnode.com")
+            w3 = Web3(Web3.HTTPProvider(rpc))
+            account = w3.eth.account.from_key(self.client.pk)
+            eoa = account.address
+
+            CTF = Web3.to_checksum_address("0x4D97DCd97eC945f40cF65F87097ACe5EA0476045")
+            NEG_RISK = Web3.to_checksum_address("0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296")
+
+            bal_abi = [{"inputs": [{"name": "account", "type": "address"},
+                                    {"name": "id", "type": "uint256"}],
+                        "name": "balanceOf",
+                        "outputs": [{"name": "", "type": "uint256"}],
+                        "stateMutability": "view", "type": "function"}]
+            ctf = w3.eth.contract(address=CTF, abi=bal_abi)
+            balance = ctf.functions.balanceOf(eoa, int(token_id)).call()
+
+            if balance <= 0:
+                return False
+
+            logger.log_info(
+                f"REDEEM: condition={condition_id[:16]}... "
+                f"{outcome} balance={balance / 1e6:.2f}"
+            )
+
+            cid_bytes = bytes.fromhex(condition_id.replace("0x", ""))
+            if outcome.upper() == "YES":
+                amounts = [balance, 0]
+            else:
+                amounts = [0, balance]
+
+            redeem_abi = [{
+                "inputs": [
+                    {"name": "_conditionId", "type": "bytes32"},
+                    {"name": "_amounts", "type": "uint256[]"}
+                ],
+                "name": "redeemPositions",
+                "outputs": [],
+                "stateMutability": "nonpayable",
+                "type": "function"
+            }]
+
+            neg_risk = w3.eth.contract(address=NEG_RISK, abi=redeem_abi)
+            gas_price = max(w3.eth.gas_price * 2, w3.to_wei(50, "gwei"))
+
+            tx = neg_risk.functions.redeemPositions(
+                cid_bytes, amounts
+            ).build_transaction({
+                "from": eoa,
+                "nonce": w3.eth.get_transaction_count(eoa),
+                "gas": 500000,
+                "gasPrice": gas_price,
+                "chainId": 137,
+            })
+
+            signed = w3.eth.account.sign_transaction(tx, self.client.pk)
+            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+
+            if receipt.status == 1:
+                new_bal = ctf.functions.balanceOf(eoa, int(token_id)).call()
+                redeemed = (balance - new_bal) / 1e6
+                logger.log_info(
+                    f"REDEEM SUCCESS: {redeemed:.2f} USDC, "
+                    f"tx=0x{tx_hash.hex()[:12]}..."
+                )
+                return new_bal < balance
+            else:
+                logger.log_warning(f"REDEEM FAILED: tx reverted 0x{tx_hash.hex()[:12]}...")
+                return False
+
+        except Exception as e:
+            logger.log_warning(f"REDEEM error: {e}")
+            return False
+
     def check_market_resolved(self, condition_id: str) -> Tuple[bool, Optional[str]]:
         """Check if a market has resolved. Returns (is_resolved, winning_outcome)."""
         info = self.get_market_info(condition_id)

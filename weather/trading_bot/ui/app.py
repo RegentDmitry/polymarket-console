@@ -569,6 +569,7 @@ class TradingBotApp(App):
     def _resolve_settled_positions(self, positions: list) -> list:
         """Check expired positions and move resolved ones to history.
 
+        For winning NegRisk positions, redeems on-chain to convert tokens to USDC.
         Returns list of (city, date, bucket_label, won, pnl) tuples.
         """
         results = []
@@ -590,6 +591,21 @@ class TradingBotApp(App):
                 if t.get("outcome", "").upper() == our_outcome and t.get("winner"):
                     we_won = True
                     break
+
+            # Redeem NegRisk positions on-chain (wins get USDC, losses clear portfolio)
+            if market.get("neg_risk") and self.executor.initialized:
+                token_id = pos.token_id
+                if not token_id:
+                    for t in tokens:
+                        if t.get("outcome", "").upper() == our_outcome:
+                            token_id = t.get("token_id")
+                            break
+                if token_id:
+                    condition_id = market.get("condition_id", pos.market_id)
+                    try:
+                        self.executor.redeem_neg_risk(condition_id, pos.outcome, token_id)
+                    except Exception:
+                        pass
 
             self.position_storage.resolve_position(pos.id, we_won)
 
