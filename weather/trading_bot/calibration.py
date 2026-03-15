@@ -51,6 +51,17 @@ class CityCalibration:
     def loaded(self) -> bool:
         return bool(self._data)
 
+    def get_best_model(self, city: str) -> Optional[str]:
+        """Get the single best model for this city.
+
+        Returns Open-Meteo model name (e.g. "ecmwf_ifs025") or None.
+        Used in single-model strategy where we wait only for this model's run.
+        """
+        cal = self._data.get(city)
+        if not cal:
+            return None
+        return cal.get("best_model")
+
     def get_weights(self, city: str) -> Optional[dict]:
         """Get per-city optimal model weights for weighted ensemble.
 

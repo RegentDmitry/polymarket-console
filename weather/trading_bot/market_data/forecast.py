@@ -172,6 +172,56 @@ class ModelUpdateTracker:
                 result[api_name] = "unknown"
         return result
 
+    def model_has_late_run(self, model_name: str) -> bool:
+        """True if a specific model has init_time >= 12:00 UTC today.
+
+        Used by single-model strategy: each city waits only for its best model.
+        Model availability after 12Z init:
+          ECMWF 12Z -> ~19:00 UTC (earliest)
+          JMA   12Z -> ~18:00 UTC
+          GFS   18Z -> ~21:30 UTC
+          ICON  18Z -> ~22:00 UTC (latest)
+        """
+        info = self._models.get(model_name)
+        if not info or info.init_time == 0:
+            return False
+        today_midnight = datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0)
+        today_noon_ts = int((today_midnight.replace(hour=12)).timestamp())
+        return info.init_time >= today_noon_ts
+
+    def all_models_have_late_run(self) -> bool:
+        """True if ALL 4 models have init_time >= 12:00 UTC today.
+
+        This means the forecast includes the afternoon/evening model runs,
+        which is the "last forecast of the day" that our calibration is based on.
+
+        Model schedule (last daily run init -> available):
+          GFS:   18Z -> ~21:30 UTC
+          ECMWF: 12Z -> ~19:00 UTC
+          ICON:  18Z -> ~22:00 UTC
+          JMA:   12Z -> ~18:00 UTC
+
+        So all models are available with 12Z+ init by ~22:00 UTC.
+        """
+        today_midnight = datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0)
+        today_noon_ts = int((today_midnight.replace(hour=12)).timestamp())
+
+        for info in self._models.values():
+            if info.init_time < today_noon_ts:
+                return False
+        return True
+
+    def get_oldest_model_age_hours(self) -> float:
+        """Hours since the oldest model's init_time."""
+        now = time.time()
+        oldest = min(
+            (info.init_time for info in self._models.values() if info.init_time > 0),
+            default=0
+        )
+        return (now - oldest) / 3600 if oldest > 0 else 999.0
+
     @property
     def is_s3_available(self) -> bool:
         return self._s3_available
@@ -216,7 +266,8 @@ class ForecastData:
                 day_data = cache_entry["data"].get(date)
                 if day_data:
                     forecast, sigma, df = self._apply_calibration(
-                        day_data["forecast"], day_data["sigma"], city, date, unit)
+                        day_data["forecast"], day_data["sigma"], city, date, unit,
+                        models=day_data.get("models"))
                     return ForecastResult(
                         forecast=forecast,
                         sigma=sigma,
@@ -239,7 +290,8 @@ class ForecastData:
             return None
 
         forecast, sigma, df = self._apply_calibration(
-            day_data["forecast"], day_data["sigma"], city, date, unit)
+            day_data["forecast"], day_data["sigma"], city, date, unit,
+            models=day_data.get("models"))
         return ForecastResult(
             forecast=forecast,
             sigma=sigma,
@@ -251,20 +303,31 @@ class ForecastData:
         )
 
     def _apply_calibration(self, raw_forecast: float, ensemble_sigma: float,
-                           city: str, date: str, unit: str
+                           city: str, date: str, unit: str,
+                           models: Optional[Dict[str, float]] = None
                            ) -> Tuple[float, float, Optional[float]]:
-        """Apply bias correction and calibrated sigma.
+        """Apply calibration: use single best model if available, else ensemble.
+
+        Single-model strategy: use only the best model for this city
+        (calibrated on 14 months of previous_day1 data).
 
         Returns (corrected_forecast, calibrated_sigma, student_t_df).
         """
         df = None
         if self.calibration and self.calibration.loaded:
+            best_model = self.calibration.get_best_model(city)
             bias = self.calibration.get_bias(city, date)
             sigma = self.calibration.get_sigma(city, date, unit)
             df = self.calibration.get_df(city, date)
-            # Bias correction: subtract systematic overprediction
-            forecast = raw_forecast - bias
-            # Use calibrated sigma, but at least ensemble spread
+
+            # Use single best model if available in fetched data
+            if best_model and models and best_model in models:
+                forecast = models[best_model] - bias
+            else:
+                # Fallback to ensemble mean with bias correction
+                forecast = raw_forecast - bias
+
+            # Use calibrated sigma (already RMSE of best model)
             sigma = max(sigma, ensemble_sigma)
         else:
             # Legacy fallback

@@ -23,14 +23,13 @@ class WeatherBotConfig:
     # Forecast refresh: automatic via S3 meta.json (no fixed interval)
 
     # Strategy parameters
-    min_edge: float = 0.05          # 5%
-    max_edge_cap: float = 0.25      # Skip suspiciously high edge (likely model error)
-    min_market_price: float = 0.08  # Don't buy buckets cheaper than 8% (sigma error amplified)
+    min_edge: float = 0.08          # 8% — calibrated on 14 months previous_day1 data
+    max_edge_cap: float = float("inf")  # No cap — calibrated sigma prevents false edges
+    min_market_price: float = 0.08  # Don't buy buckets cheaper than 8%
     min_hours_to_expiry: float = 12  # Don't buy if <12h to resolution
-    skip_cities: list = field(default_factory=lambda: [
-        "buenos-aires", "seoul", "seattle", "atlanta",
-    ])  # Cities with negative backtest ROI — skip for trading
-    kelly_divisor: float = 4.0      # Quarter-Kelly (was half-Kelly=2)
+    skip_cities: list = field(default_factory=list)  # No blanket skip — per-city sigma handles it
+    kelly_divisor: float = 4.0      # Quarter-Kelly
+    last_forecast_only: bool = True  # Only trade after all models have fresh data (last run of day)
 
     # Portfolio risk limits (Kelly proportional + hard caps)
     max_per_bucket: float = float("inf")  # No per-bucket limit (was $50)
@@ -96,10 +95,10 @@ Examples:
                         help="Observe mode: scan + resolve positions, no buy/sell")
     parser.add_argument("--scan-once", action="store_true",
                         help="Run one scan and exit (no TUI)")
-    parser.add_argument("--min-edge", type=float, default=0.05,
-                        help="Minimum edge to enter. Default: 0.05 (5%%)")
-    parser.add_argument("--max-edge", type=float, default=0.25,
-                        help="Max edge cap (skip if higher). Default: 0.25 (25%%)")
+    parser.add_argument("--min-edge", type=float, default=0.08,
+                        help="Minimum edge to enter. Default: 0.08 (8%%)")
+    parser.add_argument("--max-edge", type=float, default=float("inf"),
+                        help="Max edge cap. Default: unlimited")
     parser.add_argument("--min-price", type=float, default=0.08,
                         help="Min market price to buy. Default: 0.08 (8%%)")
     parser.add_argument("--kelly-div", type=float, default=4.0,
@@ -118,15 +117,14 @@ Examples:
                         help="Data directory. Default: trading_bot/data")
     parser.add_argument("--markets-json", type=Path, default=Path("weather_markets.json"),
                         help="Markets JSON. Default: weather_markets.json")
-    parser.add_argument("--skip-cities", type=str, default=None,
-                        help="Comma-separated cities to skip. Default: buenos-aires,seoul,seattle,atlanta")
+    parser.add_argument("--skip-cities", type=str, default="",
+                        help="Comma-separated cities to skip. Default: none")
     parser.add_argument("--db-url", type=str, default=None,
                         help="PostgreSQL URL for forecast logging. E.g. postgresql://user:pass@host/db")
 
     args = parser.parse_args()
 
-    skip = (args.skip_cities.split(",") if args.skip_cities is not None
-            else ["buenos-aires", "seoul", "seattle", "atlanta"])
+    skip = [c.strip() for c in args.skip_cities.split(",") if c.strip()]
 
     return WeatherBotConfig(
         auto_mode=args.auto,

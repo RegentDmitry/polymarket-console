@@ -16,8 +16,8 @@ from ..models.signal import Signal, SignalType
 from ..pricing import bucket_fair_price
 from ..logger import get_logger
 
-# Default calibration path (relative to cities.json)
-_CALIBRATION_FILE = "backtest/data/calibration_results_weighted.json"
+# Calibration: single best model per city (14 months, 438 days)
+_CALIBRATION_FILE = "trading_bot/data/calibration_single_model.json"
 
 
 class WeatherScanner:
@@ -94,9 +94,17 @@ class WeatherScanner:
             self._fair_prices[market.market_slug] = fair
             self._token_ids[market.market_slug] = market.yes_token_id
 
-            # Skip blacklisted cities (negative backtest ROI)
+            # Skip blacklisted cities
             if market.city in self.config.skip_cities:
                 continue
+
+            # Single-model strategy: only signal when this city's best model
+            # has a fresh late run (init >= 12Z today). This ensures we trade
+            # on the most accurate "last forecast of the day".
+            if self.config.last_forecast_only:
+                best_model = self.calibration.get_best_model(market.city)
+                if best_model and not self.forecast.tracker.model_has_late_run(best_model):
+                    continue
 
             # Skip cities where adaptive sigma ratio > 2.0 (unreliable model)
             if self.adaptive.should_skip(market.city):
@@ -131,8 +139,8 @@ class WeatherScanner:
             if edge < self.config.min_edge:
                 continue
 
-            # Edge cap: skip suspiciously high edge (likely model error)
-            if edge > self.config.max_edge_cap:
+            # Edge cap (disabled by default — calibrated sigma prevents false edges)
+            if self.config.max_edge_cap < float("inf") and edge > self.config.max_edge_cap:
                 continue
 
             signal = Signal(
